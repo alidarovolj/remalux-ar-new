@@ -18,6 +18,7 @@ public class WallMeshRenderer : MonoBehaviour
     [SerializeField] private ARCameraManager _arCameraManager;
     [SerializeField] private EnhancedDeepLabPredictor _predictor;
     [SerializeField] private Material _wallMaterial;
+    [SerializeField] private ARPlaneManager _arPlaneManager; // AR Plane Manager for detection
 
     [Header("Wall Detection Settings")]
     [Range(0.0f, 1.0f)]
@@ -25,6 +26,7 @@ public class WallMeshRenderer : MonoBehaviour
     [Range(0.0f, 1.0f)]
     [SerializeField] private float _wallConfidenceThreshold = 0.05f; // Lowered threshold for better detection
     [SerializeField] private float _updateInterval = 0.2f; // More frequent updates
+    [SerializeField] public bool _onlyUseVerticalPlanes = true; // Filter only vertical planes
 
     [Header("Debug")]
     [SerializeField] private bool _showDebugInfo = true;
@@ -83,7 +85,7 @@ public class WallMeshRenderer : MonoBehaviour
     private Texture2D _segmentationTexture;
     private bool _predictor_isReady = false;
     private bool _isUpdatingMeshes = false;
-    [SerializeField] private byte _wallClassId = 9;  // Updated default to 9
+    [SerializeField] public byte _wallClassId = 9;  // Ensure consistent wall class ID (ADE20K)
 
     private void Awake()
     {
@@ -98,6 +100,16 @@ public class WallMeshRenderer : MonoBehaviour
             if (_showDebugInfo)
             {
                 Debug.Log("WallMeshRenderer: Created default wall material");
+            }
+        }
+        
+        // Find ARPlaneManager if not assigned
+        if (_arPlaneManager == null)
+        {
+            _arPlaneManager = FindObjectOfType<ARPlaneManager>();
+            if (_arPlaneManager != null && _showDebugInfo)
+            {
+                Debug.Log("WallMeshRenderer: Found ARPlaneManager");
             }
         }
     }
@@ -328,32 +340,41 @@ public class WallMeshRenderer : MonoBehaviour
         }
     }
 
+    /// <summary>
+    /// Check if a plane is vertical (wall)
+    /// </summary>
+    /// <param name="plane">AR plane to check</param>
+    /// <returns>True if plane is vertical</returns>
+    private bool IsVerticalPlane(ARPlane plane)
+    {
+        if (plane == null) return false;
+        
+        // Check alignment directly
+        if (plane.alignment == PlaneAlignment.Vertical)
+        {
+            return true;
+        }
+        
+        // Additional check for normal direction
+        Vector3 normal = plane.normal;
+        float dotWithUp = Vector3.Dot(normal, Vector3.up);
+        
+        // If the normal is close to horizontal (perpendicular to up vector), it's a vertical plane
+        return Mathf.Abs(dotWithUp) < _verticalThreshold;
+    }
+    
     private IEnumerator UpdateMeshesRoutine()
     {
         while (true)
         {
-            // Wait for the specified interval
             yield return new WaitForSeconds(_updateInterval);
             
-            // Don't process if already updating or if there's no segmentation data yet
-            if (_isUpdatingMeshes || _segmentationTexture == null || !_predictor_isReady) 
+            if (_segmentationTexture != null && _predictor_isReady && !_isUpdatingMeshes)
             {
-                continue;
-            }
-            
-            _isUpdatingMeshes = true;
-            
-            try
-            {
-                // Analyze the current meshes
+                _isUpdatingMeshes = true;
                 AnalyzeMeshes();
+                _isUpdatingMeshes = false;
             }
-            catch (Exception e)
-            {
-                Debug.LogError($"WallMeshRenderer: Error during mesh analysis: {e.Message}");
-            }
-            
-            _isUpdatingMeshes = false;
         }
     }
 
@@ -380,6 +401,16 @@ public class WallMeshRenderer : MonoBehaviour
                 
                 // For vertical meshes, check if they are walls according to the segmentation
                 bool isWall = IsMeshWall(meshObj);
+                
+                // If using AR planes with planeManager, also check for plane match
+                bool matchesARPlane = false;
+                if (_arPlaneManager != null && _onlyUseVerticalPlanes)
+                {
+                    matchesARPlane = IsMeshMatchingVerticalARPlane(meshObj);
+                    
+                    // Only consider as wall if it matches both segmentation and AR plane detection
+                    isWall = isWall && matchesARPlane;
+                }
                 
                 if (isWall)
                 {
@@ -420,6 +451,47 @@ public class WallMeshRenderer : MonoBehaviour
         {
             Debug.Log($"WallMeshRenderer: Analyzed {totalMeshes} meshes, {verticalMeshes} vertical, {wallMeshes} walls");
         }
+    }
+    
+    /// <summary>
+    /// Check if a mesh overlaps with a vertical AR plane
+    /// </summary>
+    private bool IsMeshMatchingVerticalARPlane(GameObject meshObj)
+    {
+        if (meshObj == null || _arPlaneManager == null) return false;
+        
+        // Get mesh bounds in world space
+        MeshFilter meshFilter = meshObj.GetComponent<MeshFilter>();
+        if (meshFilter == null || meshFilter.mesh == null) return false;
+        
+        Bounds meshBounds = new Bounds(
+            meshObj.transform.TransformPoint(meshFilter.mesh.bounds.center),
+            Vector3.Scale(meshFilter.mesh.bounds.size, meshObj.transform.lossyScale)
+        );
+        
+        // Check all tracked planes
+        foreach (ARPlane plane in _arPlaneManager.trackables)
+        {
+            // Skip non-vertical planes
+            if (!IsVerticalPlane(plane)) continue;
+            
+            // Create approximate bounds for the plane
+            Vector3 planeCenter = plane.transform.position;
+            Vector3 planeSize = new Vector3(plane.size.x, plane.size.y, 0.05f);
+            Bounds planeBounds = new Bounds(planeCenter, planeSize);
+            
+            // Check if bounds overlap
+            if (meshBounds.Intersects(planeBounds))
+            {
+                if (_showDebugInfo)
+                {
+                    Debug.Log($"WallMeshRenderer: Mesh matches vertical AR plane at {planeCenter}");
+                }
+                return true;
+            }
+        }
+        
+        return false;
     }
 
     private bool IsMeshVertical(Mesh mesh)
@@ -477,7 +549,6 @@ public class WallMeshRenderer : MonoBehaviour
         Color pixel = _segmentationTexture.GetPixel(x, y);
         
         // Check all channels to find wall pixels
-        // Try multiple detection methods since the segmentation format varies
         bool isWall = false;
         
         // Method 1: Check if red channel contains the wall class ID (normalized value)
@@ -491,16 +562,68 @@ public class WallMeshRenderer : MonoBehaviour
             isWall = true;
         }
         
-        // Method 3: Check if any channel has dominant value (original method)
-        if (!isWall && pixel.g > _wallConfidenceThreshold && pixel.g > pixel.r && pixel.g > pixel.b) {
-            isWall = true;
+        // Method 3: More comprehensive check using multiple sample points
+        if (!isWall)
+        {
+            // Sample a few points in the mesh bounds to check for wall pixels
+            Vector3[] samplePoints = GetMeshSamplePoints(meshObj, meshFilter.mesh, 5);
+            int wallPixelCount = 0;
+            
+            foreach (Vector3 point in samplePoints)
+            {
+                Vector2 sampleScreenPos = arCamera.WorldToScreenPoint(point);
+                
+                int sx = Mathf.Clamp(Mathf.RoundToInt(sampleScreenPos.x * _segmentationTexture.width / Screen.width), 0, _segmentationTexture.width - 1);
+                int sy = Mathf.Clamp(Mathf.RoundToInt(sampleScreenPos.y * _segmentationTexture.height / Screen.height), 0, _segmentationTexture.height - 1);
+                
+                Color samplePixel = _segmentationTexture.GetPixel(sx, sy);
+                
+                if (Mathf.Abs(samplePixel.r - normalizedClassId) < 0.1f || 
+                    samplePixel.r > _wallConfidenceThreshold || 
+                    samplePixel.g > _wallConfidenceThreshold || 
+                    samplePixel.b > _wallConfidenceThreshold)
+                {
+                    wallPixelCount++;
+                }
+            }
+            
+            // If more than half of the sample points are wall pixels, consider this a wall
+            if (wallPixelCount > samplePoints.Length / 2)
+            {
+                isWall = true;
+            }
         }
         
-        if (_showDebugInfo && pixel.maxColorComponent > 0.5f) {
-            Debug.Log($"WallMeshRenderer: Pixel at {x},{y} = R:{pixel.r:F2} G:{pixel.g:F2} B:{pixel.b:F2} A:{pixel.a:F2} - IsWall: {isWall}");
+        if (_showDebugInfo && isWall) {
+            Debug.Log($"WallMeshRenderer: Wall detected at pixel {x},{y} = R:{pixel.r:F2} G:{pixel.g:F2} B:{pixel.b:F2}");
         }
         
         return isWall;
+    }
+    
+    private Vector3[] GetMeshSamplePoints(GameObject meshObj, Mesh mesh, int sampleCount)
+    {
+        Vector3[] samplePoints = new Vector3[sampleCount];
+        
+        // Get the bounds
+        Bounds bounds = mesh.bounds;
+        Vector3 center = meshObj.transform.TransformPoint(bounds.center);
+        Vector3 extents = Vector3.Scale(bounds.extents, meshObj.transform.lossyScale);
+        
+        // Add center point
+        samplePoints[0] = center;
+        
+        // Add points distributed within the bounds
+        for (int i = 1; i < sampleCount; i++)
+        {
+            float x = center.x + (((i % 3) - 1) * extents.x * 0.5f);
+            float y = center.y + (((i / 3) % 3 - 1) * extents.y * 0.5f);
+            float z = center.z + (((i / 9) % 3 - 1) * extents.z * 0.5f);
+            
+            samplePoints[i] = new Vector3(x, y, z);
+        }
+        
+        return samplePoints;
     }
 
     // Public method to force the mesh update (can be called from editor or other scripts)

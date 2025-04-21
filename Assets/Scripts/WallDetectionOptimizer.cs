@@ -48,7 +48,7 @@ public class WallDetectionOptimizer : MonoBehaviour
     public float classificationThreshold = 0.15f;
     
     [Tooltip("Wall class ID")]
-    public byte wallClassId = 9;
+    public byte wallClassId = 9; // Updated to ADE20K wall class ID (9)
     
     [Tooltip("ArgMax mode")]
     public bool useArgMaxMode = true;
@@ -57,7 +57,7 @@ public class WallDetectionOptimizer : MonoBehaviour
     private DeepLabPredictor originalPredictor;
     
     // Common settings
-    private int currentWallClassId = 9;
+    private int currentWallClassId = 9; // Updated to ADE20K wall class ID (9)
     private bool useArgMax = true;
     
     void Awake()

@@ -1,5 +1,6 @@
 using UnityEngine;
 using System.Collections;
+using UnityEngine.XR.ARFoundation;
 
 /// <summary>
 /// Скрипт для инициализации улучшенного распознавания стен.
@@ -26,9 +27,16 @@ public class WallDetectionSetup : MonoBehaviour
 
     private void Start()
     {
+        // Check if auto setup is enabled
         if (autoSetup)
         {
             StartCoroutine(SetupSystem());
+        }
+        
+        // Set up the enhanced predictor and integrations
+        if (useEnhancedPredictor)
+        {
+            SetupEnhancedPredictor();
         }
     }
 
@@ -342,5 +350,191 @@ public class WallDetectionSetup : MonoBehaviour
     {
         StopAllCoroutines();
         StartCoroutine(SetupSystem());
+    }
+
+    private void SetupEnhancedPredictor()
+    {
+        try
+        {
+            // Find the AR system
+            GameObject arSystem = GameObject.Find("AR System");
+            if (arSystem == null)
+            {
+                Debug.LogError("WallDetectionSetup: AR System not found");
+                return;
+            }
+            
+            // Find the ML system
+            GameObject mlSystem = GameObject.Find("ML System");
+            if (mlSystem == null)
+            {
+                Debug.LogError("WallDetectionSetup: ML System not found");
+                return;
+            }
+            
+            // First check if the enhanced predictor already exists
+            enhancedPredictor = FindFirstObjectByType<EnhancedDeepLabPredictor>();
+            
+            if (enhancedPredictor == null)
+            {
+                Debug.Log("WallDetectionSetup: Creating new EnhancedDeepLabPredictor");
+                
+                // Create the enhanced predictor
+                GameObject predictorObj = new GameObject("Enhanced DeepLab Predictor");
+                predictorObj.transform.SetParent(mlSystem.transform);
+                enhancedPredictor = predictorObj.AddComponent<EnhancedDeepLabPredictor>();
+                
+                // Find the original predictor
+                DeepLabPredictor originalPredictor = FindFirstObjectByType<DeepLabPredictor>();
+                if (originalPredictor != null)
+                {
+                    // Copy settings from the original predictor
+                    enhancedPredictor.modelAsset = originalPredictor.modelAsset;
+                    enhancedPredictor.WallClassId = 9; // Always use ADE20K wall class ID (9)
+                    enhancedPredictor.inputWidth = originalPredictor.inputWidth > 0 ? originalPredictor.inputWidth : 512;
+                    enhancedPredictor.inputHeight = originalPredictor.inputHeight > 0 ? originalPredictor.inputHeight : 512;
+                    enhancedPredictor.ClassificationThreshold = initialThreshold;
+                    enhancedPredictor.useArgMaxMode = useArgMaxMode;
+                    
+                    // Enable post-processing
+                    enhancedPredictor.applyNoiseReduction = true;
+                    enhancedPredictor.applyWallFilling = true;
+                    enhancedPredictor.applyTemporalSmoothing = true;
+                    enhancedPredictor.debugMode = true;
+                    
+                    Debug.Log("WallDetectionSetup: Configured EnhancedDeepLabPredictor with settings from original predictor");
+                }
+                else
+                {
+                    // Set default values
+                    enhancedPredictor.WallClassId = 9; // ADE20K wall class ID (9)
+                    enhancedPredictor.inputWidth = 512;
+                    enhancedPredictor.inputHeight = 512;
+                    enhancedPredictor.ClassificationThreshold = initialThreshold;
+                    enhancedPredictor.useArgMaxMode = true;
+                    enhancedPredictor.applyNoiseReduction = true;
+                    enhancedPredictor.applyWallFilling = true;
+                    enhancedPredictor.applyTemporalSmoothing = true;
+                    enhancedPredictor.debugMode = true;
+                    
+                    Debug.Log("WallDetectionSetup: Configured EnhancedDeepLabPredictor with default settings");
+                }
+            }
+            else
+            {
+                // Update existing predictor settings
+                enhancedPredictor.WallClassId = 9; // ADE20K wall class ID (9)
+                enhancedPredictor.ClassificationThreshold = initialThreshold;
+                enhancedPredictor.useArgMaxMode = useArgMaxMode;
+                enhancedPredictor.applyNoiseReduction = true;
+                enhancedPredictor.applyWallFilling = true;
+                
+                Debug.Log("WallDetectionSetup: Updated existing EnhancedDeepLabPredictor");
+            }
+            
+            // Setup ARWallPainter component for coordinating wall detection
+            ARPlaneManager planeManager = FindFirstObjectByType<ARPlaneManager>();
+            if (planeManager != null)
+            {
+                // Check if ARWallPainter already exists
+                ARWallPainter wallPainter = FindFirstObjectByType<ARWallPainter>();
+                
+                if (wallPainter == null)
+                {
+                    // Create the wall painter component
+                    wallPainter = planeManager.gameObject.AddComponent<ARWallPainter>();
+                    
+                    // Set up references
+                    wallPainter.enabled = false; // Disable until configuration is complete
+                    
+                    // Find camera manager
+                    ARCameraManager cameraManager = FindFirstObjectByType<ARCameraManager>();
+                    if (cameraManager != null)
+                        wallPainter._cameraManager = cameraManager;
+                    
+                    // Reference the enhanced predictor
+                    wallPainter._predictor = enhancedPredictor;
+                    
+                    // Load wall material
+                    Material wallMat = Resources.Load<Material>("Materials/WallMaterial");
+                    if (wallMat == null)
+                    {
+                        // Try to find in the Assets directory
+                        wallMat = UnityEditor.AssetDatabase.LoadAssetAtPath<Material>("Assets/Materials/WallMaterial.mat");
+                    }
+                    
+                    if (wallMat != null)
+                    {
+                        wallPainter._wallMaterial = wallMat;
+                    }
+                    else
+                    {
+                        Debug.LogWarning("WallDetectionSetup: Wall material not found, using default");
+                    }
+                    
+                    // Configure settings
+                    wallPainter._wallClassId = 9;
+                    wallPainter._wallConfidenceThreshold = initialThreshold;
+                    wallPainter.enabled = true;
+                    
+                    Debug.Log("WallDetectionSetup: Created and configured ARWallPainter");
+                }
+                else
+                {
+                    // Update existing wall painter settings
+                    wallPainter._predictor = enhancedPredictor;
+                    wallPainter._wallClassId = 9;
+                    wallPainter._wallConfidenceThreshold = initialThreshold;
+                    
+                    Debug.Log("WallDetectionSetup: Updated existing ARWallPainter");
+                }
+            }
+            else
+            {
+                Debug.LogWarning("WallDetectionSetup: ARPlaneManager not found, skipping ARWallPainter setup");
+            }
+            
+            // Ensure that the WallMeshRenderer has the correct settings
+            WallMeshRenderer wallMeshRenderer = FindFirstObjectByType<WallMeshRenderer>();
+            if (wallMeshRenderer != null)
+            {
+                wallMeshRenderer.Predictor = enhancedPredictor;
+                wallMeshRenderer._wallClassId = 9; // ADE20K wall class ID (9)
+                wallMeshRenderer.WallConfidenceThreshold = initialThreshold;
+                wallMeshRenderer._onlyUseVerticalPlanes = true;
+                
+                Debug.Log("WallDetectionSetup: Updated WallMeshRenderer settings");
+            }
+            
+            // Connect events and listeners
+            try
+            {
+                // Find WallColorizer
+                WallColorizer wallColorizer = FindFirstObjectByType<WallColorizer>();
+                if (wallColorizer != null)
+                {
+                    // Connect enhanced predictor to wall colorizer
+                    var updateMethod = wallColorizer.GetType().GetMethod("UpdateWallMask", 
+                        System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public);
+                        
+                    if (updateMethod != null)
+                    {
+                        enhancedPredictor.OnSegmentationResult += (mask) => {
+                            updateMethod.Invoke(wallColorizer, new object[] { mask });
+                        };
+                        
+                        Debug.Log("WallDetectionSetup: Connected EnhancedPredictor to WallColorizer");
+                    }
+                }
+            }
+            catch (System.Exception e)
+            {
+                Debug.LogWarning($"WallDetectionSetup: Error connecting event listeners: {e.Message}");
+            }
+        }
+        catch (System.Exception e)
+        {
+            Debug.LogError($"WallDetectionSetup: Error in SetupEnhancedPredictor: {e.Message}\n{e.StackTrace}");
+        }
     }
 } 
