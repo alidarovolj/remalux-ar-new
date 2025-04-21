@@ -9,6 +9,8 @@ Shader "Custom/WallMaskShader"
         _Threshold ("Mask Threshold", Range(0.001, 0.5)) = 0.03
         _SmoothFactor ("Smoothing Factor", Range(0, 0.1)) = 0.01
         _EdgeEnhance ("Edge Enhancement", Range(0, 2)) = 1.2
+        _DepthOffset ("Depth Offset", Range(0, 1)) = 0.2
+        [Toggle] _UseDepthTest ("Use Depth Test", Int) = 1
         [Toggle] _DebugMode ("Debug Mode", Int) = 0
         [KeywordEnum(Mask, Edges, FinalBlend)] _DebugView ("Debug View Mode", Float) = 0
     }
@@ -18,6 +20,7 @@ Shader "Custom/WallMaskShader"
         LOD 100
         
         ZWrite Off
+        ZTest [_UseDepthTest]
         Blend SrcAlpha OneMinusSrcAlpha
         
         Pass
@@ -39,17 +42,21 @@ Shader "Custom/WallMaskShader"
             {
                 float2 uv : TEXCOORD0;
                 float4 vertex : SV_POSITION;
+                float4 screenPos : TEXCOORD1;
             };
             
             sampler2D _MainTex;
             sampler2D _MaskTex;
+            sampler2D _CameraDepthTexture;
             float4 _MainTex_ST;
             float4 _Color;
             float _Opacity;
             float _Threshold;
             float _SmoothFactor;
             float _EdgeEnhance;
+            float _DepthOffset;
             int _DebugMode;
+            int _UseDepthTest;
             float _DebugView;
             
             v2f vert (appdata v)
@@ -57,6 +64,7 @@ Shader "Custom/WallMaskShader"
                 v2f o;
                 o.vertex = UnityObjectToClipPos(v.vertex);
                 o.uv = TRANSFORM_TEX(v.uv, _MainTex);
+                o.screenPos = ComputeScreenPos(o.vertex);
                 return o;
             }
             
@@ -68,19 +76,21 @@ Shader "Custom/WallMaskShader"
                 // Sample the mask (where the walls are)
                 fixed4 maskColor = tex2D(_MaskTex, i.uv);
                 
-                // Combine all channels for better sensitivity, prioritizing red/green channels
-                // This helps with DeepLabV3 output format
-                fixed mask = max(maskColor.r * 1.2, max(maskColor.g * 1.1, maskColor.b));
+                // Combine all channels for better sensitivity, prioritizing red channel more (DeepLabV3 output format)
+                fixed mask = max(maskColor.r * 1.5, max(maskColor.g, maskColor.b));
                 
-                // Apply smooth thresholding instead of hard cutoff
+                // Sharpen the mask with adjusted thresholds to prevent bleeding
+                fixed sharpMask = step(_Threshold, mask);
+                
+                // Apply smooth thresholding for edges
                 fixed smoothMask = smoothstep(_Threshold - _SmoothFactor, _Threshold + _SmoothFactor, mask);
                 
                 // Edge detection with improved sensitivity
                 float edgeFactor = 1.0;
                 float edgeMask = 0.0;
                 
-                // Sample neighboring pixels for edge detection
-                float2 texelSize = float2(0.002, 0.002);
+                // Sample neighboring pixels for edge detection with adaptive texel size
+                float2 texelSize = float2(1.0 / _ScreenParams.x, 1.0 / _ScreenParams.y) * 2.0;
                 float2 offsets[8] = {
                     float2(texelSize.x, 0),
                     float2(-texelSize.x, 0),
@@ -94,14 +104,17 @@ Shader "Custom/WallMaskShader"
                 
                 int edgeCount = 0;
                 float neighborSum = 0;
+                float maxNeighborMask = 0;
                 
                 for (int j = 0; j < 8; j++) {
                     fixed4 neighborColor = tex2D(_MaskTex, i.uv + offsets[j]);
-                    fixed neighborMask = max(neighborColor.r * 1.2, max(neighborColor.g * 1.1, neighborColor.b));
+                    fixed neighborMask = max(neighborColor.r * 1.5, max(neighborColor.g, neighborColor.b));
                     
                     neighborSum += neighborMask;
+                    maxNeighborMask = max(maxNeighborMask, neighborMask);
                     
-                    if (neighborMask < _Threshold && mask > _Threshold) {
+                    // Only count as edge if there's a significant difference
+                    if (neighborMask < _Threshold * 0.8 && mask > _Threshold * 1.2) {
                         edgeCount++;
                     }
                 }
@@ -109,14 +122,23 @@ Shader "Custom/WallMaskShader"
                 // Calculate edge mask - more edges = brighter
                 edgeMask = float(edgeCount) / 8.0;
                 
-                // Enhance edges
+                // Apply more conservative edge enhancement (avoid over-brightening)
                 if (edgeCount > 0 && mask > _Threshold) {
-                    edgeFactor = _EdgeEnhance;
+                    edgeFactor = 1.0 + (_EdgeEnhance - 1.0) * (edgeCount / 8.0);
+                }
+                
+                // Reduce mask "stickiness" by checking if surrounding area has ANY mask detection
+                // This prevents isolated floating pixels
+                float surroundFactor = neighborSum / 8.0;
+                if (surroundFactor < _Threshold * 0.5) {
+                    smoothMask *= surroundFactor / (_Threshold * 0.5); // Fade out isolated pixels
                 }
                 
                 // Apply the color where the mask is present
                 fixed4 paintedColor = _Color * edgeFactor;
-                paintedColor.a = smoothMask * _Opacity;
+                
+                // Reduce opacity for potentially floating areas (no surrounding mask support)
+                paintedColor.a = smoothMask * _Opacity * saturate((neighborSum / 4.0) + 0.5);
                 
                 // Debug mode visualization options
                 if (_DebugMode == 1) {

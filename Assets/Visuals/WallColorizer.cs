@@ -18,6 +18,15 @@ public class WallColorizer : MonoBehaviour
     [Header("Runtime References")]
     public RenderTexture wallMaskRT;
     
+    [Header("Wall Detection Settings")]
+    [Range(0.001f, 0.1f)]
+    [SerializeField] private float maskThreshold = 0.03f;
+    [Range(0f, 1f)]
+    [SerializeField] private float edgeEnhancement = 1.2f;
+    [SerializeField] private bool useDepthTest = true;
+    [SerializeField] private bool stabilizeWalls = true;
+    [SerializeField] private int stabilizationFrames = 3;
+    
     private RenderTexture cameraView;
     private bool isInitialized = false;
     
@@ -33,11 +42,16 @@ public class WallColorizer : MonoBehaviour
     
     // Internal properties
     private RenderTexture wallVisRT;
+    private RenderTexture[] previousMasks;
+    private int currentMaskIndex = 0;
     
     // Shader property IDs for faster lookup
     private int wallColorPropID;
     private int wallOpacityPropID;
     private int wallMaskPropID;
+    private int maskThresholdPropID;
+    private int edgeEnhancePropID;
+    private int useDepthTestPropID;
     private int cameraPropID;
     
     // Wall detection statistics
@@ -133,13 +147,44 @@ public class WallColorizer : MonoBehaviour
                 wallMaskRT.Create();
             }
             
+            // Initialize mask stabilization
+            if (stabilizeWalls)
+            {
+                previousMasks = new RenderTexture[stabilizationFrames];
+                for (int i = 0; i < stabilizationFrames; i++)
+                {
+                    previousMasks[i] = new RenderTexture(width, height, 0, RenderTextureFormat.ARGB32);
+                    previousMasks[i].antiAliasing = 1;
+                    previousMasks[i].filterMode = FilterMode.Bilinear;
+                    previousMasks[i].Create();
+                    
+                    // Clear initially
+                    RenderTexture prev = RenderTexture.active;
+                    RenderTexture.active = previousMasks[i];
+                    GL.Clear(true, true, Color.clear);
+                    RenderTexture.active = prev;
+                }
+            }
+            
+            // Cache shader property IDs
+            wallColorPropID = Shader.PropertyToID("_Color");
+            wallOpacityPropID = Shader.PropertyToID("_Opacity");
+            wallMaskPropID = Shader.PropertyToID("_MaskTex");
+            maskThresholdPropID = Shader.PropertyToID("_Threshold");
+            edgeEnhancePropID = Shader.PropertyToID("_EdgeEnhance");
+            useDepthTestPropID = Shader.PropertyToID("_UseDepthTest");
+            cameraPropID = Shader.PropertyToID("_MainTex");
+            
             // Set material properties
             if (wallMaterial != null)
             {
                 try
                 {
-                    wallMaterial.SetColor("_Color", currentColor);
-                    wallMaterial.SetFloat("_Opacity", wallOpacity);
+                    wallMaterial.SetColor(wallColorPropID, currentColor);
+                    wallMaterial.SetFloat(wallOpacityPropID, wallOpacity);
+                    wallMaterial.SetFloat(maskThresholdPropID, maskThreshold);
+                    wallMaterial.SetFloat(edgeEnhancePropID, edgeEnhancement);
+                    wallMaterial.SetInt(useDepthTestPropID, useDepthTest ? 1 : 0);
                 }
                 catch (System.Exception e)
                 {
@@ -269,11 +314,53 @@ public class WallColorizer : MonoBehaviour
                 return;
             }
             
+            // Update material parameters
+            wallMaterial.SetFloat(maskThresholdPropID, maskThreshold);
+            wallMaterial.SetFloat(edgeEnhancePropID, edgeEnhancement);
+            wallMaterial.SetInt(useDepthTestPropID, useDepthTest ? 1 : 0);
+            
+            // Use stabilized mask if enabled
+            RenderTexture maskToUse = wallMaskRT;
+            if (stabilizeWalls && previousMasks != null && previousMasks.Length > 0)
+            {
+                // Store current mask in buffer
+                Graphics.Blit(wallMaskRT, previousMasks[currentMaskIndex]);
+                
+                // Create a temporary render texture for blending masks
+                RenderTexture blendedMask = RenderTexture.GetTemporary(
+                    wallMaskRT.width, wallMaskRT.height, 0, RenderTextureFormat.ARGB32);
+                
+                // Clear the blended mask first
+                RenderTexture prev = RenderTexture.active;
+                RenderTexture.active = blendedMask;
+                GL.Clear(true, true, Color.clear);
+                RenderTexture.active = prev;
+                
+                // Simple additive blending of the previous masks
+                Material blendMat = new Material(Shader.Find("Hidden/Internal-GUITexture"));
+                blendMat.SetInt("_SrcBlend", (int)UnityEngine.Rendering.BlendMode.One);
+                blendMat.SetInt("_DstBlend", (int)UnityEngine.Rendering.BlendMode.One);
+                
+                for (int i = 0; i < previousMasks.Length; i++)
+                {
+                    // Blend with lower weight for older frames
+                    float weight = 1.0f - (0.3f * i / previousMasks.Length);
+                    blendMat.SetFloat("_Alpha", weight);
+                    Graphics.Blit(previousMasks[i], blendedMask, blendMat);
+                }
+                
+                // Use the blended mask
+                maskToUse = blendedMask;
+                
+                // Update the current index for the circular buffer
+                currentMaskIndex = (currentMaskIndex + 1) % previousMasks.Length;
+            }
+            
             // Set mask texture for blending
-            wallMaterial.SetTexture("_MainTex", cameraView);
-            wallMaterial.SetTexture("_MaskTex", wallMaskRT);
-            wallMaterial.SetColor("_Color", currentColor);
-            wallMaterial.SetFloat("_Opacity", wallOpacity);
+            wallMaterial.SetTexture(cameraPropID, cameraView);
+            wallMaterial.SetTexture(wallMaskPropID, maskToUse);
+            wallMaterial.SetColor(wallColorPropID, currentColor);
+            wallMaterial.SetFloat(wallOpacityPropID, wallOpacity);
             
             // Create temporary render texture for blending
             RenderTexture blendResult = RenderTexture.GetTemporary(
@@ -285,7 +372,11 @@ public class WallColorizer : MonoBehaviour
             // Set result as display texture
             displayImage.texture = blendResult;
             
-            // Release temporary texture
+            // Release temporary textures
+            if (stabilizeWalls && maskToUse != wallMaskRT)
+            {
+                RenderTexture.ReleaseTemporary(maskToUse);
+            }
             RenderTexture.ReleaseTemporary(blendResult);
         }
         catch (System.Exception e)
@@ -317,6 +408,27 @@ public class WallColorizer : MonoBehaviour
                 wallMaskRT.antiAliasing = 1;
                 wallMaskRT.filterMode = FilterMode.Bilinear;
                 wallMaskRT.Create();
+                
+                // If we're using stabilization, recreate those buffers too
+                if (stabilizeWalls && previousMasks != null)
+                {
+                    for (int i = 0; i < previousMasks.Length; i++)
+                    {
+                        if (previousMasks[i] != null)
+                            previousMasks[i].Release();
+                            
+                        previousMasks[i] = new RenderTexture(maskTexture.width, maskTexture.height, 0, RenderTextureFormat.ARGB32);
+                        previousMasks[i].antiAliasing = 1;
+                        previousMasks[i].filterMode = FilterMode.Bilinear;
+                        previousMasks[i].Create();
+                        
+                        // Clear initially
+                        RenderTexture prev = RenderTexture.active;
+                        RenderTexture.active = previousMasks[i];
+                        GL.Clear(true, true, Color.clear);
+                        RenderTexture.active = prev;
+                    }
+                }
             }
             
             // Copy mask to our render texture
@@ -339,7 +451,7 @@ public class WallColorizer : MonoBehaviour
         {
             try
             {
-                wallMaterial.SetColor("_Color", currentColor);
+                wallMaterial.SetColor(wallColorPropID, currentColor);
             }
             catch (System.Exception e)
             {
@@ -349,22 +461,115 @@ public class WallColorizer : MonoBehaviour
     }
     
     /// <summary>
+    /// Set the wall color (compatibility method for ARMLController)
+    /// </summary>
+    public void SetColor(Color color)
+    {
+        SetWallColor(color);
+    }
+    
+    /// <summary>
     /// Set the wall opacity
     /// </summary>
     public void SetWallOpacity(float opacity)
     {
-        wallOpacity = Mathf.Clamp01(opacity);
+        if (!isInitialized)
+            return;
+            
+        try
+        {
+            wallOpacity = Mathf.Clamp01(opacity);
+            
+            if (wallMaterial != null)
+            {
+                wallMaterial.SetFloat(wallOpacityPropID, wallOpacity);
+                if (debugMode)
+                {
+                    Debug.Log($"Wall opacity set to {wallOpacity}");
+                }
+            }
+        }
+        catch (System.Exception e)
+        {
+            Debug.LogError($"WallColorizer: Error setting opacity: {e.Message}");
+        }
+    }
+    
+    /// <summary>
+    /// Set the mask threshold
+    /// </summary>
+    public void SetMaskThreshold(float threshold)
+    {
+        maskThreshold = Mathf.Clamp(threshold, 0.001f, 0.1f);
         
         if (wallMaterial != null)
         {
             try
             {
-                wallMaterial.SetFloat("_Opacity", wallOpacity);
+                wallMaterial.SetFloat(maskThresholdPropID, maskThreshold);
             }
             catch (System.Exception e)
             {
-                Debug.LogWarning($"Failed to set wall opacity: {e.Message}");
+                Debug.LogWarning($"Failed to set mask threshold: {e.Message}");
             }
+        }
+    }
+    
+    /// <summary>
+    /// Toggle depth testing for more accurate wall placement
+    /// </summary>
+    public void ToggleDepthTest(bool enable)
+    {
+        useDepthTest = enable;
+        
+        if (wallMaterial != null)
+        {
+            try
+            {
+                wallMaterial.SetInt(useDepthTestPropID, useDepthTest ? 1 : 0);
+            }
+            catch (System.Exception e)
+            {
+                Debug.LogWarning($"Failed to toggle depth test: {e.Message}");
+            }
+        }
+    }
+    
+    /// <summary>
+    /// Toggle wall mask stabilization
+    /// </summary>
+    public void ToggleStabilization(bool enable)
+    {
+        // Can't enable if it was off and buffers weren't created
+        if (enable && !stabilizeWalls && previousMasks == null)
+        {
+            InitializeStabilization();
+        }
+        
+        stabilizeWalls = enable;
+    }
+    
+    /// <summary>
+    /// Initialize stabilization buffers
+    /// </summary>
+    private void InitializeStabilization()
+    {
+        if (wallMaskRT == null)
+            return;
+            
+        previousMasks = new RenderTexture[stabilizationFrames];
+        for (int i = 0; i < stabilizationFrames; i++)
+        {
+            previousMasks[i] = new RenderTexture(wallMaskRT.width, wallMaskRT.height, 0, RenderTextureFormat.ARGB32);
+            previousMasks[i].antiAliasing = 1;
+            previousMasks[i].filterMode = FilterMode.Bilinear;
+            previousMasks[i].Create();
+            
+            // Clear initially
+            RenderTexture prev = RenderTexture.active;
+            RenderTexture.active = previousMasks[i];
+            GL.Clear(true, true, Color.clear);
+            RenderTexture.active = prev;
         }
     }
     
@@ -373,51 +578,112 @@ public class WallColorizer : MonoBehaviour
     /// </summary>
     public void ClearVisualization()
     {
-        if (displayImage != null && cameraView != null)
+        try
         {
-            displayImage.texture = cameraView;
+            // Clear the current wall mask
+            if (wallMaskRT != null && wallMaskRT.IsCreated())
+            {
+                RenderTexture prev = RenderTexture.active;
+                RenderTexture.active = wallMaskRT;
+                GL.Clear(true, true, Color.clear);
+                RenderTexture.active = prev;
+            }
+            
+            // Also clear any stabilization buffers
+            if (stabilizeWalls && previousMasks != null)
+            {
+                foreach (var mask in previousMasks)
+                {
+                    if (mask != null && mask.IsCreated())
+                    {
+                        RenderTexture prev = RenderTexture.active;
+                        RenderTexture.active = mask;
+                        GL.Clear(true, true, Color.clear);
+                        RenderTexture.active = prev;
+                    }
+                }
+            }
+            
+            // Make sure display shows the camera view
+            if (displayImage != null && cameraView != null)
+            {
+                displayImage.texture = cameraView;
+            }
+        }
+        catch (System.Exception e)
+        {
+            Debug.LogError($"WallColorizer: Error clearing visualization: {e.Message}");
         }
     }
     
-    void OnDestroy()
+    private void OnDestroy()
     {
-        // Release render textures
+        // Clean up render textures
         if (cameraView != null)
         {
             cameraView.Release();
-            cameraView = null;
+            Destroy(cameraView);
         }
         
         if (wallMaskRT != null)
         {
             wallMaskRT.Release();
-            wallMaskRT = null;
+            Destroy(wallMaskRT);
+        }
+        
+        if (previousMasks != null)
+        {
+            foreach (var mask in previousMasks)
+            {
+                if (mask != null)
+                {
+                    mask.Release();
+                    Destroy(mask);
+                }
+            }
         }
     }
-    
-    // Compatibility methods for existing code
-    
-    /// <summary>
-    /// Set wall color - compatibility alias for SetWallColor
-    /// </summary>
-    public void SetColor(Color color)
-    {
-        SetWallColor(color);
-    }
-    
-    /// <summary>
-    /// Set wall opacity - compatibility alias for SetWallOpacity
-    /// </summary>
+
+    // Adding method to fix CS1061 error in AppController.cs
     public void SetOpacity(float opacity)
     {
+        // Simply call the existing SetWallOpacity method
         SetWallOpacity(opacity);
     }
-    
-    /// <summary>
-    /// Clear wall visualization - compatibility alias for ClearVisualization
-    /// </summary>
+
+    // Adding method to fix CS1061 error in AppController.cs
     public void ClearWalls()
     {
+        // Clear the wall visualization
         ClearVisualization();
+        
+        // Clear the wall mask
+        if (wallMaskRT != null)
+        {
+            RenderTexture prev = RenderTexture.active;
+            RenderTexture.active = wallMaskRT;
+            GL.Clear(true, true, Color.clear);
+            RenderTexture.active = prev;
+        }
+        
+        // Also clear stabilization textures if they exist
+        if (previousMasks != null)
+        {
+            for (int i = 0; i < previousMasks.Length; i++)
+            {
+                if (previousMasks[i] != null)
+                {
+                    RenderTexture prev = RenderTexture.active;
+                    RenderTexture.active = previousMasks[i];
+                    GL.Clear(true, true, Color.clear);
+                    RenderTexture.active = prev;
+                }
+            }
+        }
+        
+        if (debugMode)
+        {
+            Debug.Log("Wall visualization cleared");
+        }
     }
 } 

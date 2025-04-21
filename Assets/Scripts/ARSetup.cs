@@ -1,5 +1,6 @@
 using UnityEngine;
 using UnityEngine.XR.ARFoundation;
+using UnityEngine.XR.ARSubsystems;
 
 public class ARSetup : MonoBehaviour
 {
@@ -45,11 +46,14 @@ public class ARSetup : MonoBehaviour
             originObject.AddComponent<SurfaceDetector>();
         }
 
-        // Включаем автофокус для камеры
+        // Включаем автофокус для камеры (обновленный код для новой версии ARFoundation)
         var cameraManager = FindObjectOfType<ARCameraManager>();
         if (cameraManager != null)
         {
-            cameraManager.requestedFocusMode = UnityEngine.XR.ARSubsystems.CameraFocusMode.Auto;
+            // Современные версии AR Foundation используют другой подход к настройке фокуса
+            #if UNITY_IOS
+            cameraManager.autoFocusRequested = true;
+            #endif
         }
 
         Debug.Log("AR Setup completed. Required components have been added to the scene.");

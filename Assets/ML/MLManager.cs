@@ -13,6 +13,7 @@ public class MLManager : MonoBehaviour
     private WallColorizer wallColorizer;
     
     private void Start()
+
     {
         if (deepLabPredictor == null)
         {
@@ -99,4 +100,4 @@ public class MLManager : MonoBehaviour
         
         return screenshot;
     }
-} 
+}

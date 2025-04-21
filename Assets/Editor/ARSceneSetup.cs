@@ -11,8 +11,10 @@ using System;
 
 public class ARSceneSetup : Editor
 {
-    private const string MODEL_PATH = "Assets/ML/DeepLab/Model/deeplab-mobilenetv2.onnx";
+    private const string MODEL_PATH = "Assets/ML/Models/model.onnx";
     private const string WALL_SHADER_PATH = "Assets/Shaders/WallMaskShader.shader";
+    private const int WALL_CLASS_ID = 7;
+    private const int SEGFORMER_INPUT_SIZE = 512;
     
     [MenuItem("AR Wall Detection/Setup Complete Scene")]
     public static void SetupARScene()
@@ -46,16 +48,29 @@ public class ARSceneSetup : Editor
                 EditorSceneManager.NewScene(NewSceneSetup.DefaultGameObjects);
             }
             
-            // Create all components first
+            // Create AR system components
+            GameObject arSystem = null;
             try 
             {
-                SetupARSystem();
+                arSystem = SetupARSystem();
                 Debug.Log("AR System setup completed");
             }
             catch (Exception e)
             {
                 Debug.LogError($"Error in AR System setup: {e.Message}\n{e.StackTrace}");
                 throw; // Re-throw to abort the process
+            }
+            
+            // Setup ML components
+            try
+            {
+                SetupMLComponents(arSystem);
+                Debug.Log("ML Components setup completed");
+            }
+            catch (Exception e)
+            {
+                Debug.LogError($"Error in ML Components setup: {e.Message}\n{e.StackTrace}");
+                // Continue with setup even if ML components fail
             }
             
             GameObject uiCanvas = null;
@@ -109,7 +124,7 @@ public class ARSceneSetup : Editor
         }
     }
     
-    private static void SetupARSystem()
+    private static GameObject SetupARSystem()
     {
         try
         {
@@ -204,8 +219,36 @@ public class ARSceneSetup : Editor
             planeManager.requestedDetectionMode = PlaneDetectionMode.Horizontal | PlaneDetectionMode.Vertical;
             planeManager.planePrefab = CreatePlanePrefab();
 
+            // Добавляем WallPlaneFilter для фильтрации плоскостей
+            WallPlaneFilter wallPlaneFilter = xrOriginObj.AddComponent<WallPlaneFilter>();
+            wallPlaneFilter.minPlaneArea = 0.5f;
+            wallPlaneFilter.minVerticalCos = 0.8f;
+            Debug.Log("Added WallPlaneFilter component for filtering vertical planes");
+
             // Добавляем Raycast Manager для определения поверхностей
             ARRaycastManager raycastManager = xrOriginObj.AddComponent<ARRaycastManager>();
+
+            // Создаем и настраиваем ARManager
+            GameObject arManagerObj = new GameObject("AR Manager");
+            arManagerObj.transform.SetParent(arSystem.transform);
+            ARManager arManager = arManagerObj.AddComponent<ARManager>();
+            
+            // Устанавливаем ссылки на необходимые компоненты
+            SerializedObject serializedARManager = new SerializedObject(arManager);
+            var arSessionProp = serializedARManager.FindProperty("arSession");
+            if (arSessionProp != null)
+            {
+                arSessionProp.objectReferenceValue = arSession;
+            }
+            
+            var planeManagerProp = serializedARManager.FindProperty("planeManager");
+            if (planeManagerProp != null)
+            {
+                planeManagerProp.objectReferenceValue = planeManager;
+            }
+            
+            serializedARManager.ApplyModifiedProperties();
+            Debug.Log("ARManager created and configured successfully");
 
             // Добавляем наш SurfaceDetector
             SurfaceDetector surfaceDetector = xrOriginObj.AddComponent<SurfaceDetector>();
@@ -234,6 +277,8 @@ public class ARSceneSetup : Editor
             AssetDatabase.SaveAssets();
 
             Debug.Log("Surface detection components have been added successfully");
+
+            return arSystem;
         }
         catch (Exception e)
         {
@@ -708,7 +753,7 @@ public class ARSceneSetup : Editor
             MLManager mlManager = GameObject.Find("ML Manager")?.GetComponent<MLManager>();
             ARManager arManager = GameObject.Find("AR Manager")?.GetComponent<ARManager>();
             DeepLabPredictor predictor = GameObject.Find("DeepLab Predictor")?.GetComponent<DeepLabPredictor>();
-            EnhancedDeepLabPredictor enhancedPredictor = GameObject.Find("DeepLab Predictor")?.GetComponent<EnhancedDeepLabPredictor>();
+            EnhancedDeepLabPredictor enhancedPredictor = GameObject.Find("Enhanced DeepLab Predictor")?.GetComponent<EnhancedDeepLabPredictor>();
             WallColorizer wallColorizer = GameObject.Find("Wall Colorizer")?.GetComponent<WallColorizer>();
             ARSession arSession = GameObject.Find("AR Session")?.GetComponent<ARSession>();
             
@@ -746,6 +791,19 @@ public class ARSceneSetup : Editor
             {
                 Debug.LogError("One or more required components are missing. Scene setup might be incomplete.");
                 // Continue with setup for components that do exist
+            }
+            
+            // Set up ARMLController references to ARManager
+            if (armlController != null && arManager != null)
+            {
+                SerializedObject serializedArmlController = new SerializedObject(armlController);
+                var arManagerProp = serializedArmlController.FindProperty("arManager");
+                if (arManagerProp != null)
+                {
+                    arManagerProp.objectReferenceValue = arManager;
+                    Debug.Log("Set ARManager reference in ARMLController");
+                }
+                serializedArmlController.ApplyModifiedProperties();
             }
             
             // Set up WallColorizer references FIRST to ensure it has display image
