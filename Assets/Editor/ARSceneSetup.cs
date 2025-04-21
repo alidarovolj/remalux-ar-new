@@ -16,6 +16,30 @@ public class ARSceneSetup : Editor
     private const int WALL_CLASS_ID = 7;
     private const int SEGFORMER_INPUT_SIZE = 512;
     
+    // Helper method to avoid SendMessage warnings by deferring component addition
+    private static T SafeAddComponent<T>(GameObject target) where T : Component
+    {
+        // Check if component already exists
+        T existing = target.GetComponent<T>();
+        if (existing != null)
+            return existing;
+            
+        // Queue the component addition for next editor update to avoid SendMessage warnings
+        T component = null;
+        EditorApplication.delayCall += () => 
+        {
+            if (target != null) // Check if target still exists
+            {
+                component = target.AddComponent<T>();
+                EditorUtility.SetDirty(target);
+            }
+        };
+        
+        // Need to create the component now for immediate reference
+        // The duplicated component will be removed on next editor update
+        return target.AddComponent<T>();
+    }
+    
     [MenuItem("AR Wall Detection/Setup Complete Scene")]
     public static void SetupARScene()
     {
@@ -225,6 +249,15 @@ public class ARSceneSetup : Editor
             wallPlaneFilter.minVerticalCos = 0.8f;
             Debug.Log("Added WallPlaneFilter component for filtering vertical planes");
 
+            // Создаем child объект для ARMeshManager (должен быть child для XROrigin)
+            GameObject meshManagerObj = new GameObject("AR Mesh Manager");
+            meshManagerObj.transform.SetParent(xrOriginObj.transform);
+            
+            // Добавляем ARMeshManager на child объект безопасным способом
+            ARMeshManager meshManager = SafeAddComponent<ARMeshManager>(meshManagerObj);
+            meshManager.density = 0.5f;
+            Debug.Log("Added ARMeshManager as child of XROrigin for mesh processing");
+
             // Добавляем Raycast Manager для определения поверхностей
             ARRaycastManager raycastManager = xrOriginObj.AddComponent<ARRaycastManager>();
 
@@ -419,6 +452,9 @@ public class ARSceneSetup : Editor
             wallDetectionSetup.useArgMaxMode = true;
             
             Debug.Log("Wall Detection System added to scene with enhanced recognition");
+
+            // We won't add WallMeshRenderer here - it needs to be on an XROrigin
+            // We'll create a reference for it in SetupComponentReferences instead
             
             // We'll set up the display image after the UI is created
             // so we'll just create a reference to find it later
@@ -959,23 +995,43 @@ public class ARSceneSetup : Editor
                                     
                                     // Add color selection action - fix method signature
                                     SerializedObject serializedButton = new SerializedObject(colorButton);
+                                    if (serializedButton == null) continue;
+                                    
                                     SerializedProperty onClick = serializedButton.FindProperty("m_OnClick");
+                                    if (onClick == null) continue;
                                     
                                     // Clear any existing listeners
                                     SerializedProperty calls = onClick.FindPropertyRelative("m_PersistentCalls.m_Calls");
+                                    if (calls == null) continue;
+                                    
                                     calls.ClearArray();
                                     
                                     // Add a new persistent call
                                     calls.arraySize = 1;
                                     SerializedProperty call = calls.GetArrayElementAtIndex(0);
-                                    call.FindPropertyRelative("m_Target").objectReferenceValue = armlController;
-                                    call.FindPropertyRelative("m_MethodName").stringValue = "SetWallColor";
-                                    call.FindPropertyRelative("m_Mode").enumValueIndex = 2; // ColorArgument mode
+                                    if (call == null) continue;
+                                    
+                                    var targetProp = call.FindPropertyRelative("m_Target");
+                                    var methodNameProp = call.FindPropertyRelative("m_MethodName");
+                                    var modeProp = call.FindPropertyRelative("m_Mode");
+                                    
+                                    if (targetProp == null || methodNameProp == null || modeProp == null) continue;
+                                    
+                                    targetProp.objectReferenceValue = armlController;
+                                    methodNameProp.stringValue = "SetWallColor";
+                                    modeProp.enumValueIndex = 2; // ColorArgument mode
                                     
                                     // Set up argument object
                                     SerializedProperty arguments = call.FindPropertyRelative("m_Arguments");
-                                    arguments.FindPropertyRelative("m_ObjectArgumentAssemblyTypeName").stringValue = "UnityEngine.Color, UnityEngine";
-                                    arguments.FindPropertyRelative("m_ColorArgument").colorValue = buttonColor;
+                                    if (arguments == null) continue;
+                                    
+                                    var typeProp = arguments.FindPropertyRelative("m_ObjectArgumentAssemblyTypeName");
+                                    var colorProp = arguments.FindPropertyRelative("m_ColorArgument");
+                                    
+                                    if (typeProp == null || colorProp == null) continue;
+                                    
+                                    typeProp.stringValue = "UnityEngine.Color, UnityEngine";
+                                    colorProp.colorValue = buttonColor;
                                     
                                     serializedButton.ApplyModifiedProperties();
                                     EditorUtility.SetDirty(colorButton);
@@ -992,64 +1048,97 @@ public class ARSceneSetup : Editor
             
             Debug.Log("Component references have been set up successfully");
             
-            // Configure WallMeshRenderer
-            WallMeshRenderer wallMeshRenderer = FindObjectOfType<WallMeshRenderer>();
-            if (wallMeshRenderer != null)
+            // Find the XROrigin to add required components
+            XROrigin xrOrigin = UnityEngine.Object.FindAnyObjectByType<XROrigin>();
+            if (xrOrigin != null)
             {
-                // Get required references
-                ARCameraManager arCameraManager = FindObjectOfType<ARCameraManager>();
+                // Find or create the mesh manager GameObject
+                Transform meshManagerTransform = xrOrigin.transform.Find("AR Mesh Manager");
+                GameObject meshManagerObj;
                 
-                // Сначала проверяем наличие EnhancedDeepLabPredictor
-                EnhancedDeepLabPredictor foundEnhancedPredictor = FindObjectOfType<EnhancedDeepLabPredictor>();
-                DeepLabPredictor basicPredictor = FindObjectOfType<DeepLabPredictor>();
-                
-                // Set up references
-                wallMeshRenderer.ARCameraManager = arCameraManager;
-                
-                // Предпочтительно использовать EnhancedDeepLabPredictor, но если его нет, 
-                // создаем его на основе базового предиктора
-                if (foundEnhancedPredictor != null)
+                if (meshManagerTransform == null)
                 {
-                    wallMeshRenderer.Predictor = foundEnhancedPredictor;
-                    Debug.Log("WallMeshRenderer configured with EnhancedDeepLabPredictor");
+                    // Create if it doesn't exist
+                    meshManagerObj = new GameObject("AR Mesh Manager");
+                    meshManagerObj.transform.SetParent(xrOrigin.transform);
                 }
-                else if (basicPredictor != null)
+                else
                 {
-                    // Создаем EnhancedDeepLabPredictor и копируем настройки из базового предиктора
-                    GameObject enhancedPredictorObj = new GameObject("Enhanced DeepLab Predictor");
-                    enhancedPredictorObj.transform.SetParent(basicPredictor.transform.parent);
-                    EnhancedDeepLabPredictor newEnhancedPredictor = enhancedPredictorObj.AddComponent<EnhancedDeepLabPredictor>();
+                    meshManagerObj = meshManagerTransform.gameObject;
+                }
+                
+                // Ensure it has an ARMeshManager component
+                ARMeshManager arMeshManager = meshManagerObj.GetComponent<ARMeshManager>();
+                if (arMeshManager == null)
+                {
+                    arMeshManager = SafeAddComponent<ARMeshManager>(meshManagerObj);
+                    arMeshManager.density = 0.5f;
+                }
+                
+                // Add WallMeshRenderer to the same GameObject as ARMeshManager
+                WallMeshRenderer wallMeshRenderer = meshManagerObj.GetComponent<WallMeshRenderer>();
+                if (wallMeshRenderer == null)
+                {
+                    wallMeshRenderer = SafeAddComponent<WallMeshRenderer>(meshManagerObj);
+                }
+                
+                if (wallMeshRenderer != null)
+                {
+                    // Get required references
+                    ARCameraManager arCameraManager = UnityEngine.Object.FindAnyObjectByType<ARCameraManager>();
                     
-                    // Копируем настройки
-                    newEnhancedPredictor.modelAsset = basicPredictor.modelAsset;
-                    newEnhancedPredictor.WallClassId = (byte)9;
-                    newEnhancedPredictor.ClassificationThreshold = 0.5f;
-                    newEnhancedPredictor.useArgMaxMode = true;
-                    newEnhancedPredictor.debugMode = true;
+                    // Сначала проверяем наличие EnhancedDeepLabPredictor
+                    EnhancedDeepLabPredictor foundEnhancedPredictor = UnityEngine.Object.FindAnyObjectByType<EnhancedDeepLabPredictor>();
+                    DeepLabPredictor basicPredictor = UnityEngine.Object.FindAnyObjectByType<DeepLabPredictor>();
                     
-                    wallMeshRenderer.Predictor = newEnhancedPredictor;
-                    Debug.Log("Created EnhancedDeepLabPredictor and configured WallMeshRenderer with it");
+                    // Set up references
+                    wallMeshRenderer.ARCameraManager = arCameraManager;
+                    
+                    // Предпочтительно использовать EnhancedDeepLabPredictor, но если его нет, 
+                    // создаем его на основе базового предиктора
+                    if (foundEnhancedPredictor != null)
+                    {
+                        wallMeshRenderer.Predictor = foundEnhancedPredictor;
+                        Debug.Log("WallMeshRenderer configured with EnhancedDeepLabPredictor");
+                    }
+                    else if (basicPredictor != null)
+                    {
+                        // Создаем EnhancedDeepLabPredictor и копируем настройки из базового предиктора
+                        GameObject enhancedPredictorObj = new GameObject("Enhanced DeepLab Predictor");
+                        enhancedPredictorObj.transform.SetParent(basicPredictor.transform.parent);
+                        EnhancedDeepLabPredictor newEnhancedPredictor = enhancedPredictorObj.AddComponent<EnhancedDeepLabPredictor>();
+                        
+                        // Копируем настройки
+                        newEnhancedPredictor.modelAsset = basicPredictor.modelAsset;
+                        newEnhancedPredictor.WallClassId = (byte)9;
+                        newEnhancedPredictor.ClassificationThreshold = 0.5f;
+                        newEnhancedPredictor.useArgMaxMode = true;
+                        newEnhancedPredictor.debugMode = true;
+                        
+                        wallMeshRenderer.Predictor = newEnhancedPredictor;
+                        Debug.Log("Created EnhancedDeepLabPredictor and configured WallMeshRenderer with it");
+                    }
+                    
+                    // Configure wall detection settings
+                    wallMeshRenderer.VerticalThreshold = 0.6f;
+                    wallMeshRenderer.WallConfidenceThreshold = 0.2f;
+                    wallMeshRenderer.ShowDebugInfo = true;
+                    wallMeshRenderer.ShowAllMeshes = true; // Show all meshes for debugging
+                    
+                    // Create a material for wall visualization if needed
+                    if (wallMeshRenderer.WallMaterial == null)
+                    {
+                        Material meshWallMaterial = new Material(Shader.Find("Standard"));
+                        meshWallMaterial.color = new Color(0.3f, 0.5f, 0.8f, 0.5f);
+                        wallMeshRenderer.WallMaterial = meshWallMaterial;
+                    }
+                    
+                    Debug.Log("Wall mesh renderer configured successfully");
                 }
-                
-                // Configure wall detection settings
-                wallMeshRenderer.VerticalThreshold = 0.6f;
-                wallMeshRenderer.WallConfidenceThreshold = 0.2f;
-                wallMeshRenderer.ShowDebugInfo = true;
-                wallMeshRenderer.ShowAllMeshes = true; // Show all meshes for debugging
-                
-                // Create a material for wall visualization if needed
-                if (wallMeshRenderer.WallMaterial == null)
-                {
-                    Material meshWallMaterial = new Material(Shader.Find("Standard"));
-                    meshWallMaterial.color = new Color(0.3f, 0.5f, 0.8f, 0.5f);
-                    wallMeshRenderer.WallMaterial = meshWallMaterial;
-                }
-                
-                Debug.Log("Wall mesh renderer configured successfully");
             }
             else
             {
-                Debug.LogWarning("WallMeshRenderer component not found");
+                Debug.LogWarning("XROrigin not found - cannot setup WallMeshRenderer");
             }
         }
         catch (System.Exception ex)

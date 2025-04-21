@@ -9,12 +9,12 @@ public class WallPlaneFilterSetup : Editor
     public static void AddWallPlaneFilter()
     {
         // Пытаемся найти ARPlaneManager
-        ARPlaneManager planeManager = FindObjectOfType<ARPlaneManager>();
+        ARPlaneManager planeManager = UnityEngine.Object.FindAnyObjectByType<ARPlaneManager>();
         
         if (planeManager == null)
         {
             // Если не нашли, проверяем XR Origin и создаем на нем
-            XROrigin xrOrigin = FindObjectOfType<XROrigin>();
+            XROrigin xrOrigin = UnityEngine.Object.FindAnyObjectByType<XROrigin>();
             if (xrOrigin == null)
             {
                 Debug.LogError("XR Origin not found in scene! Cannot add WallPlaneFilter.");
@@ -67,6 +67,6 @@ public class WallPlaneFilterSetup : Editor
     public static bool ValidateAddWallPlaneFilter()
     {
         // Команда доступна, если есть XR Origin или ARPlaneManager
-        return FindObjectOfType<XROrigin>() != null || FindObjectOfType<ARPlaneManager>() != null;
+        return UnityEngine.Object.FindAnyObjectByType<XROrigin>() != null || UnityEngine.Object.FindAnyObjectByType<ARPlaneManager>() != null;
     }
 } 

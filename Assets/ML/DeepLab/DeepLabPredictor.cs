@@ -11,8 +11,8 @@ public class DeepLabPredictor : MonoBehaviour
     private IWorker engine;
 
     [Header("Input/Output Settings")]
-    public int inputWidth = 513;
-    public int inputHeight = 513;
+    public int inputWidth = 512;
+    public int inputHeight = 512;
     
     [Tooltip("Name of input tensor in the ONNX model")]
     public string inputName = "ImageTensor";

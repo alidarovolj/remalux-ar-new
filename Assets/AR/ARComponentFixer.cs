@@ -26,7 +26,7 @@ public class ARComponentFixer : MonoBehaviour
     public bool configureWallDetection = true;
     public bool ensureWallMeshRenderer = true;
     public bool configureSegmentation = true;
-    public int wallClassId = 1;
+    public int wallClassId = 9; // Updated to ADE20K wall class ID (9)
     public float classificationThreshold = 0.05f;
     public float verticalThreshold = 0.6f;
     public float wallConfidenceThreshold = 0.05f;

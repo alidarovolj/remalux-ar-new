@@ -1238,8 +1238,8 @@ Shader ""Hidden/BasicBlendShader"" {
             // Create placeholder textures
             if (Application.isPlaying)
             {
-                // Use default size initially, will be resized as needed
-                InitializeResultTextures(inputWidth > 0 ? inputWidth : 513, inputHeight > 0 ? inputHeight : 513);
+                // Use default size of 512 instead of 513
+                InitializeResultTextures(inputWidth > 0 ? inputWidth : 512, inputHeight > 0 ? inputHeight : 512);
             }
         }
         catch (System.Exception e)
@@ -1445,7 +1445,7 @@ Shader ""Hidden/BasicBlendShader"" {
                 }
                 
                 // Recreate textures with current settings
-                InitializeResultTextures(inputWidth > 0 ? inputWidth : 513, inputHeight > 0 ? inputHeight : 513);
+                InitializeResultTextures(inputWidth > 0 ? inputWidth : 512, inputHeight > 0 ? inputHeight : 512);
                 
                 if (debugMode && verbose)
                     Debug.Log("EnhancedDeepLabPredictor: Textures refreshed");
