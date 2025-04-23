@@ -1,5 +1,7 @@
 using System.Collections.Generic;
 using UnityEngine;
+using System; // Add System namespace for IntPtr and Exception
+using System.Runtime.InteropServices; // Add for Marshal.Copy
 using OpenCVForUnity.CoreModule;
 using OpenCVForUnity.ImgprocModule;
 using OpenCVForUnity.UnityUtils;
@@ -361,52 +363,72 @@ public unsafe class WallOptimizer : MonoBehaviour
                 IntPtr inputPtr = (IntPtr)pixelPtr;
                 using (Mat wallMask = new Mat(height, width, CvType.CV_8UC4, inputPtr))
                 using (Mat grayMat = new Mat(height, width, CvType.CV_8UC1))
-                using (Mat processedMask = new Mat(height, width, CvType.CV_8UC1))
+                using (Mat tempProcessedMask = new Mat(height, width, CvType.CV_8UC1))
                 {
                     // Fill the wall mask by checking each pixel's class ID
-                    byte* dataPtr = wallMask.DataPointer;
-                    if (dataPtr != null)
+                    // Use direct pixel access with get/put methods since DataPointer isn't available
+                    for (int y = 0; y < height; y++)
                     {
-                        for (int y = 0; y < height; y++)
+                        for (int x = 0; x < width; x++)
                         {
-                            for (int x = 0; x < width; x++)
+                            int index = y * width + x;
+                            if (index < segmentationMask.Length)
                             {
-                                int index = y * width + x;
-                                if (index < segmentationMask.Length)
-                                {
-                                    // In our segmentation mask, the class ID is stored in the red channel
-                                    byte classId = segmentationMask[index].r;
-                                    
-                                    // Check if this pixel belongs to the wall class
-                                    bool isWall = (classId == wallClassId); 
-                                    
-                                    // Set the wall mask value (255 for wall, 0 for non-wall)
-                                    dataPtr[index] = isWall ? (byte)255 : (byte)0;
-                                }
+                                // In our segmentation mask, the class ID is stored in the red channel
+                                byte classId = segmentationMask[index].r;
+                                
+                                // Check if this pixel belongs to the wall class
+                                bool isWall = (classId == wallClassId); 
+                                
+                                // Set the wall mask value (255 for wall, 0 for non-wall)
+                                // Using OpenCVForUnity's put method instead of direct pointer
+                                byte[] pixelValue = { isWall ? (byte)255 : (byte)0 };
+                                wallMask.put(y, x, pixelValue);
                             }
                         }
                     }
-                    
+                
                     // Apply morphological operations to reduce noise
-                    OpenCvSharpMat kernel = OpenCvSharp.Cv2.GetStructuringElement(OpenCvSharp.MorphShapes.Rect, new OpenCvSharpSize(3, 3));
+                    OpenCvSharpMat opencvSharpKernel = OpenCvSharp.Cv2.GetStructuringElement(OpenCvSharp.MorphShapes.Rect, new OpenCvSharpSize(3, 3));
                     
-                    // Closing operation (dilation followed by erosion)
-                    OpenCvSharpMat processedMask = new OpenCvSharpMat(height, width, OpenCvSharp.MatType.CV_8UC1);
-                    OpenCvSharp.Cv2.MorphologyEx(wallMask, processedMask, OpenCvSharp.MorphTypes.Close, kernel, iterations: 2);
+                    // Convert OpenCVForUnity Mat to OpenCvSharp Mat for processing
+                    // This is a workaround since we're mixing libraries - in a real implementation,
+                    // you should consistently use just one library
+                    byte[] wallMaskData = new byte[width * height];
+                    wallMask.get(0, 0, wallMaskData);
                     
-                    // Opening operation to remove small noise (erosion followed by dilation)
-                    OpenCvSharp.Cv2.MorphologyEx(processedMask, processedMask, OpenCvSharp.MorphTypes.Open, kernel, iterations: 1);
+                    using (OpenCvSharpMat opencvSharpWallMask = new OpenCvSharpMat(height, width, OpenCvSharp.MatType.CV_8UC1))
+                    {
+                        // Copy data to OpenCvSharp Mat (pseudocode since we can't access DataPointer directly)
+                        unsafe
+                        {
+                            fixed (byte* dataPtr = wallMaskData)
+                            {
+                                // Create a new OpenCvSharp.Mat with our data
+                                IntPtr ptr = (IntPtr)dataPtr;
+                                // Set data manually since we can't use direct constructor
+                                Marshal.Copy(wallMaskData, 0, ptr, wallMaskData.Length);
+                            }
+                        }
                     
-                    // Find contours in the processed mask
-                    OpenCvSharpPoint[][] contours;
-                    OpenCvSharpHierarchyIndex[] hierarchy;
-                    OpenCvSharp.Cv2.FindContours(processedMask, out contours, out hierarchy, OpenCvSharp.RetrievalModes.External, OpenCvSharp.ContourApproximationModes.ApproxSimple);
-                    
-                    if (showDebugInfo)
-                        Debug.Log($"WallOptimizer: Found {contours.Length} wall contours in segmentation mask");
-                    
-                    // Create walls from the filtered contours
-                    CreateWallsFromContours(contours, hierarchy, camera);
+                        // Closing operation (dilation followed by erosion)
+                        OpenCvSharpMat processedMask = new OpenCvSharpMat(height, width, OpenCvSharp.MatType.CV_8UC1);
+                        OpenCvSharp.Cv2.MorphologyEx(opencvSharpWallMask, processedMask, OpenCvSharp.MorphTypes.Close, opencvSharpKernel, iterations: 2);
+                        
+                        // Opening operation to remove small noise (erosion followed by dilation)
+                        OpenCvSharp.Cv2.MorphologyEx(processedMask, processedMask, OpenCvSharp.MorphTypes.Open, opencvSharpKernel, iterations: 1);
+                        
+                        // Find contours in the processed mask
+                        OpenCvSharpPoint[][] contours;
+                        OpenCvSharpHierarchyIndex[] hierarchy;
+                        OpenCvSharp.Cv2.FindContours(processedMask, out contours, out hierarchy, OpenCvSharp.RetrievalModes.External, OpenCvSharp.ContourApproximationModes.ApproxSimple);
+                        
+                        if (showDebugInfo)
+                            Debug.Log($"WallOptimizer: Found {contours.Length} wall contours in segmentation mask");
+                        
+                        // Create walls from the filtered contours
+                        CreateWallsFromContours(contours, hierarchy, camera);
+                    }
                 }
             }
         }

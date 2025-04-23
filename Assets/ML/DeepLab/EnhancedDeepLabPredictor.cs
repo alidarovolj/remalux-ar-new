@@ -468,45 +468,6 @@ namespace ML.DeepLab
             RenderTexture.active = prevRT;
         }
         
-        IEnumerator ProcessFrames()
-        {
-            while (true)
-            {
-                if (isModelLoaded && localEngine != null && mainCamera != null)
-                {
-                    // Capture camera frame
-                    Texture2D cameraTexture = CaptureCamera(mainCamera, inputWidth, inputHeight);
-                    
-                    if (cameraTexture != null)
-                    {
-                        // Process the frame
-                        ProcessTexture(cameraTexture);
-                        
-                        // Clean up temporary texture
-                        Destroy(cameraTexture);
-                    }
-                }
-                
-                // Wait before processing next frame
-                yield return new WaitForSeconds(0.1f); // 10 FPS to save resources
-            }
-        }
-        
-        public Texture2D CaptureCamera(Camera camera, int width, int height)
-        {
-            RenderTexture rt = new RenderTexture(width, height, 24);
-            camera.targetTexture = rt;
-            Texture2D screenShot = new Texture2D(width, height, TextureFormat.RGB24, false);
-            camera.Render();
-            RenderTexture.active = rt;
-            screenShot.ReadPixels(new Rect(0, 0, width, height), 0, 0);
-            screenShot.Apply();
-            camera.targetTexture = null;
-            RenderTexture.active = null;
-            Destroy(rt);
-            return screenShot;
-        }
-        
         /// <summary>
         /// Process a texture for segmentation
         /// </summary>
@@ -626,6 +587,95 @@ namespace ML.DeepLab
                 Debug.LogError($"EnhancedDeepLabPredictor: Error processing frame: {e.Message}");
                 return null;
             }
+        }
+        
+        /// <summary>
+        /// Process a single texture frame for segmentation
+        /// </summary>
+        /// <param name="inputTexture">The Texture2D to process</param>
+        public void ProcessFrames(Texture2D inputTexture)
+        {
+            if (inputTexture == null)
+            {
+                Debug.LogError("EnhancedDeepLabPredictor: Input texture is null for ProcessFrames");
+                return;
+            }
+
+            try
+            {
+                if (debugMode && verbose)
+                    Debug.Log($"EnhancedDeepLabPredictor: Processing single frame with texture {inputTexture.width}x{inputTexture.height}");
+                
+                // Create a temporary texture to avoid modifying the input
+                RenderTexture tempRT = RenderTexture.GetTemporary(inputTexture.width, inputTexture.height, 0, RenderTextureFormat.ARGB32);
+                Graphics.Blit(inputTexture, tempRT);
+                
+                // Process the temporary texture
+                RenderTexture result = ProcessTexture(tempRT);
+                
+                // Release the temporary texture
+                RenderTexture.ReleaseTemporary(tempRT);
+                
+                // Fire segmentation event if needed
+                if (result != null && OnSegmentationResult != null)
+                {
+                    OnSegmentationResult.Invoke(result);
+                }
+                
+                // Also update the segmentation texture
+                if (result != null && OnSegmentationUpdated != null)
+                {
+                    Texture2D segTex = ConvertRenderTextureToTexture2D(result);
+                    if (segTex != null)
+                    {
+                        OnSegmentationUpdated.Invoke(segTex);
+                        // Don't destroy segTex as it's passed to the event
+                    }
+                }
+            }
+            catch (System.Exception e)
+            {
+                Debug.LogError($"EnhancedDeepLabPredictor: Error processing frame: {e.Message}");
+            }
+        }
+        
+        IEnumerator ProcessFrames()
+        {
+            while (true)
+            {
+                if (isModelLoaded && localEngine != null && mainCamera != null)
+                {
+                    // Capture camera frame
+                    Texture2D cameraTexture = CaptureCamera(mainCamera, inputWidth, inputHeight);
+                    
+                    if (cameraTexture != null)
+                    {
+                        // Process the frame
+                        ProcessTexture(cameraTexture);
+                        
+                        // Clean up temporary texture
+                        Destroy(cameraTexture);
+                    }
+                }
+                
+                // Wait before processing next frame
+                yield return new WaitForSeconds(0.1f); // 10 FPS to save resources
+            }
+        }
+        
+        public Texture2D CaptureCamera(Camera camera, int width, int height)
+        {
+            RenderTexture rt = new RenderTexture(width, height, 24);
+            camera.targetTexture = rt;
+            Texture2D screenShot = new Texture2D(width, height, TextureFormat.RGB24, false);
+            camera.Render();
+            RenderTexture.active = rt;
+            screenShot.ReadPixels(new Rect(0, 0, width, height), 0, 0);
+            screenShot.Apply();
+            camera.targetTexture = null;
+            RenderTexture.active = null;
+            Destroy(rt);
+            return screenShot;
         }
         
         /// <summary>
