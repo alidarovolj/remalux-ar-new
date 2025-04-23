@@ -1,15 +1,20 @@
-using UnityEngine;
-using Unity.Barracuda;
+using System;
 using System.Collections;
 using System.Collections.Generic;
-using System.Linq;
+using Unity.Barracuda;
+using UnityEngine;
+using UnityEngine.Rendering;
 
 namespace ML.DeepLab
 {
-    // Add ReadOnly attribute class
+    /// <summary>
+    /// Custom property attribute to mark ReadOnly fields in the inspector
+    /// </summary>
     public class ReadOnlyAttribute : PropertyAttribute { }
     
-    // Add missing DeepLabPreprocessor class
+    /// <summary>
+    /// Handles preprocessing of images for DeepLab model
+    /// </summary>
     public class DeepLabPreprocessor
     {
         public RenderTexture ProcessImage(Texture inputTexture, bool preprocess)
@@ -24,8 +29,7 @@ namespace ML.DeepLab
     }
     
     /// <summary>
-    /// Enhanced version of DeepLabPredictor with additional features
-    /// and optimizations for more accurate wall detection.
+    /// Enhanced version of DeepLabPredictor with additional post-processing for wall detection
     /// </summary>
     public class EnhancedDeepLabPredictor : DeepLabPredictor
     {
