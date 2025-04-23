@@ -643,6 +643,9 @@ public unsafe class WallOptimizer : MonoBehaviour
     {
         if (meshRenderer == null) return;
         
+        // Объявляем wallIndex вначале метода
+        int wallIndex = -1;
+        
         // Skip if dimensions are too small
         if (width < minContourWidth || height < minContourHeight)
         {
@@ -732,6 +735,9 @@ public unsafe class WallOptimizer : MonoBehaviour
             meshRenderer.UpdateWallMesh(nearbyWallIndex, newCenter, newSize, Quaternion.LookRotation(normal));
             existingWallBounds[nearbyWallIndex] = new Bounds(newCenter, newSize);
             
+            // Устанавливаем wallIndex как индекс существующей стены
+            wallIndex = nearbyWallIndex;
+            
             if (showDebugInfo)
             {
                 Debug.Log($"WallOptimizer: Merged with existing wall at index {nearbyWallIndex}, new size: {newSize}");
@@ -744,7 +750,7 @@ public unsafe class WallOptimizer : MonoBehaviour
             Vector3 size = new Vector3(wallWidth, wallHeight, wallThickness);
             
             // Create the wall mesh
-            int wallIndex = meshRenderer.CreateWallMesh(position, size, rotation);
+            wallIndex = meshRenderer.CreateWallMesh(position, size, rotation);
             
             if (wallIndex >= 0)
             {
