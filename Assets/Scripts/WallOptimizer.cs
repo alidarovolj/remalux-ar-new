@@ -76,7 +76,7 @@ namespace OpenCvSharp
         public int Width;
         public int Height;
     }
-    public struct Mat : System.IDisposable
+    public unsafe struct Mat : System.IDisposable
     {
         // Remove parameterless constructor for C# 9.0 compatibility
         // In C# 9.0, structs can't have parameterless constructors

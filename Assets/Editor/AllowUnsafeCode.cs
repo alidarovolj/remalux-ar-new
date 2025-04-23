@@ -1,6 +1,7 @@
 using UnityEditor;
 using System.Reflection;
 using System.IO;
+using UnityEngine;
 
 [InitializeOnLoad]
 public class AllowUnsafeCode
