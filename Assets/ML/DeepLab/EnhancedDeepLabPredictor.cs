@@ -4,12 +4,18 @@ using System.Collections.Generic;
 using Unity.Barracuda;
 using UnityEngine;
 using UnityEngine.Rendering;
+using UnityEngine.Assertions;
+using System.Runtime.InteropServices;
+using Random = UnityEngine.Random;
+using System.Linq;
+using System.Reflection;
 
 namespace ML.DeepLab
 {
     /// <summary>
     /// Custom property attribute to mark ReadOnly fields in the inspector
     /// </summary>
+    [System.Serializable]
     public class ReadOnlyAttribute : PropertyAttribute { }
     
     /// <summary>
@@ -1517,6 +1523,49 @@ namespace ML.DeepLab
             catch (System.Exception e)
             {
                 Debug.LogError($"EnhancedDeepLabPredictor: Error updating segmentation statistics: {e.Message}");
+            }
+        }
+
+        private void ProcessCurrentFrame(RenderTexture frameTexture)
+        {
+            try
+            {
+                if (frameTexture == null)
+                {
+                    Debug.LogWarning("[EnhancedDeepLabPredictor] Null frame texture provided to ProcessCurrentFrame");
+                    return;
+                }
+
+                // Convert the RenderTexture to Texture2D for processing
+                Texture2D texture2D = ConvertRenderTextureToTexture2D(frameTexture);
+                if (texture2D == null)
+                {
+                    Debug.LogWarning("[EnhancedDeepLabPredictor] Failed to convert RenderTexture to Texture2D");
+                    return;
+                }
+                
+                // Process the texture as needed
+                // Properly handle the processed texture - do not attempt implicit cast
+                if (_processedTexture != null)
+                {
+                    RenderTexture.ReleaseTemporary(_processedTexture);
+                }
+                
+                // Create a new RenderTexture with the same dimensions as texture2D
+                _processedTexture = RenderTexture.GetTemporary(texture2D.width, texture2D.height, 0, RenderTextureFormat.ARGB32);
+                
+                // Copy the Texture2D to the RenderTexture
+                Graphics.Blit(texture2D, _processedTexture);
+                
+                // Invoke event to notify listeners about the updated segmentation
+                if (OnSegmentationUpdated != null)
+                {
+                    OnSegmentationUpdated.Invoke(texture2D);
+                }
+            }
+            catch (System.Exception e)
+            {
+                Debug.LogError($"Error in ProcessCurrentFrame: {e.Message}");
             }
         }
     }

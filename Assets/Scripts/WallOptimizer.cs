@@ -340,23 +340,26 @@ public unsafe class WallOptimizer : MonoBehaviour
                 byte* dataPtr = wallMask.DataPointer;
                 if (dataPtr != null)
                 {
-                    fixed (Color32* segPtr = segmentationMask)
+                    unsafe
                     {
-                        for (int y = 0; y < segmentationHeight; y++)
+                        fixed (Color32* segPtr = segmentationMask)
                         {
-                            for (int x = 0; x < segmentationWidth; x++)
+                            for (int y = 0; y < segmentationHeight; y++)
                             {
-                                int index = y * segmentationWidth + x;
-                                if (index < segmentationMask.Length)
+                                for (int x = 0; x < segmentationWidth; x++)
                                 {
-                                    // In our segmentation mask, the class ID is stored in the red channel
-                                    byte classId = segPtr[index].r;
-                                    
-                                    // Check if this pixel belongs to the wall class
-                                    bool isWall = (classId == wallClassId); 
-                                    
-                                    // Set the wall mask value (255 for wall, 0 for non-wall)
-                                    dataPtr[index] = isWall ? (byte)255 : (byte)0;
+                                    int index = y * segmentationWidth + x;
+                                    if (index < segmentationMask.Length)
+                                    {
+                                        // In our segmentation mask, the class ID is stored in the red channel
+                                        byte classId = segPtr[index].r;
+                                        
+                                        // Check if this pixel belongs to the wall class
+                                        bool isWall = (classId == wallClassId); 
+                                        
+                                        // Set the wall mask value (255 for wall, 0 for non-wall)
+                                        dataPtr[index] = isWall ? (byte)255 : (byte)0;
+                                    }
                                 }
                             }
                         }
