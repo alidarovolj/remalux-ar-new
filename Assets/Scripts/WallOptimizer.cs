@@ -682,6 +682,10 @@ public unsafe class WallOptimizer : MonoBehaviour
             return;
         }
         
+        // Объявляем rotation и size до условных операторов, чтобы они были доступны во всем методе
+        Quaternion rotation = Quaternion.LookRotation(normal);
+        Vector3 size = new Vector3(wallWidth, wallHeight, wallThickness);
+        
         // Check if we should merge with an existing wall
         int nearbyWallIndex = -1;
         float nearestDistance = wallMergeDistance;
@@ -746,10 +750,6 @@ public unsafe class WallOptimizer : MonoBehaviour
         else
         {
             // Create a new wall
-            Quaternion rotation = Quaternion.LookRotation(normal);
-            Vector3 size = new Vector3(wallWidth, wallHeight, wallThickness);
-            
-            // Create the wall mesh
             wallIndex = meshRenderer.CreateWallMesh(position, size, rotation);
             
             if (wallIndex >= 0)
@@ -766,17 +766,19 @@ public unsafe class WallOptimizer : MonoBehaviour
         }
         
         // После создания wall, привяжем его к AR anchor если нужно
-        if (createARAnchors && arAnchorManager != null && wallIndex >= 0)
+        if (createARAnchors && wallIndex >= 0)
         {
-            // Создаем привязку через ARAnchorManager для стабилизации стены
-            ARAnchor anchor = arAnchorManager.AddAnchor(new Pose(position, rotation));
+            // Создаем свободноплавающий якорь (вариант B из вашего сообщения)
+            var go = new GameObject($"WallAnchor[{wallIndex}]");
+            go.transform.SetPositionAndRotation(position, rotation);
+            var anchor = go.AddComponent<ARAnchor>();
             
             if (anchor != null)
             {
                 // Сохраняем якорь и привязываем стену к нему
                 wallAnchors[wallIndex] = anchor;
                 
-                // Поцучаем GameObject стены
+                // Получаем GameObject стены
                 GameObject wallObject = meshRenderer.GetWall(wallIndex);
                 if (wallObject != null)
                 {
