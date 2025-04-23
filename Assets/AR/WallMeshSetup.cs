@@ -1,6 +1,8 @@
 using UnityEngine;
 using UnityEngine.XR.ARFoundation;
 using System.Collections;
+using System.Collections.Generic;
+using ML.DeepLab; // Add namespace for EnhancedDeepLabPredictor
 
 /// <summary>
 /// Компонент для автоматической настройки AR Mesh Manager и WallMeshRenderer

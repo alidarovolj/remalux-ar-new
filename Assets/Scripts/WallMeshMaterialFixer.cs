@@ -1,6 +1,7 @@
 using UnityEngine;
 using UnityEngine.XR.ARFoundation;
 using System.Linq;
+using ML.DeepLab;
 
 /// <summary>
 /// Creates a proper WallMesh material at runtime if there are issues with the asset file

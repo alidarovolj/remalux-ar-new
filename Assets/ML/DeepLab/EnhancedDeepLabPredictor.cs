@@ -1519,5 +1519,67 @@ namespace ML.DeepLab
                 // Use
             }
         }
+
+        /// <summary>
+        /// Updates segmentation statistics
+        /// </summary>
+        /// <param name="segmentationTexture">The segmentation texture to analyze</param>
+        private void UpdateSegmentationStatistics(RenderTexture segmentationTexture)
+        {
+            if (segmentationTexture == null)
+            {
+                Debug.LogWarning("EnhancedDeepLabPredictor: Invalid segmentation texture provided");
+                return;
+            }
+
+            try
+            {
+                // Convert RenderTexture to Texture2D
+                Texture2D texture2D = ConvertRenderTextureToTexture2D(segmentationTexture);
+                if (texture2D == null)
+                {
+                    Debug.LogWarning("EnhancedDeepLabPredictor: Failed to convert segmentation texture to Texture2D");
+                    return;
+                }
+
+                // Get pixel data
+                Color[] pixels = texture2D.GetPixels();
+                int wallPixelCount = 0;
+                int totalPixelCount = pixels.Length;
+
+                // Count wall pixels
+                foreach (Color pixel in pixels)
+                {
+                    if (pixel.r == WallClassId / 255f)
+                    {
+                        wallPixelCount++;
+                    }
+                }
+
+                // Calculate wall pixel percentage
+                wallPixelPercentage = (float)wallPixelCount / totalPixelCount;
+
+                // Update lastWallPixelCount and lastTotalPixelCount
+                lastWallPixelCount = wallPixelCount;
+                lastTotalPixelCount = totalPixelCount;
+
+                // Update class distribution
+                if (classDistribution.ContainsKey(WallClassId))
+                {
+                    classDistribution[WallClassId]++;
+                }
+                else
+                {
+                    classDistribution.Add(WallClassId, 1);
+                }
+
+                // Clean up temporary texture
+                Destroy(texture2D);
+            }
+            catch (System.Exception e)
+            {
+                Debug.LogError($"EnhancedDeepLabPredictor: Error updating segmentation statistics: {e.Message}");
+            }
+        }
     }
 }
