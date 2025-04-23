@@ -311,74 +311,82 @@ public unsafe class WallOptimizer : MonoBehaviour
     /// </summary>
     private unsafe void ProcessWallMask(Color32[] segmentationMask, Camera camera)
     {
-        if (segmentationMask == null || segmentationMask.Length == 0 || camera == null)
-        {
-            Debug.LogError("WallOptimizer: Invalid segmentation mask or camera");
+        if (segmentationMask == null || segmentationMask.Length == 0)
             return;
-        }
-        
-        int width = segmentationWidth;
-        int height = segmentationHeight;
-        
-        if (width <= 0 || height <= 0 || segmentationMask.Length != width * height)
+            
+        // Check if we have valid dimensions
+        if (segmentationWidth <= 0 || segmentationHeight <= 0)
         {
-            Debug.LogError($"WallOptimizer: Invalid dimensions {width}x{height}, mask length: {segmentationMask.Length}");
-            return;
-        }
-        
-        // Создаем OpenCV-матрицу для маски стен
-        using (OpenCvSharpMat wallMask = new OpenCvSharpMat(height, width, OpenCvSharp.MatType.CV_8UC1))
-        {
-            // Extract wall masks from segmentation result
-            // Use direct pixel access for better performance
-            fixed (Color32* colorPtr = segmentationMask)
+            if (segmentationMask.Length > 0)
             {
-                // Get wall mask as binary image where walls are white (255) and everything else is black (0)
-                unsafe
+                // Try to infer dimensions - probably square
+                segmentationWidth = Mathf.FloorToInt(Mathf.Sqrt(segmentationMask.Length));
+                segmentationHeight = segmentationWidth;
+            }
+            else
+            {
+                return; // No valid data
+            }
+        }
+        
+        try 
+        {
+            // Convert Unity mask to OpenCV mask
+            unsafe
+            {
+                // Create OpenCV Mat for processing the wall mask
+                using (OpenCvSharpMat wallMask = new OpenCvSharpMat(segmentationHeight, segmentationWidth, OpenCvSharp.MatType.CV_8UC1))
                 {
-                    byte* maskPtr = wallMask.DataPointer;
-                    
-                    for (int i = 0; i < segmentationMask.Length; i++)
+                    // Fill the wall mask by checking each pixel's class ID
+                    byte* dataPtr = wallMask.DataPointer;
+                    if (dataPtr != null)
                     {
-                        // In segmentation result, the class ID is stored in the R channel
-                        byte classId = colorPtr[i].r;
-                        
-                        // The confidence is stored in the G channel (normalized 0-1 as 0-255)
-                        byte confidence = colorPtr[i].g;
-                        
-                        // Check if pixel is a wall with sufficient confidence
-                        if (classId == wallClassId && confidence >= (byte)(confidenceThreshold * 255))
+                        for (int y = 0; y < segmentationHeight; y++)
                         {
-                            maskPtr[i] = 255; // Wall pixel (white)
-                        }
-                        else
-                        {
-                            maskPtr[i] = 0; // Non-wall pixel (black)
+                            for (int x = 0; x < segmentationWidth; x++)
+                            {
+                                int index = y * segmentationWidth + x;
+                                if (index < segmentationMask.Length)
+                                {
+                                    // In our segmentation mask, the class ID is stored in the red channel
+                                    byte classId = segmentationMask[index].r;
+                                    
+                                    // Check if this pixel belongs to the wall class
+                                    bool isWall = (classId == wallClassId); 
+                                    
+                                    // Set the wall mask value (255 for wall, 0 for non-wall)
+                                    dataPtr[index] = isWall ? (byte)255 : (byte)0;
+                                }
+                            }
                         }
                     }
+                    
+                    // Apply morphological operations to reduce noise
+                    OpenCvSharpMat kernel = OpenCvSharp.Cv2.GetStructuringElement(OpenCvSharp.MorphShapes.Rect, new OpenCvSharpSize(3, 3));
+                    
+                    // Closing operation (dilation followed by erosion)
+                    OpenCvSharpMat processedMask = new OpenCvSharpMat(segmentationHeight, segmentationWidth, OpenCvSharp.MatType.CV_8UC1);
+                    OpenCvSharp.Cv2.MorphologyEx(wallMask, processedMask, OpenCvSharp.MorphTypes.Close, kernel, iterations: 2);
+                    
+                    // Opening operation to remove small noise (erosion followed by dilation)
+                    OpenCvSharp.Cv2.MorphologyEx(processedMask, processedMask, OpenCvSharp.MorphTypes.Open, kernel, iterations: 1);
+                    
+                    // Find contours in the processed mask
+                    OpenCvSharpPoint[][] contours;
+                    OpenCvSharpHierarchyIndex[] hierarchy;
+                    OpenCvSharp.Cv2.FindContours(processedMask, out contours, out hierarchy, OpenCvSharp.RetrievalModes.External, OpenCvSharp.ContourApproximationModes.ApproxSimple);
+                    
+                    if (showDebugInfo)
+                        Debug.Log($"WallOptimizer: Found {contours.Length} wall contours in segmentation mask");
+                    
+                    // Create walls from the filtered contours
+                    CreateWallsFromContours(contours, hierarchy, camera);
                 }
             }
-            
-            // Apply morphological operations to reduce noise
-            OpenCvSharpMat kernel = OpenCvSharp.Cv2.GetStructuringElement(OpenCvSharp.MorphShapes.Rect, new OpenCvSharpSize(3, 3));
-            
-            // Closing operation (dilation followed by erosion)
-            OpenCvSharpMat processedMask = new OpenCvSharpMat(height, width, OpenCvSharp.MatType.CV_8UC1);
-            OpenCvSharp.Cv2.MorphologyEx(wallMask, processedMask, OpenCvSharp.MorphTypes.Close, kernel, iterations: 2);
-            
-            // Opening operation to remove small noise (erosion followed by dilation)
-            OpenCvSharp.Cv2.MorphologyEx(processedMask, processedMask, OpenCvSharp.MorphTypes.Open, kernel, iterations: 1);
-            
-            // Find contours in the processed mask
-            OpenCvSharpPoint[][] contours;
-            OpenCvSharpHierarchyIndex[] hierarchy;
-            OpenCvSharp.Cv2.FindContours(processedMask, out contours, out hierarchy, OpenCvSharp.RetrievalModes.External, OpenCvSharp.ContourApproximationModes.ApproxSimple);
-            
-            if (showDebugInfo)
-                Debug.Log($"WallOptimizer: Found {contours.Length} wall contours in segmentation mask");
-            
-            // Create walls from the filtered contours
-            CreateWallsFromContours(contours, hierarchy, camera);
+        } 
+        catch (System.Exception e) 
+        {
+            Debug.LogError($"WallOptimizer: Error processing wall mask: {e.Message}");
         }
     }
     

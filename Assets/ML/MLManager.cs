@@ -4,6 +4,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using Unity.Barracuda;
+using ML.DeepLab;  // Add the ML.DeepLab namespace
 
 // Поскольку класс находится в глобальном пространстве имен,
 // не нужны using-директивы, но нужно подсказать компилятору искать тип в глобальном пространстве
@@ -41,12 +42,12 @@ public class MLManager : MonoBehaviour
         // Initialize the enhanced predictor if available and enabled
         if (useEnhancedPredictor)
         {
-            // Необходимо заменить на GetComponent<EnhancedDeepLabPredictor>() после фиксации импорта
-            _enhancedPredictor = GetComponent(Type.GetType("EnhancedDeepLabPredictor")) as DeepLabPredictor;
+            // Заменяем на прямое получение компонента EnhancedDeepLabPredictor
+            _enhancedPredictor = GetComponent<EnhancedDeepLabPredictor>();
             if (_enhancedPredictor == null)
             {
-                // Необходимо заменить на AddComponent<EnhancedDeepLabPredictor>() после фиксации импорта
-                _enhancedPredictor = gameObject.AddComponent(Type.GetType("EnhancedDeepLabPredictor")) as DeepLabPredictor;
+                // Заменяем на прямое добавление компонента EnhancedDeepLabPredictor
+                _enhancedPredictor = gameObject.AddComponent<EnhancedDeepLabPredictor>();
                 if (_enhancedPredictor != null)
                 {
                     // Copy settings from base predictor
@@ -56,16 +57,10 @@ public class MLManager : MonoBehaviour
                     Debug.Log("MLManager: Created EnhancedDeepLabPredictor");
                     
                     // Subscribe to segmentation events
-                    var type = _enhancedPredictor.GetType();
-                    var eventInfo = type.GetEvent("OnSegmentationResult");
-                    if (eventInfo != null)
+                    var enhancedPred = _enhancedPredictor as EnhancedDeepLabPredictor;
+                    if (enhancedPred != null)
                     {
-                        var handler = Delegate.CreateDelegate(
-                            eventInfo.EventHandlerType,
-                            this,
-                            GetType().GetMethod("HandleSegmentationResult", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)
-                        );
-                        eventInfo.AddEventHandler(_enhancedPredictor, handler);
+                        enhancedPred.OnSegmentationResult += HandleSegmentationResult;
                     }
                 }
             }
@@ -76,16 +71,10 @@ public class MLManager : MonoBehaviour
                 Debug.Log($"MLManager: Using enhanced predictor with wall class ID: {wallClassId}");
                 
                 // Subscribe to segmentation events
-                var type = _enhancedPredictor.GetType();
-                var eventInfo = type.GetEvent("OnSegmentationResult");
-                if (eventInfo != null)
+                var enhancedPred = _enhancedPredictor as EnhancedDeepLabPredictor;
+                if (enhancedPred != null)
                 {
-                    var handler = Delegate.CreateDelegate(
-                        eventInfo.EventHandlerType,
-                        this,
-                        GetType().GetMethod("HandleSegmentationResult", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)
-                    );
-                    eventInfo.AddEventHandler(_enhancedPredictor, handler);
+                    enhancedPred.OnSegmentationResult += HandleSegmentationResult;
                 }
             }
         }
@@ -113,16 +102,10 @@ public class MLManager : MonoBehaviour
         // Unsubscribe from events
         if (_enhancedPredictor != null)
         {
-            var type = _enhancedPredictor.GetType();
-            var eventInfo = type.GetEvent("OnSegmentationResult");
-            if (eventInfo != null)
+            var enhancedPred = _enhancedPredictor as EnhancedDeepLabPredictor;
+            if (enhancedPred != null)
             {
-                var handler = Delegate.CreateDelegate(
-                    eventInfo.EventHandlerType,
-                    this,
-                    GetType().GetMethod("HandleSegmentationResult", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)
-                );
-                eventInfo.RemoveEventHandler(_enhancedPredictor, handler);
+                enhancedPred.OnSegmentationResult -= HandleSegmentationResult;
             }
         }
     }
