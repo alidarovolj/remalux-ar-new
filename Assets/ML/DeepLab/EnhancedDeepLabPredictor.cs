@@ -677,39 +677,43 @@ namespace ML.DeepLab
                 
                 try
                 {
-                    // Run base predictor
-                    if (!RunPrediction(inputTexture, rawSegmentationResult))
+                    // Downsample the input texture to the model input texture
+                    Graphics.Blit(inputTexture, rawSegmentationResult);
+                    
+                    // Run prediction on the model input texture
+                    Texture2D tex2D = ConvertRenderTextureToTexture2D(rawSegmentationResult);
+                    if (tex2D == null)
                     {
-                        Debug.LogError("EnhancedDeepLabPredictor: Base prediction failed");
-                        return _enhancedResultMask; // Return last valid result
+                        Debug.LogWarning("EnhancedDeepLabPredictor: не удалось конвертировать сегментацию в Texture2D");
+                        return _enhancedResultMask;
                     }
                     
-                    // Apply post-processing
-                    ApplyPostProcessing(rawSegmentationResult, _enhancedResultMask);
+                    // Передаём уже Texture2D:
+                    base.PredictSegmentation(tex2D);
                     
-                    // Trigger event if there are any listeners
-                    if (OnSegmentationCompleted != null)
+                    // Try to get resultTexture from base class using reflection
+                    System.Reflection.FieldInfo resultTextureField = typeof(DeepLabPredictor).GetField("resultTexture", 
+                        System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance | 
+                        System.Reflection.BindingFlags.Public);
+                    
+                    if (resultTextureField != null)
                     {
-                        // Convert RenderTexture to Texture2D for the event
-                        Texture2D segTexture = ConvertRenderTextureToTexture2D(_enhancedResultMask);
-                        
-                        // Invoke with the converted Texture2D
-                        if (segTexture != null)
+                        RenderTexture baseResultTexture = resultTextureField.GetValue(this) as RenderTexture;
+                        if (baseResultTexture != null)
                         {
-                            OnSegmentationCompleted.Invoke(segTexture);
+                            Graphics.Blit(baseResultTexture, rawSegmentationResult);
+                            return rawSegmentationResult;
                         }
                     }
                     
-                    // Update previous mask for temporal smoothing if enabled
-                    if (applyTemporalSmoothing && previousMask != null)
+                    // If reflection fails, try another approach - check if our _enhancedResultMask can be used
+                    if (_enhancedResultMask != null)
                     {
-                        Graphics.Blit(_enhancedResultMask, previousMask);
+                        Graphics.Blit(_enhancedResultMask, rawSegmentationResult);
+                        return rawSegmentationResult;
                     }
                     
-                    if (debugMode && verbose)
-                        Debug.Log("EnhancedDeepLabPredictor: Segmentation prediction completed successfully");
-                    
-                    return _enhancedResultMask;
+                    return rawSegmentationResult;
                 }
                 catch (System.Exception e)
                 {
@@ -728,76 +732,6 @@ namespace ML.DeepLab
             {
                 Debug.LogError($"EnhancedDeepLabPredictor: Critical error during prediction: {e.Message}");
                 return _enhancedResultMask; // Return last valid result
-            }
-        }
-        
-        /// <summary>
-        /// Runs the base segmentation prediction on the input texture
-        /// </summary>
-        /// <param name="inputTexture">The input texture to segment</param>
-        /// <param name="outputTexture">The render texture to write the result to</param>
-        /// <returns>True if prediction was successful, false otherwise</returns>
-        private bool RunPrediction(Texture inputTexture, RenderTexture outputTexture)
-        {
-            if (inputTexture == null || outputTexture == null)
-                return false;
-            
-            try
-            {
-                // Use a more reasonable model input size to prevent GPU compute errors
-                int modelWidth = Mathf.Min(inputTexture.width, 224);
-                int modelHeight = Mathf.Min(inputTexture.height, 224);
-                
-                // Create a smaller texture for input to the model
-                RenderTexture modelInputTexture = RenderTexture.GetTemporary(
-                    modelWidth, modelHeight, 0, RenderTextureFormat.ARGB32
-                );
-                modelInputTexture.filterMode = FilterMode.Bilinear;
-                
-                try
-                {
-                    // Downsample the input texture to the model input texture
-                    Graphics.Blit(inputTexture, modelInputTexture);
-                    
-                    // Run prediction on the model input texture
-                    base.PredictSegmentation(modelInputTexture);
-                    
-                    // Try to get resultTexture from base class using reflection
-                    System.Reflection.FieldInfo resultTextureField = typeof(DeepLabPredictor).GetField("resultTexture", 
-                        System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance | 
-                        System.Reflection.BindingFlags.Public);
-                    
-                    if (resultTextureField != null)
-                    {
-                        RenderTexture baseResultTexture = resultTextureField.GetValue(this) as RenderTexture;
-                        if (baseResultTexture != null)
-                        {
-                            Graphics.Blit(baseResultTexture, outputTexture);
-                            return true;
-                        }
-                    }
-                    
-                    // If reflection fails, try another approach - check if our _enhancedResultMask can be used
-                    if (_enhancedResultMask != null)
-                    {
-                        Graphics.Blit(_enhancedResultMask, outputTexture);
-                        return true;
-                    }
-                    
-                    return false;
-                }
-                finally
-                {
-                    if (modelInputTexture != null)
-                    {
-                        RenderTexture.ReleaseTemporary(modelInputTexture);
-                    }
-                }
-            }
-            catch (System.Exception e)
-            {
-                Debug.LogError($"EnhancedDeepLabPredictor: Error during base prediction: {e.Message}");
-                return false;
             }
         }
         
