@@ -4,7 +4,6 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 
-// Помещаем класс в пространство имен ML.DeepLab
 namespace ML.DeepLab
 {
     // Add ReadOnly attribute class
