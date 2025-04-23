@@ -2,6 +2,7 @@ using UnityEngine;
 using UnityEngine.XR.ARFoundation;
 using UnityEngine.XR.ARSubsystems;
 using System.Collections.Generic;
+using ML.DeepLab; // Add namespace for EnhancedDeepLabPredictor
 
 /// <summary>
 /// Component that integrates AR plane detection with wall segmentation for accurate wall painting

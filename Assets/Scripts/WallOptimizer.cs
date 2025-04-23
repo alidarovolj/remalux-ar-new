@@ -11,6 +11,7 @@ using OpenCvSharpMat = OpenCvSharp.Mat;
 using OpenCvSharpSize = OpenCvSharp.Size;
 using OpenCvSharpMoments = OpenCvSharp.Moments;
 using OpenCvSharpHierarchyIndex = OpenCvSharp.HierarchyIndex;
+using ML.DeepLab; // Add namespace for EnhancedDeepLabPredictor
 
 // Add standard warning disables
 #pragma warning disable 0169, 0649

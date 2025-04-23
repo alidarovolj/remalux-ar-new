@@ -1,6 +1,7 @@
 using UnityEngine;
 using System.Collections;
 using UnityEngine.XR.ARFoundation;
+using ML.DeepLab; // Add namespace for EnhancedDeepLabPredictor
 
 /// <summary>
 /// Скрипт для инициализации улучшенного распознавания стен.

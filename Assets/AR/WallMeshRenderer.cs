@@ -7,6 +7,7 @@ using UnityEngine;
 using UnityEngine.XR.ARFoundation;
 using UnityEngine.XR.ARSubsystems;
 using UnityEngine.UI;
+using ML.DeepLab; // Add namespace for EnhancedDeepLabPredictor
 
 /// <summary>
 /// Integrates AR Mesh Manager with EnhancedDeepLabPredictor for walls visualization.

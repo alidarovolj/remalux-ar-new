@@ -1,6 +1,8 @@
 using UnityEngine;
 using UnityEngine.XR.ARFoundation;
 using System.Collections;
+using System.Collections.Generic;
+using ML.DeepLab;
 
 /// <summary>
 /// Controls the ML processing

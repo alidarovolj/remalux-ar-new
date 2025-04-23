@@ -1,6 +1,8 @@
 using UnityEngine;
 using UnityEngine.UI;
 using System.Collections;
+using System.Collections.Generic;
+using ML.DeepLab; // Add namespace for EnhancedDeepLabPredictor
 
 /// <summary>
 /// Component for controlling and optimizing wall detection with user interface.

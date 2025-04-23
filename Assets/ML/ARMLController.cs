@@ -2,6 +2,8 @@ using UnityEngine;
 using UnityEngine.XR.ARFoundation;
 using System.Reflection;
 using System.Collections;
+using System.Collections.Generic;
+using ML.DeepLab; // Add namespace for EnhancedDeepLabPredictor
 
 /// <summary>
 /// Advanced ML controller for AR applications

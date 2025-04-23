@@ -4,6 +4,7 @@ using UnityEngine;
 using UnityEngine.XR.ARFoundation;
 using UnityEngine.XR.ARSubsystems;
 using Unity.XR.CoreUtils;
+using ML.DeepLab; // Add namespace for EnhancedDeepLabPredictor
 #if UNITY_EDITOR
 using UnityEditor;
 #endif

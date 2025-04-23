@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.XR.ARFoundation;
+using ML.DeepLab;
 
 /// <summary>
 /// Улучшенный визуализатор стен с возможностью настройки параметров отображения и фильтрации
