@@ -20,7 +20,7 @@ public class MLManager : MonoBehaviour
     public byte wallClassId = 9; // ADE20K wall class ID
     
     [SerializeField] private DeepLabPredictor _predictor;
-    private DeepLabPredictor _enhancedPredictor; // Используем базовый тип для хранения расширенного предиктора
+    private DeepLabPredictor _enhancedPredictor; // Временно используем базовый тип до импорта
     
     private Coroutine _predictionCoroutine;
     private bool _isPredicting = false;
@@ -41,28 +41,13 @@ public class MLManager : MonoBehaviour
         // Initialize the enhanced predictor if available and enabled
         if (useEnhancedPredictor)
         {
-            // Ищем компонент типа DeepLabPredictor с именем "EnhancedDeepLabPredictor"
-            _enhancedPredictor = GetComponents<DeepLabPredictor>()
-                .FirstOrDefault(p => p.GetType().Name == "EnhancedDeepLabPredictor");
-                
+            // Необходимо заменить на GetComponent<EnhancedDeepLabPredictor>() после фиксации импорта
+            _enhancedPredictor = GetComponent(Type.GetType("EnhancedDeepLabPredictor")) as DeepLabPredictor;
             if (_enhancedPredictor == null)
             {
-                // Пытаемся добавить компонент через reflection
-                try {
-                    var enhancedType = System.Type.GetType("ML.DeepLab.EnhancedDeepLabPredictor, Assembly-CSharp");
-                    if (enhancedType != null) {
-                        _enhancedPredictor = gameObject.AddComponent(enhancedType) as DeepLabPredictor;
-                    } else {
-                        Debug.LogError("MLManager: EnhancedDeepLabPredictor type not found");
-                        _enhancedPredictor = _predictor; // Используем обычный предиктор как запасной вариант
-                    }
-                } 
-                catch (System.Exception e) {
-                    Debug.LogError($"MLManager: Error creating EnhancedDeepLabPredictor: {e.Message}");
-                    _enhancedPredictor = _predictor; // Используем обычный предиктор как запасной вариант
-                }
-                
-                if (_enhancedPredictor != null && _enhancedPredictor != _predictor)
+                // Необходимо заменить на AddComponent<EnhancedDeepLabPredictor>() после фиксации импорта
+                _enhancedPredictor = gameObject.AddComponent(Type.GetType("EnhancedDeepLabPredictor")) as DeepLabPredictor;
+                if (_enhancedPredictor != null)
                 {
                     // Copy settings from base predictor
                     _enhancedPredictor.modelAsset = _predictor.modelAsset;
@@ -70,15 +55,17 @@ public class MLManager : MonoBehaviour
                     _enhancedPredictor.ClassificationThreshold = _predictor.ClassificationThreshold;
                     Debug.Log("MLManager: Created EnhancedDeepLabPredictor");
                     
-                    // Subscribe to segmentation events through reflection
-                    var eventInfo = _enhancedPredictor.GetType().GetEvent("OnSegmentationResult");
-                    if (eventInfo != null) {
-                        var delegateType = eventInfo.EventHandlerType;
-                        var handler = Delegate.CreateDelegate(delegateType, this, 
-                            typeof(MLManager).GetMethod("HandleSegmentationResult", 
-                            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance));
+                    // Subscribe to segmentation events
+                    var type = _enhancedPredictor.GetType();
+                    var eventInfo = type.GetEvent("OnSegmentationResult");
+                    if (eventInfo != null)
+                    {
+                        var handler = Delegate.CreateDelegate(
+                            eventInfo.EventHandlerType,
+                            this,
+                            GetType().GetMethod("HandleSegmentationResult", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)
+                        );
                         eventInfo.AddEventHandler(_enhancedPredictor, handler);
-                        Debug.Log("MLManager: Subscribed to OnSegmentationResult event");
                     }
                 }
             }
@@ -88,16 +75,17 @@ public class MLManager : MonoBehaviour
                 _enhancedPredictor.WallClassId = wallClassId;
                 Debug.Log($"MLManager: Using enhanced predictor with wall class ID: {wallClassId}");
                 
-                // Subscribe to events via reflection if not already done
-                if (_enhancedPredictor != _predictor) {
-                    var eventInfo = _enhancedPredictor.GetType().GetEvent("OnSegmentationResult");
-                    if (eventInfo != null) {
-                        var delegateType = eventInfo.EventHandlerType;
-                        var handler = Delegate.CreateDelegate(delegateType, this, 
-                            typeof(MLManager).GetMethod("HandleSegmentationResult", 
-                            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance));
-                        eventInfo.AddEventHandler(_enhancedPredictor, handler);
-                    }
+                // Subscribe to segmentation events
+                var type = _enhancedPredictor.GetType();
+                var eventInfo = type.GetEvent("OnSegmentationResult");
+                if (eventInfo != null)
+                {
+                    var handler = Delegate.CreateDelegate(
+                        eventInfo.EventHandlerType,
+                        this,
+                        GetType().GetMethod("HandleSegmentationResult", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)
+                    );
+                    eventInfo.AddEventHandler(_enhancedPredictor, handler);
                 }
             }
         }
@@ -125,11 +113,16 @@ public class MLManager : MonoBehaviour
         // Unsubscribe from events
         if (_enhancedPredictor != null)
         {
-            var eventInfo = _enhancedPredictor.GetType().GetEvent("OnSegmentationResult");
-            if (eventInfo != null) {
-                eventInfo.RemoveEventHandler(_enhancedPredictor, Delegate.CreateDelegate(eventInfo.EventHandlerType, this, 
-                    typeof(MLManager).GetMethod("HandleSegmentationResult", 
-                    System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)));
+            var type = _enhancedPredictor.GetType();
+            var eventInfo = type.GetEvent("OnSegmentationResult");
+            if (eventInfo != null)
+            {
+                var handler = Delegate.CreateDelegate(
+                    eventInfo.EventHandlerType,
+                    this,
+                    GetType().GetMethod("HandleSegmentationResult", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)
+                );
+                eventInfo.RemoveEventHandler(_enhancedPredictor, handler);
             }
         }
     }
@@ -192,8 +185,9 @@ public class MLManager : MonoBehaviour
                 // Use enhanced predictor if available
                 if (_enhancedPredictor != null && useEnhancedPredictor)
                 {
-                    // PredictSegmentation устойчив к разным типам предикторов, т.к. метод определен в базовом классе
-                    _enhancedPredictor.PredictSegmentation(frameTexture);
+                    // Конвертируем в Texture2D перед передачей методу PredictSegmentation
+                    Texture2D texture2D = frameTexture;
+                    _enhancedPredictor.PredictSegmentation(texture2D);
                 }
                 else
                 {
@@ -254,6 +248,22 @@ public class MLManager : MonoBehaviour
         
         Debug.LogWarning("MLManager: Unable to capture frame - no camera target texture found");
         return null;
+    }
+    
+    // Вспомогательный метод для конвертации RenderTexture в Texture2D (решает ошибку CS1503)
+    private Texture2D ConvertRenderTextureToTexture2D(RenderTexture renderTexture)
+    {
+        if (renderTexture == null) return null;
+        
+        RenderTexture prevActive = RenderTexture.active;
+        RenderTexture.active = renderTexture;
+        
+        Texture2D texture2D = new Texture2D(renderTexture.width, renderTexture.height, TextureFormat.RGBA32, false);
+        texture2D.ReadPixels(new Rect(0, 0, renderTexture.width, renderTexture.height), 0, 0);
+        texture2D.Apply();
+        
+        RenderTexture.active = prevActive;
+        return texture2D;
     }
 }
 

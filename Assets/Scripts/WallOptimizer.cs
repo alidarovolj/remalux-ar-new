@@ -313,76 +313,58 @@ public unsafe class WallOptimizer : MonoBehaviour
     {
         if (segmentationMask == null || segmentationMask.Length == 0 || camera == null)
         {
-            if (showDebugInfo)
-                Debug.LogWarning("WallOptimizer: Invalid segmentation mask or camera");
+            Debug.LogError("WallOptimizer: Invalid segmentation mask or camera");
             return;
         }
-
-        OpenCvSharpMat binaryMask = default(OpenCvSharpMat);
-        OpenCvSharpMat confidenceMap = default(OpenCvSharpMat);
-        OpenCvSharpMat kernel = default(OpenCvSharpMat);
-        OpenCvSharpMat processedMask = default(OpenCvSharpMat);
         
-        try
+        int width = segmentationWidth;
+        int height = segmentationHeight;
+        
+        if (width <= 0 || height <= 0 || segmentationMask.Length != width * height)
         {
-            // Segmentation mask dimensions
-            if (segmentationWidth <= 0 || segmentationHeight <= 0)
+            Debug.LogError($"WallOptimizer: Invalid dimensions {width}x{height}, mask length: {segmentationMask.Length}");
+            return;
+        }
+        
+        // Создаем OpenCV-матрицу для маски стен
+        using (OpenCvSharpMat wallMask = new OpenCvSharpMat(height, width, OpenCvSharp.MatType.CV_8UC1))
+        {
+            // Extract wall masks from segmentation result
+            // Use direct pixel access for better performance
+            fixed (Color32* colorPtr = segmentationMask)
             {
-                Debug.LogError("WallOptimizer: Invalid segmentation dimensions");
-                return;
-            }
-
-            if (segmentationMask.Length != segmentationWidth * segmentationHeight)
-            {
-                Debug.LogError($"WallOptimizer: Mask dimensions mismatch. Expected {segmentationWidth}x{segmentationHeight}={segmentationWidth * segmentationHeight}, got {segmentationMask.Length}");
-                return;
-            }
-
-            // Create binary mask for walls - using constructor with parameters
-            binaryMask = new OpenCvSharpMat(segmentationHeight, segmentationWidth, OpenCvSharp.MatType.CV_8UC1);
-            
-            // Create a confidence map - using constructor with parameters
-            confidenceMap = new OpenCvSharpMat(segmentationHeight, segmentationWidth, OpenCvSharp.MatType.CV_32FC1);
-            
-            // Using unsafe code for better performance
-            unsafe
-            {
-                byte* binaryPtr = binaryMask.DataPointer;
-                float* confidencePtr = (float*)confidenceMap.DataPointer;
-                
-                for (int i = 0; i < segmentationMask.Length; i++)
+                // Get wall mask as binary image where walls are white (255) and everything else is black (0)
+                unsafe
                 {
-                    if (segmentationMask[i].r == wallClassId)
+                    byte* maskPtr = wallMask.DataPointer;
+                    
+                    for (int i = 0; i < segmentationMask.Length; i++)
                     {
-                        float confidence = segmentationMask[i].a / 255.0f;
+                        // In segmentation result, the class ID is stored in the R channel
+                        byte classId = colorPtr[i].r;
                         
-                        // Apply confidence threshold
-                        if (confidence >= confidenceThreshold)
+                        // The confidence is stored in the G channel (normalized 0-1 as 0-255)
+                        byte confidence = colorPtr[i].g;
+                        
+                        // Check if pixel is a wall with sufficient confidence
+                        if (classId == wallClassId && confidence >= (byte)(confidenceThreshold * 255))
                         {
-                            binaryPtr[i] = 255; // Set pixel as wall
-                            confidencePtr[i] = confidence;
+                            maskPtr[i] = 255; // Wall pixel (white)
                         }
                         else
                         {
-                            binaryPtr[i] = 0;
-                            confidencePtr[i] = 0;
+                            maskPtr[i] = 0; // Non-wall pixel (black)
                         }
-                    }
-                    else
-                    {
-                        binaryPtr[i] = 0;
-                        confidencePtr[i] = 0;
                     }
                 }
             }
             
             // Apply morphological operations to reduce noise
-            kernel = OpenCvSharp.Cv2.GetStructuringElement(OpenCvSharp.MorphShapes.Rect, new OpenCvSharpSize(3, 3));
+            OpenCvSharpMat kernel = OpenCvSharp.Cv2.GetStructuringElement(OpenCvSharp.MorphShapes.Rect, new OpenCvSharpSize(3, 3));
             
             // Closing operation (dilation followed by erosion)
-            // Initialize processedMask with parameters instead of parameterless constructor
-            processedMask = new OpenCvSharpMat(segmentationHeight, segmentationWidth, OpenCvSharp.MatType.CV_8UC1);
-            OpenCvSharp.Cv2.MorphologyEx(binaryMask, processedMask, OpenCvSharp.MorphTypes.Close, kernel, iterations: 2);
+            OpenCvSharpMat processedMask = new OpenCvSharpMat(height, width, OpenCvSharp.MatType.CV_8UC1);
+            OpenCvSharp.Cv2.MorphologyEx(wallMask, processedMask, OpenCvSharp.MorphTypes.Close, kernel, iterations: 2);
             
             // Opening operation to remove small noise (erosion followed by dilation)
             OpenCvSharp.Cv2.MorphologyEx(processedMask, processedMask, OpenCvSharp.MorphTypes.Open, kernel, iterations: 1);
@@ -397,18 +379,6 @@ public unsafe class WallOptimizer : MonoBehaviour
             
             // Create walls from the filtered contours
             CreateWallsFromContours(contours, hierarchy, camera);
-        }
-        catch (System.Exception e)
-        {
-            Debug.LogError($"WallOptimizer: Error processing wall mask: {e.Message}\n{e.StackTrace}");
-        }
-        finally
-        {
-            // Release OpenCV resources
-            if (binaryMask.DataPointer != null) binaryMask.Dispose();
-            if (confidenceMap.DataPointer != null) confidenceMap.Dispose();
-            if (kernel.DataPointer != null) kernel.Dispose();
-            if (processedMask.DataPointer != null) processedMask.Dispose();
         }
     }
     
