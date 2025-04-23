@@ -112,6 +112,43 @@ public class WallMeshRenderer : MonoBehaviour
                 Debug.Log("WallMeshRenderer: Found ARPlaneManager");
             }
         }
+        
+        // Try to find a DeepLabPredictor if not assigned
+        if (_predictor == null)
+        {
+            // Try to find a specifically EnhancedDeepLabPredictor
+            _predictor = FindObjectOfType<EnhancedDeepLabPredictor>();
+            
+            if (_predictor != null)
+            {
+                Debug.Log("WallMeshRenderer: Found and assigned EnhancedDeepLabPredictor automatically");
+            }
+            else
+            {
+                // Look for any GameObject with AR ML Controller in its name
+                GameObject armlObj = GameObject.Find("AR ML Controller");
+                if (armlObj == null)
+                    armlObj = GameObject.Find("ARML Controller");
+                if (armlObj == null)
+                    armlObj = GameObject.Find("ARMLController");
+                
+                if (armlObj != null)
+                {
+                    // Try to find the predictor on this object or its children
+                    _predictor = armlObj.GetComponentInChildren<EnhancedDeepLabPredictor>();
+                    
+                    if (_predictor != null)
+                    {
+                        Debug.Log("WallMeshRenderer: Found EnhancedDeepLabPredictor on ARML Controller");
+                    }
+                }
+            }
+            
+            if (_predictor == null)
+            {
+                Debug.LogWarning("WallMeshRenderer: Could not find any EnhancedDeepLabPredictor in the scene. Wall detection will not work properly.");
+            }
+        }
     }
 
     private void OnEnable()
@@ -135,39 +172,67 @@ public class WallMeshRenderer : MonoBehaviour
         {
             try
             {
+                // Check if the events exist via reflection to ensure compatibility with different versions
+                bool eventFound = false;
                 Type predictorType = _predictor.GetType();
-                var segmentationEvent = predictorType.GetField("OnSegmentationCompleted");
                 
-                if (segmentationEvent != null)
+                // First try direct event subscription (for newer versions)
+                try
                 {
-                    // For EnhancedDeepLabPredictor
                     _predictor.OnSegmentationCompleted += OnSegmentationCompleted;
                     _predictor_isReady = true;
-                    Debug.Log($"WallMeshRenderer: Using EnhancedDeepLabPredictor with wall class ID: {_wallClassId}");
+                    eventFound = true;
                     
-                    // Subscribe to wall class ID changes
-                    _predictor.OnWallClassIdChanged += OnPredictorWallClassIdChanged;
+                    if (_showDebugInfo)
+                        Debug.Log($"WallMeshRenderer: Successfully subscribed to OnSegmentationCompleted event");
                     
-                    // Force sync with current predictor values
-                    _wallClassId = (byte)_predictor.WallClassId;
-                    Debug.Log($"WallMeshRenderer: Synced wall class ID: {_wallClassId}");
-                    
-                    // Show current wall confidence threshold
-                    Debug.Log($"WallMeshRenderer: Current wall confidence threshold: {_wallConfidenceThreshold}");
+                    // Subscribe to wall class ID changes if available
+                    try
+                    {
+                        _predictor.OnWallClassIdChanged += OnPredictorWallClassIdChanged;
+                        
+                        // Force sync with current predictor values
+                        _wallClassId = (byte)_predictor.WallClassId;
+                        
+                        if (_showDebugInfo)
+                            Debug.Log($"WallMeshRenderer: Synced wall class ID: {_wallClassId}");
+                    }
+                    catch
+                    {
+                        Debug.LogWarning("WallMeshRenderer: Could not subscribe to wall class ID changes");
+                    }
                 }
-                else
+                catch
                 {
-                    Debug.LogWarning("WallMeshRenderer: Could not find OnSegmentationCompleted event on predictor");
+                    // Event subscription failed, try reflection as fallback
+                    var segmentationEvent = predictorType.GetField("OnSegmentationCompleted");
+                    if (segmentationEvent != null)
+                    {
+                        eventFound = true;
+                        Debug.Log("WallMeshRenderer: Found OnSegmentationCompleted via reflection");
+                    }
+                }
+                
+                if (!eventFound)
+                {
+                    Debug.LogWarning("WallMeshRenderer: Could not find OnSegmentationCompleted event on predictor. Will use fallback method.");
+                    
+                    // Use a fallback method - you could add a polling mechanism here
+                    _predictor_isReady = false;
                 }
             }
             catch (Exception e)
             {
                 Debug.LogError($"WallMeshRenderer: Error subscribing to segmentation events: {e.Message}");
+                _predictor_isReady = false;
             }
         }
         else
         {
             Debug.LogWarning("WallMeshRenderer: No DeepLabPredictor assigned!");
+            
+            // Try to find one after a delay
+            StartCoroutine(TryFindPredictorDelayed());
         }
 
         // Start the update coroutine
@@ -692,5 +757,118 @@ public class WallMeshRenderer : MonoBehaviour
     private void UpdateMeshColors()
     {
         // Implementation of UpdateMeshColors method
+    }
+
+    /// <summary>
+    /// Clears all wall meshes created by this renderer
+    /// </summary>
+    public void ClearWalls()
+    {
+        // Find all wall objects created by this renderer
+        Transform wallsContainer = transform.Find("Walls");
+        if (wallsContainer != null)
+        {
+            if (_showDebugInfo)
+            {
+                Debug.Log("WallMeshRenderer: Clearing all wall meshes");
+            }
+            
+            // Destroy all child objects
+            foreach (Transform child in wallsContainer)
+            {
+                Destroy(child.gameObject);
+            }
+        }
+        else
+        {
+            // Create the walls container if it doesn't exist
+            wallsContainer = new GameObject("Walls").transform;
+            wallsContainer.SetParent(transform);
+            
+            if (_showDebugInfo)
+            {
+                Debug.Log("WallMeshRenderer: Created Walls container");
+            }
+        }
+    }
+    
+    /// <summary>
+    /// Creates a wall mesh at the specified position with the given size
+    /// </summary>
+    /// <param name="position">World position for the wall</param>
+    /// <param name="size">Size of the wall (width, height, thickness)</param>
+    /// <returns>The created wall GameObject</returns>
+    public GameObject CreateWallMesh(Vector3 position, Vector3 size)
+    {
+        // Find or create the walls container
+        Transform wallsContainer = transform.Find("Walls");
+        if (wallsContainer == null)
+        {
+            wallsContainer = new GameObject("Walls").transform;
+            wallsContainer.SetParent(transform);
+        }
+        
+        // Create a new wall object
+        GameObject wallObj = GameObject.CreatePrimitive(PrimitiveType.Cube);
+        wallObj.name = "Wall_" + wallsContainer.childCount;
+        wallObj.transform.SetParent(wallsContainer);
+        
+        // Set position and scale
+        wallObj.transform.position = position;
+        wallObj.transform.localScale = size;
+        
+        // Apply wall material
+        MeshRenderer renderer = wallObj.GetComponent<MeshRenderer>();
+        if (renderer != null && _wallMaterial != null)
+        {
+            renderer.material = _wallMaterial;
+        }
+        
+        if (_showDebugInfo)
+        {
+            Debug.Log($"WallMeshRenderer: Created wall at {position} with size {size}");
+        }
+        
+        return wallObj;
+    }
+
+    private IEnumerator TryFindPredictorDelayed()
+    {
+        // Wait a bit to allow other components to initialize
+        yield return new WaitForSeconds(1f);
+        
+        if (_predictor == null)
+        {
+            // Try to find it in the scene
+            _predictor = FindObjectOfType<EnhancedDeepLabPredictor>();
+            
+            if (_predictor != null)
+            {
+                Debug.Log("WallMeshRenderer: Found predictor after delay");
+                
+                // Try to subscribe to events
+                try
+                {
+                    _predictor.OnSegmentationCompleted += OnSegmentationCompleted;
+                    _predictor_isReady = true;
+                    
+                    // Subscribe to wall class ID changes
+                    _predictor.OnWallClassIdChanged += OnPredictorWallClassIdChanged;
+                    
+                    // Sync wall class ID
+                    _wallClassId = (byte)_predictor.WallClassId;
+                    
+                    Debug.Log("WallMeshRenderer: Successfully subscribed to predictor events after delay");
+                }
+                catch (Exception e)
+                {
+                    Debug.LogError($"WallMeshRenderer: Error subscribing to events after delay: {e.Message}");
+                }
+            }
+            else
+            {
+                Debug.LogError("WallMeshRenderer: Could not find any EnhancedDeepLabPredictor in the scene even after delay");
+            }
+        }
     }
 } 

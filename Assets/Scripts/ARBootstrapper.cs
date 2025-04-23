@@ -124,6 +124,15 @@ public static class ARBootstrapper
         helper.SetControllers(armlControllers);
         
         Debug.Log("ARBootstrapper: Инициализация AR завершена");
+
+        // Ensure ARMeshManager is configured and enabled
+        var meshManager = Object.FindObjectOfType<ARMeshManager>();
+        if (meshManager != null)
+        {
+            // Assign mesh prefab if needed
+            // meshManager.meshPrefab = yourMeshPrefab;
+            meshManager.enabled = true;
+        }
     }
 }
 

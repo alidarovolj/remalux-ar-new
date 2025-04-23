@@ -1,18 +1,60 @@
 using UnityEngine;
 using UnityEngine.XR.ARFoundation;
+using System.Reflection;
 using System.Collections;
 
-public class ARMLController : MonoBehaviour
+/// <summary>
+/// Advanced ML controller for AR applications
+/// </summary>
+public class AdvancedARMLController : MonoBehaviour
 {
+    /// <summary>
+    /// The interval between ML captures
+    /// </summary>
+    [SerializeField] private float predictionInterval = 1f;
+
+    /// <summary>
+    /// Whether to run the ML processing
+    /// </summary>
+    [SerializeField] private bool isRunning = true;
+
+    /// <summary>
+    /// Whether to enable debug mode
+    /// </summary>
+    [SerializeField] private bool debugMode = false;
+
+    /// <summary>
+    /// Whether to use the enhanced predictor
+    /// </summary>
+    [SerializeField] private bool useEnhancedPredictor = true;
+
+    /// <summary>
+    /// The last time a frame was captured
+    /// </summary>
+    private float lastCaptureTime = 0f;
+
+    /// <summary>
+    /// The ML manager
+    /// </summary>
+    private MLManager mlManager;
+
+    /// <summary>
+    /// The camera manager
+    /// </summary>
+    private ARCameraManager cameraManager;
+
+    /// <summary>
+    /// The enhanced predictor
+    /// </summary>
+    private EnhancedDeepLabPredictor enhancedPredictor;
+
     [Header("Component References")]
     [SerializeField] private ARManager arManager;
-    [SerializeField] private MLManager mlManager;
     [SerializeField] private DeepLabPredictor deepLabPredictor;
     [SerializeField] private WallColorizer wallColorizer;
     
     [Header("Settings")]
     [SerializeField] private bool autoStartAR = true;  // Всегда автоматический запуск
-    [SerializeField] private float predictionInterval = 0.5f;
     [SerializeField] private float maxWaitTimeForSession = 10f; // Maximum time to wait for session in seconds
     
     private bool waitingForSession = false;
@@ -20,7 +62,8 @@ public class ARMLController : MonoBehaviour
     
     private void Start()
     {
-        ValidateReferences();
+        // Initialize components
+        EnsureValidReferences();
         
         if (autoStartAR)
         {
@@ -99,30 +142,62 @@ public class ARMLController : MonoBehaviour
     {
         if (arManager == null)
         {
-            Debug.LogError("AR Manager reference is missing!");
-            enabled = false;
-            return;
+            arManager = FindObjectOfType<ARManager>();
+            if (arManager == null)
+            {
+                Debug.LogError("AR Manager reference is missing!");
+                enabled = false;
+                return;
+            }
+            else
+            {
+                Debug.Log("ARMLController: Found ARManager in scene");
+            }
         }
         
         if (mlManager == null)
         {
-            Debug.LogError("ML Manager reference is missing!");
-            enabled = false;
-            return;
+            mlManager = FindObjectOfType<MLManager>();
+            if (mlManager == null)
+            {
+                Debug.LogError("ML Manager reference is missing!");
+                enabled = false;
+                return;
+            }
+            else
+            {
+                Debug.Log("ARMLController: Found MLManager in scene");
+            }
         }
         
         if (deepLabPredictor == null)
         {
-            Debug.LogError("DeepLab Predictor reference is missing!");
-            enabled = false;
-            return;
+            deepLabPredictor = FindObjectOfType<DeepLabPredictor>();
+            if (deepLabPredictor == null)
+            {
+                Debug.LogError("DeepLab Predictor reference is missing!");
+                enabled = false;
+                return;
+            }
+            else
+            {
+                Debug.Log("ARMLController: Found DeepLabPredictor in scene");
+            }
         }
         
         if (wallColorizer == null)
         {
-            Debug.LogError("Wall Colorizer reference is missing!");
-            enabled = false;
-            return;
+            wallColorizer = FindObjectOfType<WallColorizer>();
+            if (wallColorizer == null)
+            {
+                Debug.LogError("Wall Colorizer reference is missing!");
+                enabled = false;
+                return;
+            }
+            else
+            {
+                Debug.Log("ARMLController: Found WallColorizer in scene");
+            }
         }
 
         Debug.Log("ARMLController: All references validated successfully");
@@ -207,5 +282,135 @@ public class ARMLController : MonoBehaviour
         {
             mlManager.OnSegmentationComplete -= HandleSegmentationResult;
         }
+    }
+
+    private void Update()
+    {
+        // Run ML processing if active
+        if (isRunning)
+        {
+            UpdateML();
+        }
+    }
+
+    /// <summary>
+    /// Updates the ML processing
+    /// </summary>
+    private void UpdateML()
+    {
+        // Make sure we have valid components
+        if (!EnsureValidReferences())
+        {
+            if (Time.frameCount % 300 == 0) // Only log occasionally to avoid spam
+            {
+                Debug.LogWarning("AdvancedARMLController: Missing required references for ML processing");
+            }
+            return;
+        }
+
+        // Check if we should capture a new frame
+        if (Time.time - lastCaptureTime >= predictionInterval)
+        {
+            try
+            {
+                // Request ML manager to capture and process a frame
+                if (mlManager != null)
+                {
+                    // Try to get the CaptureCurrentFrame method which we know exists in MLManager
+                    MethodInfo captureMethod = mlManager.GetType().GetMethod("CaptureCurrentFrame", 
+                        BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                    
+                    if (captureMethod != null)
+                    {
+                        Texture2D frameTexture = captureMethod.Invoke(mlManager, null) as Texture2D;
+                        if (frameTexture != null)
+                        {
+                            // Now try to process this texture with the predictor
+                            ProcessCapturedTexture(frameTexture);
+                            
+                            // Clean up
+                            Destroy(frameTexture);
+                            
+                            // Update last capture time
+                            lastCaptureTime = Time.time;
+                            
+                            if (debugMode)
+                                Debug.Log("AdvancedARMLController: Successfully captured and processed frame");
+                        }
+                        else if (debugMode)
+                        {
+                            Debug.Log("AdvancedARMLController: Captured null texture");
+                        }
+                    }
+                    else if (debugMode)
+                    {
+                        Debug.LogWarning("AdvancedARMLController: CaptureCurrentFrame method not found in MLManager");
+                    }
+                }
+            }
+            catch (System.Exception e)
+            {
+                Debug.LogError($"AdvancedARMLController: Error during ML update: {e.Message}");
+                // Continue execution to prevent the entire AR experience from stopping
+            }
+        }
+    }
+
+    /// <summary>
+    /// Process a captured texture using available predictors
+    /// </summary>
+    private void ProcessCapturedTexture(Texture2D texture)
+    {
+        if (texture == null || mlManager == null) return;
+        
+        // Try to start continuous prediction in ML Manager, if available
+        MethodInfo startPredictionMethod = mlManager.GetType().GetMethod("StartContinuousPrediction");
+        if (startPredictionMethod != null)
+        {
+            startPredictionMethod.Invoke(mlManager, null);
+        }
+    }
+
+    /// <summary>
+    /// Validates that all required references are present
+    /// </summary>
+    /// <returns>True if all references are valid, false otherwise</returns>
+    private bool EnsureValidReferences()
+    {
+        // Try to find references if they're missing
+        if (mlManager == null)
+        {
+            mlManager = FindObjectOfType<MLManager>();
+            if (mlManager == null && debugMode)
+            {
+                Debug.LogWarning("AdvancedARMLController: MLManager reference is missing");
+                return false;
+            }
+        }
+
+        if (cameraManager == null)
+        {
+            cameraManager = FindObjectOfType<ARCameraManager>();
+            if (cameraManager == null && debugMode)
+            {
+                Debug.LogWarning("AdvancedARMLController: ARCameraManager reference is missing");
+                return false;
+            }
+        }
+
+        // If we depend on the enhanced predictor, ensure it exists
+        if (useEnhancedPredictor)
+        {
+            // Try to get the predictor from ML Manager
+            var predictorComponent = mlManager != null ? mlManager.GetComponent(System.Type.GetType("EnhancedDeepLabPredictor")) : null;
+            
+            if (predictorComponent == null && debugMode)
+            {
+                Debug.LogWarning("AdvancedARMLController: EnhancedDeepLabPredictor reference is missing");
+                // Don't return false here as we can still work with the standard predictor
+            }
+        }
+
+        return mlManager != null && cameraManager != null;
     }
 } 

@@ -8,8 +8,9 @@ using UnityEditor.SceneManagement;
 using Unity.XR.CoreUtils;
 using UnityEngine.InputSystem;
 using System;
+using UnityEngine.SceneManagement;
 
-public class ARSceneSetup : Editor
+public class ARSceneSetup : EditorWindow
 {
     private const string MODEL_PATH = "Assets/ML/Models/model.onnx";
     private const string WALL_SHADER_PATH = "Assets/Shaders/WallMaskShader.shader";
@@ -40,112 +41,50 @@ public class ARSceneSetup : Editor
         return target.AddComponent<T>();
     }
     
-    [MenuItem("AR Wall Detection/Setup Complete Scene")]
+    [MenuItem("AR/Setup AR Scene")]
     public static void SetupARScene()
     {
-        try
+        // Создаем новую сцену
+        Scene newScene = CreateARScene();
+        
+        // Добавляем необходимые AR компоненты
+        GameObject arSessionOrigin = CreateARComponents();
+        
+        // Добавляем интерфейс управления (только палитру цветов)
+        GameObject uiCanvas = CreateARUICanvas();
+        
+        // Сохраняем сцену
+        string scenePath = EditorUtility.SaveFilePanel("Save AR Scene", "Assets", "ARScene", "unity");
+        if (!string.IsNullOrEmpty(scenePath))
         {
-            // Check Editor version for known issues
-            Debug.Log($"Unity Editor Version: {Application.unityVersion}");
-            
-            // Force a garbage collection to help with memory issues
-            System.GC.Collect();
-            
-            // Make sure the Scripts folder exists
-            if (!Directory.Exists("Assets/Scripts"))
-            {
-                AssetDatabase.CreateFolder("Assets", "Scripts");
-                AssetDatabase.Refresh();
-                Debug.Log("Created Scripts folder");
-            }
-            
-            // Create a new scene with minimal setup first
-            try
-            {
-                EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
-                Debug.Log("Created new empty scene");
-            }
-            catch (Exception e)
-            {
-                Debug.LogError($"Error creating new scene: {e.Message}");
-                // Try to continue anyway with default setup
-                EditorSceneManager.NewScene(NewSceneSetup.DefaultGameObjects);
-            }
-            
-            // Create AR system components
-            GameObject arSystem = null;
-            try 
-            {
-                arSystem = SetupARSystem();
-                Debug.Log("AR System setup completed");
-            }
-            catch (Exception e)
-            {
-                Debug.LogError($"Error in AR System setup: {e.Message}\n{e.StackTrace}");
-                throw; // Re-throw to abort the process
-            }
-            
-            // Setup ML components
-            try
-            {
-                SetupMLComponents(arSystem);
-                Debug.Log("ML Components setup completed");
-            }
-            catch (Exception e)
-            {
-                Debug.LogError($"Error in ML Components setup: {e.Message}\n{e.StackTrace}");
-                // Continue with setup even if ML components fail
-            }
-            
-            GameObject uiCanvas = null;
-            try
-            {
-                uiCanvas = SetupUI();
-                Debug.Log("UI setup completed");
-            }
-            catch (Exception e)
-            {
-                Debug.LogError($"Error in UI setup: {e.Message}\n{e.StackTrace}");
-                // Create a minimal canvas if UI setup fails
-                uiCanvas = new GameObject("UI Canvas");
-                uiCanvas.AddComponent<Canvas>();
-                uiCanvas.AddComponent<CanvasScaler>();
-                uiCanvas.AddComponent<GraphicRaycaster>();
-            }
-            
-            // Connect components after all objects are created
-            try
-            {
-                SetupComponentReferences(uiCanvas);
-                Debug.Log("Component references setup completed");
-            }
-            catch (Exception e)
-            {
-                Debug.LogError($"Error in component references setup: {e.Message}\n{e.StackTrace}");
-            }
-            
-            // Save the scene
-            try
-            {
-                string scenePath = "Assets/Scenes/WallDetectionSceneAuto.unity";
-                EditorSceneManager.SaveScene(EditorSceneManager.GetActiveScene(), scenePath);
-                Debug.Log("AR Wall Detection Scene has been created successfully and saved as " + scenePath);
-            }
-            catch (Exception e)
-            {
-                Debug.LogError($"Error saving scene: {e.Message}\n{e.StackTrace}");
-            }
-            
-            // Force a refresh of the Asset Database
-            AssetDatabase.Refresh();
+            // Преобразуем абсолютный путь в относительный путь проекта
+            string relativePath = scenePath.Substring(Application.dataPath.Length - "Assets".Length);
+            EditorSceneManager.SaveScene(newScene, relativePath);
+            Debug.Log("AR сцена создана и сохранена в: " + relativePath);
         }
-        catch (Exception e)
+        else
         {
-            Debug.LogError($"Critical error during scene setup: {e.Message}\n{e.StackTrace}");
-            EditorUtility.DisplayDialog("Scene Setup Error", 
-                "An error occurred while setting up the AR Wall Detection scene. Check the console for details.\n\n" +
-                "Error: " + e.Message, "OK");
+            Debug.Log("AR сцена создана, но не сохранена.");
         }
+    }
+    
+    /// <summary>
+    /// Создает новую сцену для AR
+    /// </summary>
+    private static Scene CreateARScene()
+    {
+        // Создаем новую пустую сцену
+        Scene newScene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
+        
+        // Добавляем основной свет
+        GameObject directionalLight = new GameObject("Directional Light");
+        Light light = directionalLight.AddComponent<Light>();
+        light.type = LightType.Directional;
+        light.intensity = 1.0f;
+        light.color = new Color(1.0f, 0.95f, 0.84f);
+        directionalLight.transform.rotation = Quaternion.Euler(50, -30, 0);
+        
+        return newScene;
     }
     
     private static GameObject SetupARSystem()
@@ -249,24 +188,60 @@ public class ARSceneSetup : Editor
             wallPlaneFilter.minVerticalCos = 0.8f;
             Debug.Log("Added WallPlaneFilter component for filtering vertical planes");
 
-            // Создаем child объект для ARMeshManager (должен быть child для XROrigin)
+            // Create AR Mesh Manager as direct child of XR Origin (not under CameraOffset)
+            // This is critical for proper world-space positioning of meshes
             GameObject meshManagerObj = new GameObject("AR Mesh Manager");
             meshManagerObj.transform.SetParent(xrOriginObj.transform);
             
-            // Добавляем ARMeshManager на child объект безопасным способом
+            // Add ARMeshManager directly to XROrigin
             ARMeshManager meshManager = SafeAddComponent<ARMeshManager>(meshManagerObj);
             meshManager.density = 0.5f;
-            Debug.Log("Added ARMeshManager as child of XROrigin for mesh processing");
+            Debug.Log("Added ARMeshManager as child of XROrigin for mesh processing in world space");
+            
+            // Add WallAligner to handle applying material to walls
+            WallAligner wallAligner = SafeAddComponent<WallAligner>(meshManagerObj);
+            
+            // Load wall material
+            Material wallMaterial = AssetDatabase.LoadAssetAtPath<Material>("Assets/Materials/SimpleWallMaterial.mat");
+            if (wallMaterial == null)
+            {
+                wallMaterial = AssetDatabase.LoadAssetAtPath<Material>("Assets/Materials/WallMaterial.mat");
+            }
+            
+            if (wallMaterial != null)
+            {
+                // Set material for WallAligner
+                SerializedObject serializedWallAligner = new SerializedObject(wallAligner);
+                var wallMaterialProp = serializedWallAligner.FindProperty("wallMaterial");
+                if (wallMaterialProp != null)
+                {
+                    wallMaterialProp.objectReferenceValue = wallMaterial;
+                }
+                serializedWallAligner.ApplyModifiedProperties();
+                Debug.Log("Added WallAligner with material assigned for automatic wall mesh processing");
+            }
+            else
+            {
+                Debug.LogWarning("Wall material not found. Please assign it manually to WallAligner component.");
+            }
 
-            // Добавляем Raycast Manager для определения поверхностей
+            // Disable WallMeshRenderer if it exists
+            var wallMeshRenderer = meshManagerObj.GetComponent<WallMeshRenderer>();
+            if (wallMeshRenderer != null)
+            {
+                wallMeshRenderer.enabled = false;
+                Debug.Log("Disabled WallMeshRenderer to avoid conflicts with WallAligner");
+            }
+
+            // Add Raycast Manager for surface detection
             ARRaycastManager raycastManager = xrOriginObj.AddComponent<ARRaycastManager>();
 
-            // Создаем и настраиваем ARManager
+            // Create and configure ARManager
             GameObject arManagerObj = new GameObject("AR Manager");
             arManagerObj.transform.SetParent(arSystem.transform);
             ARManager arManager = arManagerObj.AddComponent<ARManager>();
             
-            // Устанавливаем ссылки на необходимые компоненты
+            // Set references to necessary components
             SerializedObject serializedARManager = new SerializedObject(arManager);
             var arSessionProp = serializedARManager.FindProperty("arSession");
             if (arSessionProp != null)
@@ -283,13 +258,13 @@ public class ARSceneSetup : Editor
             serializedARManager.ApplyModifiedProperties();
             Debug.Log("ARManager created and configured successfully");
 
-            // Добавляем наш SurfaceDetector
+            // Add SurfaceDetector
             SurfaceDetector surfaceDetector = xrOriginObj.AddComponent<SurfaceDetector>();
 
-            // Добавляем PlaneVisualizer для отображения обнаруженных поверхностей
+            // Add PlaneVisualizer for displaying detected surfaces
             PlaneVisualizer planeVisualizer = xrOriginObj.AddComponent<PlaneVisualizer>();
 
-            // Создаем материал для визуализации плоскостей
+            // Create material for plane visualization
             Material planeMaterial = new Material(Shader.Find("Standard"));
             planeMaterial.color = new Color(0.0f, 0.8f, 1.0f, 0.5f);
             planeMaterial.SetFloat("_Mode", 3); // Transparent mode
@@ -301,7 +276,7 @@ public class ARSceneSetup : Editor
             planeMaterial.DisableKeyword("_ALPHAPREMULTIPLY_ON");
             planeMaterial.renderQueue = 3000;
 
-            // Сохраняем материал в проекте
+            // Save material to project
             if (!Directory.Exists("Assets/Materials"))
             {
                 AssetDatabase.CreateFolder("Assets", "Materials");
@@ -445,7 +420,7 @@ public class ARSceneSetup : Editor
             WallDetectionSetup wallDetectionSetup = wallDetectionObj.AddComponent<WallDetectionSetup>();
             wallDetectionSetup.autoSetup = true;
             wallDetectionSetup.useEnhancedPredictor = true;
-            wallDetectionSetup.createUIPanel = true;
+            wallDetectionSetup.createUIPanel = false; // Отключаем создание UI панели
             wallDetectionSetup.applyFixesToOriginal = true;
             wallDetectionSetup.initialThreshold = 0.3f;
             wallDetectionSetup.wallClassId = 9;
@@ -568,28 +543,10 @@ public class ARSceneSetup : Editor
             canvasObj.AddComponent<CanvasScaler>();
             canvasObj.AddComponent<GraphicRaycaster>();
             
-            // Create panel with buttons
-            GameObject panelObj = new GameObject("Control Panel");
-            panelObj.transform.SetParent(canvasObj.transform, false);
-            RectTransform panelRect = panelObj.AddComponent<RectTransform>();
-            panelRect.anchorMin = new Vector2(0, 0);
-            panelRect.anchorMax = new Vector2(1, 0.2f);
-            panelRect.offsetMin = new Vector2(10, 10);
-            panelRect.offsetMax = new Vector2(-10, -10);
-            
-            Image panelImage = panelObj.AddComponent<Image>();
-            panelImage.color = new Color(0.1f, 0.1f, 0.1f, 0.8f);
-            
-            // Create color palette
-            CreateColorButtons(panelObj.transform);
-            
-            // Add status text
-            CreateStatusText(canvasObj.transform);
-            
-            // Create RawImage for AR display - IMPORTANT: Create this with a specific name
+            // Create RawImage for AR display - ВАЖНО: создаем это с определенным именем
             GameObject displayObj = new GameObject("AR Display");
             displayObj.transform.SetParent(canvasObj.transform, false);
-            displayObj.transform.SetAsFirstSibling(); // Place behind all UI elements
+            displayObj.transform.SetAsFirstSibling(); // Размещаем позади всех UI элементов
             
             RectTransform displayRect = displayObj.AddComponent<RectTransform>();
             displayRect.anchorMin = Vector2.zero;
@@ -598,8 +555,24 @@ public class ARSceneSetup : Editor
             displayRect.offsetMax = Vector2.zero;
             
             RawImage rawImage = displayObj.AddComponent<RawImage>();
-            // Set a default texture to avoid null reference
+            // Устанавливаем дефолтную текстуру
             rawImage.texture = Texture2D.blackTexture;
+            
+            // Создаем панель с цветовой палитрой в нижней части экрана
+            GameObject colorPanelObj = new GameObject("Color Panel");
+            colorPanelObj.transform.SetParent(canvasObj.transform, false);
+            
+            RectTransform colorPanelRect = colorPanelObj.AddComponent<RectTransform>();
+            colorPanelRect.anchorMin = new Vector2(0, 0);
+            colorPanelRect.anchorMax = new Vector2(1, 0.1f);
+            colorPanelRect.offsetMin = new Vector2(10, 10);
+            colorPanelRect.offsetMax = new Vector2(-10, -10);
+            
+            Image colorPanelImage = colorPanelObj.AddComponent<Image>();
+            colorPanelImage.color = new Color(0.1f, 0.1f, 0.1f, 0.8f);
+            
+            // Создаем цветовую палитру
+            CreateColorButtons(colorPanelObj.transform);
             
             return canvasObj;
         }
@@ -717,9 +690,12 @@ public class ARSceneSetup : Editor
     {
         try
         {
-            GameObject buttonObj = new GameObject(name);
+            GameObject buttonObj = new GameObject(name + " Button");
             buttonObj.transform.SetParent(parent, false);
             
+            RectTransform buttonRect = buttonObj.AddComponent<RectTransform>();
+            buttonRect.anchorMin = anchorMin;
+            buttonRect.anchorMax = anchorMax;
             RectTransform rect = buttonObj.AddComponent<RectTransform>();
             rect.anchorMin = anchorMin;
             rect.anchorMax = anchorMax;
@@ -815,20 +791,6 @@ public class ARSceneSetup : Editor
             // Find the material asset
             Material wallMaterial = AssetDatabase.LoadAssetAtPath<Material>("Assets/Materials/WallMaterial.mat");
             
-            // Check if essential components are missing and log errors
-            bool isMissingComponents = false;
-            if (armlController == null) { Debug.LogError("ARMLController is missing"); isMissingComponents = true; }
-            if (mlManager == null) { Debug.LogError("MLManager is missing"); isMissingComponents = true; }
-            if (predictor == null) { Debug.LogError("DeepLabPredictor is missing"); isMissingComponents = true; }
-            if (wallColorizer == null) { Debug.LogError("WallColorizer is missing"); isMissingComponents = true; }
-            if (displayImage == null) { Debug.LogError("AR Display RawImage is missing"); isMissingComponents = true; }
-            
-            if (isMissingComponents)
-            {
-                Debug.LogError("One or more required components are missing. Scene setup might be incomplete.");
-                // Continue with setup for components that do exist
-            }
-            
             // Set up ARMLController references to ARManager
             if (armlController != null && arManager != null)
             {
@@ -842,7 +804,7 @@ public class ARSceneSetup : Editor
                 serializedArmlController.ApplyModifiedProperties();
             }
             
-            // Set up WallColorizer references FIRST to ensure it has display image
+            // Set up WallColorizer references
             if (wallColorizer != null)
             {
                 SerializedObject serializedColorizer = new SerializedObject(wallColorizer);
@@ -853,10 +815,6 @@ public class ARSceneSetup : Editor
                 {
                     displayProp.objectReferenceValue = displayImage;
                     Debug.Log($"WallColorizer: Display image reference set to {displayImage.name}");
-                }
-                else
-                {
-                    Debug.LogError("Failed to set display image reference for WallColorizer");
                 }
                 
                 // Set camera reference
@@ -874,10 +832,6 @@ public class ARSceneSetup : Editor
                     {
                         cameraProp.objectReferenceValue = mainCamera;
                     }
-                    else
-                    {
-                        Debug.LogError("Failed to find AR Camera for WallColorizer");
-                    }
                 }
                 
                 // Set material reference
@@ -885,10 +839,6 @@ public class ARSceneSetup : Editor
                 if (materialProp != null && wallMaterial != null)
                 {
                     materialProp.objectReferenceValue = wallMaterial;
-                }
-                else
-                {
-                    Debug.LogWarning("Wall material not set for WallColorizer");
                 }
                 
                 // Set color and opacity
@@ -909,71 +859,19 @@ public class ARSceneSetup : Editor
                 EditorUtility.SetDirty(wallColorizer);
             }
             
-            // Set up ARMLController references
-            if (armlController != null)
-            {
-                SerializedObject serializedArmlController = new SerializedObject(armlController);
-                
-                if (arManager != null)
-                {
-                    serializedArmlController.FindProperty("arManager").objectReferenceValue = arManager;
-                }
-                
-                if (mlManager != null)
-                {
-                    serializedArmlController.FindProperty("mlManager").objectReferenceValue = mlManager;
-                }
-                
-                if (predictor != null)
-                {
-                    serializedArmlController.FindProperty("deepLabPredictor").objectReferenceValue = predictor;
-                }
-                
-                if (wallColorizer != null)
-                {
-                    serializedArmlController.FindProperty("wallColorizer").objectReferenceValue = wallColorizer;
-                }
-                
-                var predIntervalProp = serializedArmlController.FindProperty("predictionInterval");
-                if (predIntervalProp != null)
-                {
-                    predIntervalProp.floatValue = 0.5f;
-                }
-                
-                serializedArmlController.ApplyModifiedProperties();
-                EditorUtility.SetDirty(armlController);
-            }
-            
-            // Set up FixARMLController references
-            if (armlController != null)
-            {
-                FixARMLController fixController = armlController.GetComponent<FixARMLController>();
-                if (fixController != null)
-                {
-                    SerializedObject serializedFixController = new SerializedObject(fixController);
-                    
-                    if (arSession != null)
-                    {
-                        serializedFixController.FindProperty("arSession").objectReferenceValue = arSession;
-                    }
-                    
-                    serializedFixController.FindProperty("armlController").objectReferenceValue = armlController;
-                    serializedFixController.ApplyModifiedProperties();
-                    EditorUtility.SetDirty(fixController);
-                }
-                
-                // Disable auto-start in ARMLController
-                SerializedObject serializedController = new SerializedObject(armlController);
-                var autoStartProp = serializedController.FindProperty("autoStartAR");
-                if (autoStartProp != null)
-                {
-                    autoStartProp.boolValue = false;
-                }
-                serializedController.ApplyModifiedProperties();
-            }
-            
             // Set up color buttons to change wall color
-            Transform colorPalette = GameObject.Find("Color Palette")?.transform;
+            Transform colorPalette = null;
+            Transform colorPanel = uiCanvas.transform.Find("Color Panel");
+            if (colorPanel != null)
+            {
+                colorPalette = colorPanel.transform;
+            }
+            else
+            {
+                // Fallback - try to find by name
+                colorPalette = GameObject.Find("Color Palette")?.transform;
+            }
+            
             if (colorPalette != null && armlController != null)
             {
                 foreach (Transform child in colorPalette)
@@ -1075,75 +973,738 @@ public class ARSceneSetup : Editor
                     arMeshManager.density = 0.5f;
                 }
                 
-                // Add WallMeshRenderer to the same GameObject as ARMeshManager
-                WallMeshRenderer wallMeshRenderer = meshManagerObj.GetComponent<WallMeshRenderer>();
-                if (wallMeshRenderer == null)
+                // Make sure WallAligner is already attached
+                WallAligner wallAligner = meshManagerObj.GetComponent<WallAligner>();
+                if (wallAligner == null)
                 {
-                    wallMeshRenderer = SafeAddComponent<WallMeshRenderer>(meshManagerObj);
+                    wallAligner = SafeAddComponent<WallAligner>(meshManagerObj);
+                    
+                    // Set wall material
+                    SerializedObject serializedWallAligner = new SerializedObject(wallAligner);
+                    var wallMaterialProp = serializedWallAligner.FindProperty("wallMaterial");
+                    if (wallMaterialProp != null && wallMaterial != null)
+                    {
+                        wallMaterialProp.objectReferenceValue = wallMaterial;
+                        Debug.Log("Set wall material for WallAligner component");
+                    }
+                    serializedWallAligner.ApplyModifiedProperties();
                 }
                 
+                // Disable WallMeshRenderer if it exists (we'll use WallAligner instead)
+                WallMeshRenderer wallMeshRenderer = meshManagerObj.GetComponent<WallMeshRenderer>();
                 if (wallMeshRenderer != null)
                 {
-                    // Get required references
-                    ARCameraManager arCameraManager = UnityEngine.Object.FindAnyObjectByType<ARCameraManager>();
-                    
-                    // Сначала проверяем наличие EnhancedDeepLabPredictor
-                    EnhancedDeepLabPredictor foundEnhancedPredictor = UnityEngine.Object.FindAnyObjectByType<EnhancedDeepLabPredictor>();
-                    DeepLabPredictor basicPredictor = UnityEngine.Object.FindAnyObjectByType<DeepLabPredictor>();
-                    
-                    // Set up references
-                    wallMeshRenderer.ARCameraManager = arCameraManager;
-                    
-                    // Предпочтительно использовать EnhancedDeepLabPredictor, но если его нет, 
-                    // создаем его на основе базового предиктора
-                    if (foundEnhancedPredictor != null)
-                    {
-                        wallMeshRenderer.Predictor = foundEnhancedPredictor;
-                        Debug.Log("WallMeshRenderer configured with EnhancedDeepLabPredictor");
-                    }
-                    else if (basicPredictor != null)
-                    {
-                        // Создаем EnhancedDeepLabPredictor и копируем настройки из базового предиктора
-                        GameObject enhancedPredictorObj = new GameObject("Enhanced DeepLab Predictor");
-                        enhancedPredictorObj.transform.SetParent(basicPredictor.transform.parent);
-                        EnhancedDeepLabPredictor newEnhancedPredictor = enhancedPredictorObj.AddComponent<EnhancedDeepLabPredictor>();
-                        
-                        // Копируем настройки
-                        newEnhancedPredictor.modelAsset = basicPredictor.modelAsset;
-                        newEnhancedPredictor.WallClassId = (byte)9;
-                        newEnhancedPredictor.ClassificationThreshold = 0.5f;
-                        newEnhancedPredictor.useArgMaxMode = true;
-                        newEnhancedPredictor.debugMode = true;
-                        
-                        wallMeshRenderer.Predictor = newEnhancedPredictor;
-                        Debug.Log("Created EnhancedDeepLabPredictor and configured WallMeshRenderer with it");
-                    }
-                    
-                    // Configure wall detection settings
-                    wallMeshRenderer.VerticalThreshold = 0.6f;
-                    wallMeshRenderer.WallConfidenceThreshold = 0.2f;
-                    wallMeshRenderer.ShowDebugInfo = true;
-                    wallMeshRenderer.ShowAllMeshes = true; // Show all meshes for debugging
-                    
-                    // Create a material for wall visualization if needed
-                    if (wallMeshRenderer.WallMaterial == null)
-                    {
-                        Material meshWallMaterial = new Material(Shader.Find("Standard"));
-                        meshWallMaterial.color = new Color(0.3f, 0.5f, 0.8f, 0.5f);
-                        wallMeshRenderer.WallMaterial = meshWallMaterial;
-                    }
-                    
-                    Debug.Log("Wall mesh renderer configured successfully");
+                    wallMeshRenderer.enabled = false;
+                    Debug.Log("Disabled WallMeshRenderer to avoid conflicts with WallAligner");
                 }
-            }
-            else
-            {
-                Debug.LogWarning("XROrigin not found - cannot setup WallMeshRenderer");
             }
         }
         catch (System.Exception ex)
         {
             Debug.LogError($"Error setting up component references: {ex.Message}\n{ex.StackTrace}");
         }
+    }
+    
+    /// <summary>
+    /// Создает и настраивает улучшенную систему обнаружения стен
+    /// </summary>
+    private static void SetupWallDetectionSystem()
+    {
+        try
+        {
+            // Создаем основной объект Wall System
+            GameObject wallSystem = new GameObject("Wall System");
+            
+            // Добавляем компоненты
+            WallOptimizer wallOptimizer = wallSystem.AddComponent<WallOptimizer>();
+            EnhancedWallRenderer enhancedRenderer = wallSystem.AddComponent<EnhancedWallRenderer>();
+            
+            // Отключаем отображение панели настройки стен
+            WallDetectionTuner tuner = wallSystem.AddComponent<WallDetectionTuner>();
+            if (tuner != null)
+            {
+                tuner.wallOptimizer = wallOptimizer;
+                tuner.wallRenderer = enhancedRenderer;
+                tuner.showTunerPanel = false; // Отключаем показ панели настройки
+            }
+            
+            // Настраиваем параметры WallOptimizer
+            if (wallOptimizer != null)
+            {
+                wallOptimizer.wallClassId = 15; // стандартный класс "wall" в модели
+                wallOptimizer.confidenceThreshold = 0.4f; // более строгий порог уверенности
+                wallOptimizer.minContourArea = 3000f; // минимальная площадь контура в пикселях
+                wallOptimizer.minAspectRatio = 0.3f; // минимальное соотношение сторон
+                wallOptimizer.maxAspectRatio = 4.0f; // максимальное соотношение сторон
+                wallOptimizer.useMorphology = true; // применять морфологические операции
+                wallOptimizer.morphKernelSize = 3; // размер ядра для морфологии
+                wallOptimizer.minWallArea = 1.5f; // минимальная площадь стены в метрах
+                wallOptimizer.wallMergeDistance = 0.5f; // расстояние для объединения близких стен
+                wallOptimizer.showDebugInfo = false; // Отключаем отладочную информацию
+            }
+            
+            // Настраиваем параметры EnhancedWallRenderer
+            if (enhancedRenderer != null)
+            {
+                // Настраиваем ссылки на компоненты
+                enhancedRenderer.ARCameraManager = UnityEngine.Object.FindAnyObjectByType<ARCameraManager>();
+                enhancedRenderer.Predictor = UnityEngine.Object.FindAnyObjectByType<EnhancedDeepLabPredictor>();
+                
+                // Настраиваем визуальные параметры
+                enhancedRenderer.WallColor = new Color(0.3f, 0.5f, 0.8f, 0.5f); // цвет стен
+                enhancedRenderer.WallOpacity = 0.7f; // прозрачность стен
+                
+                // Настраиваем параметры фильтрации
+                enhancedRenderer.MinWallArea = 1.5f; // минимальная площадь стены
+                enhancedRenderer.VerticalThreshold = 0.6f; // порог вертикальности
+                enhancedRenderer.WallConfidenceThreshold = 0.4f; // порог уверенности
+                enhancedRenderer.WallClassId = 15; // ID класса стены в модели
+                enhancedRenderer.ShowDebugInfo = false; // Отключаем отладочную информацию
+            }
+            
+            Debug.Log("Wall Detection System setup completed successfully");
+        }
+        catch (System.Exception ex)
+        {
+            Debug.LogError($"Error setting up Wall Detection System: {ex.Message}\n{ex.StackTrace}");
+        }
+    }
+    
+    /// <summary>
+    /// Создает слайдер для настройки числового параметра
+    /// </summary>
+    private static GameObject CreateSlider(GameObject parent, string label, float minValue, float maxValue, float defaultValue, Vector2 anchorMin, Vector2 anchorMax)
+    {
+        GameObject sliderObj = new GameObject(label + " Slider");
+        sliderObj.transform.SetParent(parent.transform, false);
+        RectTransform sliderRect = sliderObj.AddComponent<RectTransform>();
+        sliderRect.anchorMin = anchorMin;
+        sliderRect.anchorMax = anchorMax;
+        sliderRect.offsetMin = Vector2.zero;
+        sliderRect.offsetMax = Vector2.zero;
+        
+        // Добавляем лейбл
+        GameObject labelObj = new GameObject("Label");
+        labelObj.transform.SetParent(sliderObj.transform, false);
+        RectTransform labelRect = labelObj.AddComponent<RectTransform>();
+        labelRect.anchorMin = new Vector2(0, 0.5f);
+        labelRect.anchorMax = new Vector2(0.3f, 1);
+        labelRect.offsetMin = Vector2.zero;
+        labelRect.offsetMax = Vector2.zero;
+        
+        Text labelText = labelObj.AddComponent<Text>();
+        labelText.text = label;
+        labelText.fontSize = 14;
+        labelText.alignment = TextAnchor.MiddleLeft;
+        labelText.color = Color.white;
+        
+        // Добавляем сам слайдер
+        GameObject sliderControl = new GameObject("Slider Control");
+        sliderControl.transform.SetParent(sliderObj.transform, false);
+        RectTransform sliderControlRect = sliderControl.AddComponent<RectTransform>();
+        sliderControlRect.anchorMin = new Vector2(0.31f, 0.5f);
+        sliderControlRect.anchorMax = new Vector2(0.8f, 0.8f);
+        sliderControlRect.offsetMin = Vector2.zero;
+        sliderControlRect.offsetMax = Vector2.zero;
+        
+        Slider slider = sliderControl.AddComponent<Slider>();
+        slider.minValue = minValue;
+        slider.maxValue = maxValue;
+        slider.value = defaultValue;
+        
+        // Фон слайдера
+        GameObject background = new GameObject("Background");
+        background.transform.SetParent(sliderControl.transform, false);
+        RectTransform backgroundRect = background.AddComponent<RectTransform>();
+        backgroundRect.anchorMin = Vector2.zero;
+        backgroundRect.anchorMax = Vector2.one;
+        backgroundRect.offsetMin = Vector2.zero;
+        backgroundRect.offsetMax = Vector2.zero;
+        
+        Image backgroundImage = background.AddComponent<Image>();
+        backgroundImage.color = new Color(0.2f, 0.2f, 0.2f, 1);
+        
+        // Заполнение слайдера
+        GameObject fillArea = new GameObject("Fill Area");
+        fillArea.transform.SetParent(sliderControl.transform, false);
+        RectTransform fillAreaRect = fillArea.AddComponent<RectTransform>();
+        fillAreaRect.anchorMin = Vector2.zero;
+        fillAreaRect.anchorMax = Vector2.one;
+        fillAreaRect.offsetMin = new Vector2(5, 0);
+        fillAreaRect.offsetMax = new Vector2(-5, 0);
+        
+        GameObject fill = new GameObject("Fill");
+        fill.transform.SetParent(fillArea.transform, false);
+        RectTransform fillRect = fill.AddComponent<RectTransform>();
+        fillRect.anchorMin = Vector2.zero;
+        fillRect.anchorMax = Vector2.one;
+        fillRect.offsetMin = Vector2.zero;
+        fillRect.offsetMax = Vector2.zero;
+        
+        Image fillImage = fill.AddComponent<Image>();
+        fillImage.color = new Color(0.3f, 0.6f, 1f, 1);
+        
+        slider.fillRect = fillRect;
+        
+        // Ползунок слайдера
+        GameObject handle = new GameObject("Handle");
+        handle.transform.SetParent(sliderControl.transform, false);
+        RectTransform handleRect = handle.AddComponent<RectTransform>();
+        handleRect.anchorMin = new Vector2(0, 0.5f);
+        handleRect.anchorMax = new Vector2(0, 0.5f);
+        handleRect.sizeDelta = new Vector2(20, 20);
+        
+        Image handleImage = handle.AddComponent<Image>();
+        handleImage.color = new Color(1f, 1f, 1f, 1);
+        
+        slider.handleRect = handleRect;
+        
+        // Добавляем отображение текущего значения
+        GameObject valueObj = new GameObject("Value");
+        valueObj.transform.SetParent(sliderObj.transform, false);
+        RectTransform valueRect = valueObj.AddComponent<RectTransform>();
+        valueRect.anchorMin = new Vector2(0.81f, 0.5f);
+        valueRect.anchorMax = new Vector2(1, 1);
+        valueRect.offsetMin = Vector2.zero;
+        valueRect.offsetMax = Vector2.zero;
+        
+        Text valueText = valueObj.AddComponent<Text>();
+        valueText.text = defaultValue.ToString("F2");
+        valueText.fontSize = 14;
+        valueText.alignment = TextAnchor.MiddleRight;
+        valueText.color = Color.white;
+        
+        // Обновление текста значения при изменении слайдера
+        slider.onValueChanged.AddListener((float val) => {
+            if (minValue >= 100)
+                valueText.text = val.ToString("F0");
+            else
+                valueText.text = val.ToString("F2");
+        });
+        
+        return sliderObj;
+    }
+    
+    /// <summary>
+    /// Создает переключатель (checkbox)
+    /// </summary>
+    private static GameObject CreateToggle(GameObject parent, string label, bool defaultValue, Vector2 anchorMin, Vector2 anchorMax)
+    {
+        GameObject toggleObj = new GameObject(label + " Toggle");
+        toggleObj.transform.SetParent(parent.transform, false);
+        RectTransform toggleRect = toggleObj.AddComponent<RectTransform>();
+        toggleRect.anchorMin = anchorMin;
+        toggleRect.anchorMax = anchorMax;
+        toggleRect.offsetMin = Vector2.zero;
+        toggleRect.offsetMax = Vector2.zero;
+        
+        Toggle toggle = toggleObj.AddComponent<Toggle>();
+        toggle.isOn = defaultValue;
+        
+        // Создаем фон для переключателя
+        GameObject background = new GameObject("Background");
+        background.transform.SetParent(toggleObj.transform, false);
+        RectTransform backgroundRect = background.AddComponent<RectTransform>();
+        backgroundRect.anchorMin = new Vector2(0, 0.5f);
+        backgroundRect.anchorMax = new Vector2(0, 0.5f);
+        backgroundRect.sizeDelta = new Vector2(20, 20);
+        
+        Image backgroundImage = background.AddComponent<Image>();
+        backgroundImage.color = new Color(0.2f, 0.2f, 0.2f, 1);
+        
+        // Создаем маркер выбора
+        GameObject checkmark = new GameObject("Checkmark");
+        checkmark.transform.SetParent(background.transform, false);
+        RectTransform checkmarkRect = checkmark.AddComponent<RectTransform>();
+        checkmarkRect.anchorMin = Vector2.zero;
+        checkmarkRect.anchorMax = Vector2.one;
+        checkmarkRect.offsetMin = new Vector2(4, 4);
+        checkmarkRect.offsetMax = new Vector2(-4, -4);
+        
+        Image checkmarkImage = checkmark.AddComponent<Image>();
+        checkmarkImage.color = new Color(0.3f, 0.6f, 1f, 1);
+        
+        toggle.graphic = checkmarkImage;
+        toggle.targetGraphic = backgroundImage;
+        
+        // Добавляем текст лейбла
+        GameObject labelObj = new GameObject("Label");
+        labelObj.transform.SetParent(toggleObj.transform, false);
+        RectTransform labelRect = labelObj.AddComponent<RectTransform>();
+        labelRect.anchorMin = new Vector2(0, 0);
+        labelRect.anchorMax = new Vector2(1, 1);
+        labelRect.offsetMin = new Vector2(25, 0);
+        labelRect.offsetMax = Vector2.zero;
+        
+        Text labelText = labelObj.AddComponent<Text>();
+        labelText.text = label;
+        labelText.fontSize = 14;
+        labelText.alignment = TextAnchor.MiddleLeft;
+        labelText.color = Color.white;
+        
+        return toggleObj;
+    }
+    
+    /// <summary>
+    /// Создает выпадающий список
+    /// </summary>
+    private static GameObject CreateDropdown(GameObject parent, string label, int defaultValue, Vector2 anchorMin, Vector2 anchorMax)
+    {
+        GameObject dropdownObj = new GameObject(label + " Dropdown");
+        dropdownObj.transform.SetParent(parent.transform, false);
+        RectTransform dropdownRect = dropdownObj.AddComponent<RectTransform>();
+        dropdownRect.anchorMin = anchorMin;
+        dropdownRect.anchorMax = anchorMax;
+        dropdownRect.offsetMin = Vector2.zero;
+        dropdownRect.offsetMax = Vector2.zero;
+        
+        // Добавляем лейбл
+        GameObject labelObj = new GameObject("Label");
+        labelObj.transform.SetParent(dropdownObj.transform, false);
+        RectTransform labelRect = labelObj.AddComponent<RectTransform>();
+        labelRect.anchorMin = new Vector2(0, 0.5f);
+        labelRect.anchorMax = new Vector2(0.3f, 1);
+        labelRect.offsetMin = Vector2.zero;
+        labelRect.offsetMax = Vector2.zero;
+        
+        Text labelText = labelObj.AddComponent<Text>();
+        labelText.text = label;
+        labelText.fontSize = 14;
+        labelText.alignment = TextAnchor.MiddleLeft;
+        labelText.color = Color.white;
+        
+        // Добавляем сам дропдаун
+        GameObject dropdownControl = new GameObject("Dropdown Control");
+        dropdownControl.transform.SetParent(dropdownObj.transform, false);
+        RectTransform dropdownControlRect = dropdownControl.AddComponent<RectTransform>();
+        dropdownControlRect.anchorMin = new Vector2(0.31f, 0.2f);
+        dropdownControlRect.anchorMax = new Vector2(1f, 0.8f);
+        dropdownControlRect.offsetMin = Vector2.zero;
+        dropdownControlRect.offsetMax = Vector2.zero;
+        
+        Image dropdownBg = dropdownControl.AddComponent<Image>();
+        dropdownBg.color = new Color(0.2f, 0.2f, 0.2f, 1);
+        
+        Dropdown dropdown = dropdownControl.AddComponent<Dropdown>();
+        
+        // Создаем элементы дропдауна
+        GameObject labelTextObj = new GameObject("Label");
+        labelTextObj.transform.SetParent(dropdownControl.transform, false);
+        RectTransform labelTextRect = labelTextObj.AddComponent<RectTransform>();
+        labelTextRect.anchorMin = Vector2.zero;
+        labelTextRect.anchorMax = Vector2.one;
+        labelTextRect.offsetMin = new Vector2(10, 0);
+        labelTextRect.offsetMax = new Vector2(-20, 0);
+        
+        Text dropdownLabelText = labelTextObj.AddComponent<Text>();
+        dropdownLabelText.text = "Опция";
+        dropdownLabelText.fontSize = 14;
+        dropdownLabelText.alignment = TextAnchor.MiddleLeft;
+        dropdownLabelText.color = Color.white;
+        
+        GameObject arrowObj = new GameObject("Arrow");
+        arrowObj.transform.SetParent(dropdownControl.transform, false);
+        RectTransform arrowRect = arrowObj.AddComponent<RectTransform>();
+        arrowRect.anchorMin = new Vector2(1, 0.5f);
+        arrowRect.anchorMax = new Vector2(1, 0.5f);
+        arrowRect.sizeDelta = new Vector2(20, 20);
+        arrowRect.anchoredPosition = new Vector2(-10, 0);
+        
+        Image arrowImage = arrowObj.AddComponent<Image>();
+        arrowImage.color = Color.white;
+        
+        // Настраиваем выпадающий список
+        dropdown.targetGraphic = dropdownBg;
+        dropdown.captionText = dropdownLabelText;
+        
+        // Добавляем опции
+        dropdown.options.Clear();
+        for (int i = 0; i <= 20; i++)
+        {
+            dropdown.options.Add(new Dropdown.OptionData($"Класс {i}"));
+        }
+        
+        dropdown.value = defaultValue;
+        dropdown.RefreshShownValue();
+        
+        return dropdownObj;
+    }
+    
+    /// <summary>
+    /// Создает кнопку с заданным текстом
+    /// </summary>
+    private static GameObject CreateUIButton(GameObject parent, string name, string text, Vector2 anchorMin, Vector2 anchorMax)
+    {
+        GameObject buttonObj = new GameObject(name + " Button");
+        buttonObj.transform.SetParent(parent.transform, false);
+        RectTransform buttonRect = buttonObj.AddComponent<RectTransform>();
+        buttonRect.anchorMin = anchorMin;
+        buttonRect.anchorMax = anchorMax;
+        buttonRect.offsetMin = Vector2.zero;
+        buttonRect.offsetMax = Vector2.zero;
+        
+        Image buttonImage = buttonObj.AddComponent<Image>();
+        buttonImage.color = new Color(0.2f, 0.2f, 0.2f, 1);
+        
+        Button button = buttonObj.AddComponent<Button>();
+        ColorBlock colors = button.colors;
+        colors.normalColor = new Color(0.2f, 0.2f, 0.2f, 1f);
+        colors.highlightedColor = new Color(0.3f, 0.3f, 0.3f, 1f);
+        colors.pressedColor = new Color(0.1f, 0.1f, 0.1f, 1f);
+        button.colors = colors;
+        
+        GameObject textObj = new GameObject("Text");
+        textObj.transform.SetParent(buttonObj.transform, false);
+        RectTransform textRect = textObj.AddComponent<RectTransform>();
+        textRect.anchorMin = Vector2.zero;
+        textRect.anchorMax = Vector2.one;
+        textRect.offsetMin = Vector2.zero;
+        textRect.offsetMax = Vector2.zero;
+        
+        Text buttonText = textObj.AddComponent<Text>();
+        buttonText.text = text;
+        buttonText.fontSize = 14;
+        buttonText.alignment = TextAnchor.MiddleCenter;
+        buttonText.color = Color.white;
+        
+        return buttonObj;
+    }
+
+    /// <summary>
+    /// Создает панель настроек обнаружения и рендеринга стен
+    /// </summary>
+    private static GameObject CreateWallSettingsPanel(GameObject parent, Vector2 anchorMin, Vector2 anchorMax)
+    {
+        // Создаем панель настроек
+        GameObject wallSettingsPanel = new GameObject("Wall Settings Panel");
+        wallSettingsPanel.transform.SetParent(parent.transform, false);
+        
+        RectTransform panelRect = wallSettingsPanel.AddComponent<RectTransform>();
+        panelRect.anchorMin = anchorMin;
+        panelRect.anchorMax = anchorMax;
+        panelRect.offsetMin = Vector2.zero;
+        panelRect.offsetMax = Vector2.zero;
+        
+        // Добавляем фон панели
+        Image panelImage = wallSettingsPanel.AddComponent<Image>();
+        panelImage.color = new Color(0.1f, 0.1f, 0.1f, 0.8f);
+        
+        // Создаем заголовок
+        GameObject titleObj = new GameObject("Title");
+        titleObj.transform.SetParent(wallSettingsPanel.transform, false);
+        
+        RectTransform titleRect = titleObj.AddComponent<RectTransform>();
+        titleRect.anchorMin = new Vector2(0, 0.9f);
+        titleRect.anchorMax = new Vector2(1, 1);
+        titleRect.offsetMin = Vector2.zero;
+        titleRect.offsetMax = Vector2.zero;
+        
+        Text titleText = titleObj.AddComponent<Text>();
+        titleText.text = "Настройки обнаружения стен";
+        titleText.fontSize = 18;
+        titleText.alignment = TextAnchor.MiddleCenter;
+        titleText.color = Color.white;
+        
+        // Создаем контент панели
+        GameObject contentObj = new GameObject("Content");
+        contentObj.transform.SetParent(wallSettingsPanel.transform, false);
+        
+        RectTransform contentRect = contentObj.AddComponent<RectTransform>();
+        contentRect.anchorMin = new Vector2(0, 0);
+        contentRect.anchorMax = new Vector2(1, 0.9f);
+        contentRect.offsetMin = new Vector2(10, 10);
+        contentRect.offsetMax = new Vector2(-10, -10);
+        
+        // Создаем группу настроек для WallDetectionOptimizer
+        GameObject optimizerSettingsObj = new GameObject("Optimizer Settings");
+        optimizerSettingsObj.transform.SetParent(contentObj.transform, false);
+        
+        RectTransform optimizerRect = optimizerSettingsObj.AddComponent<RectTransform>();
+        optimizerRect.anchorMin = new Vector2(0, 0.7f);
+        optimizerRect.anchorMax = new Vector2(1, 1);
+        optimizerRect.offsetMin = Vector2.zero;
+        optimizerRect.offsetMax = Vector2.zero;
+        
+        // Добавляем подзаголовок для настроек оптимизатора
+        GameObject optimizerTitleObj = new GameObject("Optimizer Title");
+        optimizerTitleObj.transform.SetParent(optimizerSettingsObj.transform, false);
+        
+        RectTransform optimizerTitleRect = optimizerTitleObj.AddComponent<RectTransform>();
+        optimizerTitleRect.anchorMin = new Vector2(0, 0.8f);
+        optimizerTitleRect.anchorMax = new Vector2(1, 1);
+        optimizerTitleRect.offsetMin = Vector2.zero;
+        optimizerTitleRect.offsetMax = Vector2.zero;
+        
+        Text optimizerTitleText = optimizerTitleObj.AddComponent<Text>();
+        optimizerTitleText.text = "Параметры оптимизации";
+        optimizerTitleText.fontSize = 16;
+        optimizerTitleText.alignment = TextAnchor.MiddleLeft;
+        optimizerTitleText.color = new Color(0.8f, 0.8f, 1f);
+        
+        // Создаем контент настроек оптимизатора
+        GameObject optimizerContentObj = new GameObject("Optimizer Content");
+        optimizerContentObj.transform.SetParent(optimizerSettingsObj.transform, false);
+        
+        RectTransform optimizerContentRect = optimizerContentObj.AddComponent<RectTransform>();
+        optimizerContentRect.anchorMin = new Vector2(0, 0);
+        optimizerContentRect.anchorMax = new Vector2(1, 0.8f);
+        optimizerContentRect.offsetMin = Vector2.zero;
+        optimizerContentRect.offsetMax = Vector2.zero;
+        
+        // Добавляем элементы управления для оптимизатора
+        GameObject minConfidenceSlider = CreateSlider(optimizerContentObj, "Мин. уверенность", 0f, 1f, 0.8f, 
+            new Vector2(0, 0.75f), new Vector2(1, 1f));
+            
+        GameObject minWallPercentSlider = CreateSlider(optimizerContentObj, "Мин. % стены", 0f, 1f, 0.6f, 
+            new Vector2(0, 0.5f), new Vector2(1, 0.75f));
+            
+        GameObject minContourAreaSlider = CreateSlider(optimizerContentObj, "Мин. площадь", 100f, 5000f, 500f, 
+            new Vector2(0, 0.25f), new Vector2(1, 0.5f));
+            
+        GameObject useAspectRatioToggle = CreateToggle(optimizerContentObj, "Проверять соотношение сторон", true, 
+            new Vector2(0, 0), new Vector2(1, 0.25f));
+            
+        // Создаем группу настроек для WallMeshRenderer
+        GameObject rendererSettingsObj = new GameObject("Renderer Settings");
+        rendererSettingsObj.transform.SetParent(contentObj.transform, false);
+        
+        RectTransform rendererRect = rendererSettingsObj.AddComponent<RectTransform>();
+        rendererRect.anchorMin = new Vector2(0, 0.35f);
+        rendererRect.anchorMax = new Vector2(1, 0.65f);
+        rendererRect.offsetMin = Vector2.zero;
+        rendererRect.offsetMax = Vector2.zero;
+        
+        // Добавляем подзаголовок для настроек рендерера
+        GameObject rendererTitleObj = new GameObject("Renderer Title");
+        rendererTitleObj.transform.SetParent(rendererSettingsObj.transform, false);
+        
+        RectTransform rendererTitleRect = rendererTitleObj.AddComponent<RectTransform>();
+        rendererTitleRect.anchorMin = new Vector2(0, 0.8f);
+        rendererTitleRect.anchorMax = new Vector2(1, 1);
+        rendererTitleRect.offsetMin = Vector2.zero;
+        rendererTitleRect.offsetMax = Vector2.zero;
+        
+        Text rendererTitleText = rendererTitleObj.AddComponent<Text>();
+        rendererTitleText.text = "Параметры отображения";
+        rendererTitleText.fontSize = 16;
+        rendererTitleText.alignment = TextAnchor.MiddleLeft;
+        rendererTitleText.color = new Color(0.8f, 0.8f, 1f);
+        
+        // Создаем контент настроек рендерера
+        GameObject rendererContentObj = new GameObject("Renderer Content");
+        rendererContentObj.transform.SetParent(rendererSettingsObj.transform, false);
+        
+        RectTransform rendererContentRect = rendererContentObj.AddComponent<RectTransform>();
+        rendererContentRect.anchorMin = new Vector2(0, 0);
+        rendererContentRect.anchorMax = new Vector2(1, 0.8f);
+        rendererContentRect.offsetMin = Vector2.zero;
+        rendererContentRect.offsetMax = Vector2.zero;
+        
+        // Добавляем элементы управления для рендерера
+        GameObject wallHeightSlider = CreateSlider(rendererContentObj, "Высота стены", 1f, 5f, 2.7f, 
+            new Vector2(0, 0.75f), new Vector2(1, 1f));
+            
+        GameObject wallThicknessSlider = CreateSlider(rendererContentObj, "Толщина стены", 0.05f, 0.5f, 0.1f, 
+            new Vector2(0, 0.5f), new Vector2(1, 0.75f));
+            
+        GameObject wallColorDropdown = CreateDropdown(rendererContentObj, "Цвет стены", 0, 
+            new Vector2(0, 0.25f), new Vector2(1, 0.5f));
+            
+        GameObject showWireframeToggle = CreateToggle(rendererContentObj, "Показать каркас", false, 
+            new Vector2(0, 0), new Vector2(1, 0.25f));
+        
+        // Создаем группу кнопок управления
+        GameObject controlsObj = new GameObject("Controls");
+        controlsObj.transform.SetParent(contentObj.transform, false);
+        
+        RectTransform controlsRect = controlsObj.AddComponent<RectTransform>();
+        controlsRect.anchorMin = new Vector2(0, 0);
+        controlsRect.anchorMax = new Vector2(1, 0.2f);
+        controlsRect.offsetMin = Vector2.zero;
+        controlsRect.offsetMax = Vector2.zero;
+        
+        // Создаем кнопки управления
+        GameObject applyBtn = CreateUIButton(controlsObj, "Apply", "Применить", 
+            new Vector2(0.6f, 0.25f), new Vector2(0.9f, 0.75f));
+            
+        GameObject resetBtn = CreateUIButton(controlsObj, "Reset", "Сбросить", 
+            new Vector2(0.1f, 0.25f), new Vector2(0.4f, 0.75f));
+        
+        return wallSettingsPanel;
+    }
+
+    /// <summary>
+    /// Создает основную панель настроек AR
+    /// </summary>
+    private static GameObject CreateARSettingsPanel()
+    {
+        // Создаем корневой объект для панели настроек
+        GameObject settingsPanel = new GameObject("AR Settings Panel");
+        settingsPanel.AddComponent<Canvas>();
+        settingsPanel.GetComponent<Canvas>().renderMode = RenderMode.ScreenSpaceOverlay;
+        settingsPanel.AddComponent<CanvasScaler>();
+        settingsPanel.GetComponent<CanvasScaler>().uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
+        settingsPanel.GetComponent<CanvasScaler>().referenceResolution = new Vector2(1080, 1920);
+        settingsPanel.AddComponent<GraphicRaycaster>();
+        
+        // Создаем фоновую панель
+        GameObject backgroundPanel = new GameObject("Background Panel");
+        backgroundPanel.transform.SetParent(settingsPanel.transform, false);
+        
+        RectTransform backgroundRect = backgroundPanel.AddComponent<RectTransform>();
+        backgroundRect.anchorMin = new Vector2(0, 0);
+        backgroundRect.anchorMax = new Vector2(1, 1);
+        backgroundRect.offsetMin = Vector2.zero;
+        backgroundRect.offsetMax = Vector2.zero;
+        
+        Image backgroundImage = backgroundPanel.AddComponent<Image>();
+        backgroundImage.color = new Color(0, 0, 0, 0.5f);
+        
+        // Создаем основной контейнер
+        GameObject mainContainer = new GameObject("Main Container");
+        mainContainer.transform.SetParent(backgroundPanel.transform, false);
+        
+        RectTransform containerRect = mainContainer.AddComponent<RectTransform>();
+        containerRect.anchorMin = new Vector2(0.1f, 0.1f);
+        containerRect.anchorMax = new Vector2(0.9f, 0.9f);
+        containerRect.offsetMin = Vector2.zero;
+        containerRect.offsetMax = Vector2.zero;
+        
+        Image containerImage = mainContainer.AddComponent<Image>();
+        containerImage.color = new Color(0.2f, 0.2f, 0.2f, 0.9f);
+        
+        // Создаем заголовок
+        GameObject titleObj = new GameObject("Main Title");
+        titleObj.transform.SetParent(mainContainer.transform, false);
+        
+        RectTransform titleRect = titleObj.AddComponent<RectTransform>();
+        titleRect.anchorMin = new Vector2(0, 0.92f);
+        titleRect.anchorMax = new Vector2(1, 1);
+        titleRect.offsetMin = Vector2.zero;
+        titleRect.offsetMax = Vector2.zero;
+        
+        Text titleText = titleObj.AddComponent<Text>();
+        titleText.text = "Настройки AR сцены";
+        titleText.fontSize = 24;
+        titleText.alignment = TextAnchor.MiddleCenter;
+        titleText.color = Color.white;
+        
+        // Создаем кнопку закрытия
+        GameObject closeBtn = CreateUIButton(mainContainer, "CloseButton", "X", 
+            new Vector2(0.95f, 0.95f), new Vector2(1, 1));
+        
+        // Создаем контейнер для вкладок
+        GameObject tabContainer = new GameObject("Tab Container");
+        tabContainer.transform.SetParent(mainContainer.transform, false);
+        
+        RectTransform tabContainerRect = tabContainer.AddComponent<RectTransform>();
+        tabContainerRect.anchorMin = new Vector2(0, 0.85f);
+        tabContainerRect.anchorMax = new Vector2(1, 0.92f);
+        tabContainerRect.offsetMin = Vector2.zero;
+        tabContainerRect.offsetMax = Vector2.zero;
+        
+        // Добавляем фон для вкладок
+        Image tabContainerImage = tabContainer.AddComponent<Image>();
+        tabContainerImage.color = new Color(0.3f, 0.3f, 0.3f, 1);
+        
+        // Создаем вкладки
+        GameObject wallsTab = CreateUIButton(tabContainer, "WallsTab", "Стены", 
+            new Vector2(0, 0), new Vector2(0.25f, 1));
+        
+        GameObject furnitureTab = CreateUIButton(tabContainer, "FurnitureTab", "Мебель", 
+            new Vector2(0.25f, 0), new Vector2(0.5f, 1));
+        
+        GameObject measurementsTab = CreateUIButton(tabContainer, "MeasurementsTab", "Измерения", 
+            new Vector2(0.5f, 0), new Vector2(0.75f, 1));
+        
+        GameObject settingsTab = CreateUIButton(tabContainer, "SettingsTab", "Настройки", 
+            new Vector2(0.75f, 0), new Vector2(1, 1));
+        
+        // Создаем контейнер для содержимого вкладок
+        GameObject contentContainer = new GameObject("Content Container");
+        contentContainer.transform.SetParent(mainContainer.transform, false);
+        
+        RectTransform contentContainerRect = contentContainer.AddComponent<RectTransform>();
+        contentContainerRect.anchorMin = new Vector2(0, 0);
+        contentContainerRect.anchorMax = new Vector2(1, 0.85f);
+        contentContainerRect.offsetMin = Vector2.zero;
+        contentContainerRect.offsetMax = Vector2.zero;
+        
+        // Создаем панель настроек стен
+        GameObject wallSettingsPanel = CreateWallSettingsPanel(contentContainer, 
+            new Vector2(0, 0), new Vector2(1, 1));
+        
+        // TODO: Создать панели для других вкладок по мере необходимости
+        
+        return settingsPanel;
+    }
+
+    /// <summary>
+    /// Creates the AR components for the scene
+    /// </summary>
+    /// <returns>The XR Origin GameObject</returns>
+    private static GameObject CreateARComponents()
+    {
+        // Create the AR system with all necessary components
+        GameObject arSystem = SetupARSystem();
+        
+        // Setup ML components for wall detection
+        SetupMLComponents(arSystem);
+        
+        // Setup wall detection system
+        SetupWallDetectionSystem();
+        
+        // Return the XR Origin to be used for reference
+        return arSystem.transform.Find("XR Origin").gameObject;
+    }
+    
+    /// <summary>
+    /// Creates the AR UI Canvas with main UI elements
+    /// </summary>
+    /// <returns>The Canvas GameObject</returns>
+    private static GameObject CreateARUICanvas()
+    {
+        // Create the main UI system with only color palette
+        GameObject uiCanvas = SetupUI();
+        
+        // Setup component references
+        SetupComponentReferences(uiCanvas);
+        
+        return uiCanvas;
+    }
+    
+    /// <summary>
+    /// Creates the tool buttons panel as part of the UI
+    /// </summary>
+    /// <param name="parentCanvas">The parent Canvas GameObject</param>
+    /// <returns>The tool buttons panel GameObject</returns>
+    private static GameObject CreateToolButtonsPanel(GameObject parentCanvas)
+    {
+        // Create a panel for the tool buttons
+        GameObject toolPanel = new GameObject("Tool Buttons Panel");
+        RectTransform toolPanelRect = toolPanel.AddComponent<RectTransform>();
+        toolPanel.transform.SetParent(parentCanvas.transform, false);
+        
+        // Configure the panel position (bottom of the screen)
+        toolPanelRect.anchorMin = new Vector2(0, 0);
+        toolPanelRect.anchorMax = new Vector2(1, 0.2f);
+        toolPanelRect.offsetMin = new Vector2(10, 10);
+        toolPanelRect.offsetMax = new Vector2(-10, -10);
+        
+        // Add visual panel component
+        Image panelImage = toolPanel.AddComponent<Image>();
+        panelImage.color = new Color(0.1f, 0.1f, 0.1f, 0.8f);
+        
+        // Create color selection buttons
+        CreateColorButtons(toolPanel.transform);
+        
+        // Create tool buttons
+        // Place buttons on the panel
+        GameObject placeButton = CreateButton(toolPanel.transform, "PlaceButton", "Place", new Vector2(0.05f, 0.3f), new Vector2(0.23f, 0.9f));
+        GameObject eraseButton = CreateButton(toolPanel.transform, "EraseButton", "Erase", new Vector2(0.28f, 0.3f), new Vector2(0.46f, 0.9f));
+        GameObject moveButton = CreateButton(toolPanel.transform, "MoveButton", "Move", new Vector2(0.51f, 0.3f), new Vector2(0.69f, 0.9f));
+        GameObject colorButton = CreateButton(toolPanel.transform, "ColorButton", "Color", new Vector2(0.74f, 0.3f), new Vector2(0.92f, 0.9f));
+        
+        return toolPanel;
     }
 } 

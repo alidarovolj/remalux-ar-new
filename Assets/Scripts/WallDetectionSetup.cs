@@ -459,18 +459,19 @@ public class WallDetectionSetup : MonoBehaviour
                     Material wallMat = Resources.Load<Material>("Materials/WallMaterial");
                     if (wallMat == null)
                     {
-                        // Try to find in the Assets directory
-                        wallMat = UnityEditor.AssetDatabase.LoadAssetAtPath<Material>("Assets/Materials/WallMaterial.mat");
+                        // Try other common locations
+                        wallMat = Resources.Load<Material>("WallMaterial");
                     }
                     
-                    if (wallMat != null)
+                    if (wallMat == null)
                     {
-                        wallPainter._wallMaterial = wallMat;
+                        // Create a default material if none exists
+                        wallMat = new Material(Shader.Find("Standard"));
+                        wallMat.color = new Color(0.2f, 0.6f, 1.0f, 0.5f);
+                        Debug.LogWarning("WallDetectionSetup: Wall material not found, using a generated default material");
                     }
-                    else
-                    {
-                        Debug.LogWarning("WallDetectionSetup: Wall material not found, using default");
-                    }
+                    
+                    wallPainter._wallMaterial = wallMat;
                     
                     // Configure settings
                     wallPainter._wallClassId = 9;

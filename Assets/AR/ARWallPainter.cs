@@ -17,8 +17,9 @@ public class ARWallPainter : MonoBehaviour
     [Header("Wall Detection Settings")]
     [SerializeField] public float _wallConfidenceThreshold = 0.3f;
     [SerializeField] public byte _wallClassId = 9; // ADE20K wall class ID
-    [SerializeField] private float _planeUpdateInterval = 0.2f;
-    [SerializeField] private bool _debugMode = true;
+    [SerializeField] private float _planeUpdateInterval = 0.5f;
+    [SerializeField] private bool _debugMode = false;
+    [SerializeField] private int _samplePointCount = 3;
     
     // AR components
     private ARPlaneManager _planeManager;
@@ -28,6 +29,19 @@ public class ARWallPainter : MonoBehaviour
     private Texture2D _segmentationTexture;
     private bool _hasNewSegmentation = false;
     private float _lastPlaneUpdateTime = 0f;
+    
+    // Cache camera reference
+    private Camera _arCamera;
+    // Cache calculation variables
+    private float _normalizedClassId;
+    
+    // Performance optimization - skip update frames
+    private int _frameCounter = 0;
+    private int _updateInterval = 5; // Only update on every 5th frame
+    
+    // ID cache to avoid reprocessing planes
+    private HashSet<TrackableId> _processedPlanes = new HashSet<TrackableId>();
+    private HashSet<TrackableId> _knownWallPlanes = new HashSet<TrackableId>();
     
     private void Awake()
     {
@@ -59,6 +73,9 @@ public class ARWallPainter : MonoBehaviour
             if (_debugMode)
                 Debug.Log("ARWallPainter: Created default wall material");
         }
+        
+        // Precalculate values
+        _normalizedClassId = _wallClassId / 255.0f;
     }
     
     private void OnEnable()
@@ -79,6 +96,10 @@ public class ARWallPainter : MonoBehaviour
             if (_debugMode)
                 Debug.Log("ARWallPainter: Subscribed to OnSegmentationCompleted event");
         }
+        
+        // Cache AR camera reference
+        if (_cameraManager != null)
+            _arCamera = _cameraManager.GetComponent<Camera>();
     }
     
     private void OnDisable()
@@ -93,8 +114,13 @@ public class ARWallPainter : MonoBehaviour
     
     private void Update()
     {
+        // Increment frame counter
+        _frameCounter++;
+        
         // Check if it's time to update plane materials
-        if (_hasNewSegmentation && Time.time - _lastPlaneUpdateTime > _planeUpdateInterval)
+        if (_hasNewSegmentation && 
+            Time.time - _lastPlaneUpdateTime > _planeUpdateInterval &&
+            _frameCounter % _updateInterval == 0)
         {
             UpdateWallPlanes();
             _lastPlaneUpdateTime = Time.time;
@@ -159,52 +185,50 @@ public class ARWallPainter : MonoBehaviour
     }
     
     /// <summary>
-    /// Update plane materials based on segmentation data
+    /// Update plane materials based on segmentation data - optimized version
     /// </summary>
     private void UpdateWallPlanes()
     {
-        if (_segmentationTexture == null || _cameraManager == null) return;
+        if (_segmentationTexture == null || _arCamera == null) return;
         
-        Camera arCamera = _cameraManager.GetComponent<Camera>();
-        if (arCamera == null) return;
+        // Clear the processed planes for this update
+        _processedPlanes.Clear();
         
-        // Process all tracked planes
+        // Get texture dimensions once
+        int textureWidth = _segmentationTexture.width;
+        int textureHeight = _segmentationTexture.height;
+        float screenWidth = Screen.width;
+        float screenHeight = Screen.height;
+        
+        // Compute sample counts based on device performance
+        // Less powerful devices use fewer sample points
+        int sampleCount = _samplePointCount; // Default from serialized field
+        if (SystemInfo.processorFrequency < 2000) // Less than 2GHz
+            sampleCount = Mathf.Max(1, sampleCount - 1);
+        
+        // Process planes in batches for better performance
+        int processedCount = 0;
+        int maxPlanesPerFrame = 3; // Limit number of planes processed per frame
+        
         foreach (ARPlane plane in _planeManager.trackables)
         {
-            // Only process vertical planes
-            if (!IsVerticalPlane(plane)) continue;
-            
-            // Check if this plane corresponds to a wall in the segmentation
-            bool isWall = false;
-            float wallConfidence = 0f;
-            
-            // Sample multiple points on the plane to check for wall pixels
-            Vector3[] samplePoints = GetPlaneSamplePoints(plane, 5);
-            int wallPixelCount = 0;
-            
-            foreach (Vector3 point in samplePoints)
+            // Skip if already processed enough planes this frame
+            if (processedCount >= maxPlanesPerFrame)
+                break;
+                
+            // Optimization: Skip already known wall planes that haven't changed
+            if (_knownWallPlanes.Contains(plane.trackableId) && plane.trackingState == TrackingState.Tracking)
             {
-                // Project point to screen space
-                Vector2 screenPos = arCamera.WorldToScreenPoint(point);
-                
-                // Convert to texture coordinates
-                int x = Mathf.Clamp(Mathf.RoundToInt(screenPos.x * _segmentationTexture.width / Screen.width), 0, _segmentationTexture.width - 1);
-                int y = Mathf.Clamp(Mathf.RoundToInt(screenPos.y * _segmentationTexture.height / Screen.height), 0, _segmentationTexture.height - 1);
-                
-                // Check pixel value
-                Color pixel = _segmentationTexture.GetPixel(x, y);
-                
-                // Check if pixel classID matches wall
-                float normalizedClassId = _wallClassId / 255.0f;
-                if (Mathf.Abs(pixel.r - normalizedClassId) < 0.1f || pixel.b > _wallConfidenceThreshold)
-                {
-                    wallPixelCount++;
-                    wallConfidence = Mathf.Max(wallConfidence, pixel.g);
-                }
+                _processedPlanes.Add(plane.trackableId);
+                continue;
             }
             
-            // If more than half of sample points are wall pixels, consider this a wall
-            isWall = wallPixelCount > samplePoints.Length / 2;
+            // Skip non-vertical planes
+            if (!IsVerticalPlane(plane)) continue;
+            
+            // Mark as processed
+            _processedPlanes.Add(plane.trackableId);
+            processedCount++;
             
             // Get or create material for this plane
             Material planeMaterial;
@@ -221,28 +245,77 @@ public class ARWallPainter : MonoBehaviour
                 }
             }
             
-            // Update material visibility based on wall detection
-            if (planeMaterial != null)
+            // Skip further processing if renderer or material is missing
+            MeshRenderer planeRenderer = plane.GetComponent<MeshRenderer>();
+            if (planeRenderer == null || planeMaterial == null) continue;
+            
+            // Check if this plane corresponds to a wall in the segmentation
+            bool isWall = false;
+            float wallConfidence = 0f;
+            
+            // Sample multiple points on the plane to check for wall pixels
+            Vector3[] samplePoints = GetPlaneSamplePoints(plane, sampleCount);
+            int wallPixelCount = 0;
+            
+            for (int i = 0; i < samplePoints.Length; i++)
             {
-                MeshRenderer renderer = plane.GetComponent<MeshRenderer>();
-                if (renderer != null)
+                // Project point to screen space
+                Vector2 screenPos = _arCamera.WorldToScreenPoint(samplePoints[i]);
+                
+                // Skip points outside the screen
+                if (screenPos.x < 0 || screenPos.x > screenWidth || 
+                    screenPos.y < 0 || screenPos.y > screenHeight)
+                    continue;
+                
+                // Convert to texture coordinates
+                int x = Mathf.Clamp(Mathf.RoundToInt(screenPos.x * textureWidth / screenWidth), 0, textureWidth - 1);
+                int y = Mathf.Clamp(Mathf.RoundToInt(screenPos.y * textureHeight / screenHeight), 0, textureHeight - 1);
+                
+                // Check pixel value
+                Color pixel = _segmentationTexture.GetPixel(x, y);
+                
+                // Check if pixel classID matches wall
+                if (Mathf.Abs(pixel.r - _normalizedClassId) < 0.1f || pixel.b > _wallConfidenceThreshold)
                 {
-                    // Only show walls
-                    renderer.enabled = isWall;
-                    
-                    // Update opacity based on confidence
-                    if (isWall)
-                    {
-                        Color color = planeMaterial.color;
-                        color.a = 0.4f + (wallConfidence * 0.6f); // Adjust opacity based on confidence
-                        planeMaterial.color = color;
-                        
-                        if (_debugMode)
-                            Debug.Log($"ARWallPainter: Wall detected on plane {plane.trackableId} with confidence {wallConfidence:F2}");
-                    }
+                    wallPixelCount++;
+                    wallConfidence = Mathf.Max(wallConfidence, pixel.g);
                 }
             }
+            
+            // If more than half of sample points are wall pixels, consider this a wall
+            isWall = wallPixelCount > samplePoints.Length / 2;
+            
+            // Update known walls collection
+            if (isWall)
+                _knownWallPlanes.Add(plane.trackableId);
+            else
+                _knownWallPlanes.Remove(plane.trackableId);
+            
+            // Update material visibility based on wall detection
+            planeRenderer.enabled = isWall;
+            
+            // Update opacity based on confidence
+            if (isWall)
+            {
+                Color color = planeMaterial.color;
+                color.a = 0.4f + (wallConfidence * 0.6f); // Adjust opacity based on confidence
+                planeMaterial.color = color;
+                
+                if (_debugMode)
+                    Debug.Log($"ARWallPainter: Wall detected on plane {plane.trackableId} with confidence {wallConfidence:F2}");
+            }
         }
+        
+        // Remove planes that weren't processed from known walls
+        List<TrackableId> toRemove = new List<TrackableId>();
+        foreach (TrackableId id in _knownWallPlanes)
+        {
+            if (!_processedPlanes.Contains(id))
+                toRemove.Add(id);
+        }
+        
+        foreach (TrackableId id in toRemove)
+            _knownWallPlanes.Remove(id);
     }
     
     /// <summary>

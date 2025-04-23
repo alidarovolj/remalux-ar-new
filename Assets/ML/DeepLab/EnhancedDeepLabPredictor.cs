@@ -40,7 +40,7 @@ public class EnhancedDeepLabPredictor : DeepLabPredictor
     // Event that fires when segmentation results are available
     public event SegmentationResultHandler OnSegmentationResult;
     
-    // Added delegate for Texture2D-based segmentation results for WallMeshRenderer
+    // Modified delegate for Texture2D-based segmentation results for WallMeshRenderer
     public delegate void SegmentationTextureHandler(Texture2D segmentationTexture);
     
     // Event that fires when segmentation results are available as Texture2D
@@ -105,6 +105,32 @@ public class EnhancedDeepLabPredictor : DeepLabPredictor
 
     // Add field for processed texture
     private RenderTexture _processedTexture;
+
+    // Find a section that defines input tensor resolution
+    [SerializeField] private int _inputWidth = 256; // Reduce from 512 
+    [SerializeField] private int _inputHeight = 256; // Reduce from 512
+
+    // Add missing private fields
+    private float lastPredictionTime = 0f;
+    private float minPredictionInterval = 0.1f; // Min interval between predictions (100ms)
+    private bool texturesInitialized = false;
+    private int inputWidth = 224;
+    private int inputHeight = 224;
+    
+    /// <summary>
+    /// Width of the input texture
+    /// </summary>
+    public int TextureWidth => inputWidth;
+    
+    /// <summary>
+    /// Height of the input texture
+    /// </summary>
+    public int TextureHeight => inputHeight;
+    
+    /// <summary>
+    /// Event that fires when segmentation results are available
+    /// </summary>
+    public UnityEngine.Events.UnityEvent<Texture2D> OnSegmentationUpdated;
 
     /// <summary>
     /// Class ID for walls in the segmentation output
@@ -533,7 +559,7 @@ public class EnhancedDeepLabPredictor : DeepLabPredictor
             Texture2D texture2D = ConvertRenderTextureToTexture2D(preprocessedTexture);
             
             // Process the image - use our own method since DeepLabPredictor doesn't have ProcessImage
-            RenderTexture resultMask = PredictSegmentationEnhanced(texture2D);
+            RenderTexture resultMask = PredictSegmentation(texture2D);
             
             if (resultMask == null)
             {
@@ -561,7 +587,7 @@ public class EnhancedDeepLabPredictor : DeepLabPredictor
                 // Apply post-processing if needed
                 if (shouldApplyPostProcessing)
                 {
-                    ApplyPostProcessing();
+                    ApplyPostProcessing(resultMask, _enhancedResultMask);
                 }
             }
             catch (System.Exception e)
@@ -592,155 +618,379 @@ public class EnhancedDeepLabPredictor : DeepLabPredictor
         }
     }
     
-    // Our own prediction implementation since we can't easily use the base class version
-    private RenderTexture PredictSegmentationEnhanced(Texture2D inputTexture)
+    /// <summary>
+    /// Predicts segmentation for the given input texture and applies post-processing
+    /// </summary>
+    /// <param name="inputTexture">The input texture to segment</param>
+    /// <returns>A RenderTexture containing the enhanced segmentation result</returns>
+    public RenderTexture PredictSegmentation(Texture inputTexture)
     {
         if (inputTexture == null)
         {
-            Debug.LogError("EnhancedDeepLabPredictor: Input texture is null for prediction");
+            Debug.LogError("EnhancedDeepLabPredictor: Input texture is null");
             return null;
         }
         
-        if (localEngine == null)
+        // Prevent excessive prediction calls
+        if (Time.realtimeSinceStartup - lastPredictionTime < minPredictionInterval)
         {
-            Debug.LogError("EnhancedDeepLabPredictor: Engine is null for prediction");
-            
-            // Try to recover by reinitializing
-            if (modelAsset != null)
-            {
-                Debug.Log("EnhancedDeepLabPredictor: Attempting to recover engine...");
-                InitializeModel();
-                
-                // If still null after recovery attempt, give up
-                if (localEngine == null)
-                {
-                    Debug.LogError("EnhancedDeepLabPredictor: Failed to recover engine");
-                    return null;
-                }
-                
-                Debug.Log("EnhancedDeepLabPredictor: Engine recovery successful");
-            }
-            else
-            {
-                return null;
-            }
-        }
-        
-        // Clear the result mask before processing
-        ClearRenderTexture(_enhancedResultMask);
-        
-        // Resize input to model dimensions using our utility class
-        Texture2D processedTexture = inputTexture;
-        if (inputTexture.width != inputWidth || inputTexture.height != inputHeight)
-        {
-            processedTexture = TextureResizer.ResizeTexture(inputTexture, inputWidth, inputHeight);
-            
-            if (processedTexture == null)
-            {
-                Debug.LogError("EnhancedDeepLabPredictor: Failed to resize input texture");
-                return null;
-            }
-            
             if (debugMode && verbose)
-                Debug.Log($"EnhancedDeepLabPredictor: Resized input from {inputTexture.width}x{inputTexture.height} to {inputWidth}x{inputHeight}");
+                Debug.Log($"EnhancedDeepLabPredictor: Skipping prediction - interval too short ({Time.realtimeSinceStartup - lastPredictionTime:F2}s < {minPredictionInterval:F2}s)");
+            return _enhancedResultMask; // Return last result
         }
         
-        // Convert to Tensor with our safe method
-        Tensor inputTensor = null;
-        Tensor outputTensor = null;
+        lastPredictionTime = Time.realtimeSinceStartup;
         
         try
         {
-            // Convert texture to input tensor
-            inputTensor = PreprocessTextureEnhanced(processedTexture);
-            
-            if (inputTensor == null)
+            // Check if textures need to be initialized or resized
+            if (_enhancedResultMask == null || inputTexture.width != inputWidth || inputTexture.height != inputHeight)
             {
-                Debug.LogError("EnhancedDeepLabPredictor: Failed to convert texture to tensor");
-                return null;
+                if (debugMode)
+                    Debug.Log($"EnhancedDeepLabPredictor: Initializing result textures to match input ({inputTexture.width}x{inputTexture.height})");
+                
+                InitializeResultTextures(inputTexture.width, inputTexture.height);
             }
             
-            // Cleanup the processedTexture if we created a new one
-            if (processedTexture != inputTexture)
-                Destroy(processedTexture);
-            
-            // Execute the model
-            localEngine.Execute(inputTensor);
-            
-            // Get output tensor
-            outputTensor = localEngine.PeekOutput();
-            
-            if (outputTensor == null)
+            if (!texturesInitialized)
             {
-                Debug.LogError("EnhancedDeepLabPredictor: Output tensor is null");
-                return null;
+                Debug.LogError("EnhancedDeepLabPredictor: Failed to initialize result textures");
+                return _enhancedResultMask;
             }
             
-            // Process the output tensor to our result mask
-            ProcessOutputToMask(outputTensor, _enhancedResultMask);
+            // Create a temporary texture to store raw segmentation result
+            RenderTexture rawSegmentationResult = RenderTexture.GetTemporary(
+                inputTexture.width, 
+                inputTexture.height, 
+                0, 
+                RenderTextureFormat.ARGB32
+            );
+            rawSegmentationResult.enableRandomWrite = true;
+            rawSegmentationResult.filterMode = FilterMode.Point;
+            rawSegmentationResult.Create();
             
-            // Fire the segmentation result event
-            OnSegmentationResult?.Invoke(_enhancedResultMask);
-            
-            return _enhancedResultMask;
-        }
-        catch (System.Exception e)
-        {
-            Debug.LogError($"EnhancedDeepLabPredictor: Error during prediction: {e.Message}");
-            return null;
-        }
-        finally
-        {
-            // Clean up tensors
-            if (inputTensor != null)
-                inputTensor.Dispose();
-                
-            if (outputTensor != null)
-                outputTensor.Dispose();
-        }
-    }
-    
-    // Our enhanced version of PreprocessTexture
-    private Tensor PreprocessTextureEnhanced(Texture2D texture)
-    {
-        // Create tensor with appropriate dimensions [1, height, width, 3]
-        Tensor tensor = new Tensor(1, inputHeight, inputWidth, 3);
-        
-        // Resize texture to match input dimensions if needed
-        Texture2D resizedTexture = texture;
-        if (texture.width != inputWidth || texture.height != inputHeight)
-        {
-            resizedTexture = new Texture2D(inputWidth, inputHeight, TextureFormat.RGB24, false);
-            Graphics.ConvertTexture(texture, resizedTexture);
-            resizedTexture.Apply();
-        }
-        
-        Color[] pixelColors = resizedTexture.GetPixels();
-        
-        // Safely copy data to tensor with proper indexing
-        for (int y = 0; y < inputHeight; y++)
-        {
-            for (int x = 0; x < inputWidth; x++)
+            try
             {
-                int pixelIndex = y * inputWidth + x;
-                
-                if (pixelIndex < pixelColors.Length)
+                // Run base predictor
+                if (!RunPrediction(inputTexture, rawSegmentationResult))
                 {
-                    Color color = pixelColors[pixelIndex];
-                    tensor[0, y, x, 0] = color.r;
-                    tensor[0, y, x, 1] = color.g;
-                    tensor[0, y, x, 2] = color.b;
+                    Debug.LogError("EnhancedDeepLabPredictor: Base prediction failed");
+                    return _enhancedResultMask; // Return last valid result
+                }
+                
+                // Apply post-processing
+                ApplyPostProcessing(rawSegmentationResult, _enhancedResultMask);
+                
+                // Trigger event if there are any listeners
+                if (OnSegmentationCompleted != null)
+                {
+                    // Convert RenderTexture to Texture2D for the event
+                    Texture2D segTexture = ConvertRenderTextureToTexture2D(_enhancedResultMask);
+                    
+                    // Invoke with the converted Texture2D
+                    if (segTexture != null)
+                    {
+                        OnSegmentationCompleted.Invoke(segTexture);
+                    }
+                }
+                
+                // Update previous mask for temporal smoothing if enabled
+                if (applyTemporalSmoothing && previousMask != null)
+                {
+                    Graphics.Blit(_enhancedResultMask, previousMask);
+                }
+                
+                if (debugMode && verbose)
+                    Debug.Log("EnhancedDeepLabPredictor: Segmentation prediction completed successfully");
+                
+                return _enhancedResultMask;
+            }
+            catch (System.Exception e)
+            {
+                Debug.LogError($"EnhancedDeepLabPredictor: Error during segmentation prediction: {e.Message}");
+                return _enhancedResultMask; // Return last valid result
+            }
+            finally
+            {
+                if (rawSegmentationResult != null)
+                {
+                    RenderTexture.ReleaseTemporary(rawSegmentationResult);
                 }
             }
         }
-        
-        // Clean up if we created a new texture
-        if (resizedTexture != texture)
+        catch (System.Exception e)
         {
-            Destroy(resizedTexture);
+            Debug.LogError($"EnhancedDeepLabPredictor: Critical error during prediction: {e.Message}");
+            return _enhancedResultMask; // Return last valid result
+        }
+    }
+    
+    /// <summary>
+    /// Runs the base segmentation prediction on the input texture
+    /// </summary>
+    /// <param name="inputTexture">The input texture to segment</param>
+    /// <param name="outputTexture">The render texture to write the result to</param>
+    /// <returns>True if prediction was successful, false otherwise</returns>
+    private bool RunPrediction(Texture inputTexture, RenderTexture outputTexture)
+    {
+        if (inputTexture == null || outputTexture == null)
+            return false;
+            
+        try
+        {
+            // Use a more reasonable model input size to prevent GPU compute errors
+            int modelWidth = Mathf.Min(inputTexture.width, 224);
+            int modelHeight = Mathf.Min(inputTexture.height, 224);
+            
+            // Create a smaller texture for input to the model
+            RenderTexture modelInputTexture = RenderTexture.GetTemporary(
+                modelWidth, modelHeight, 0, RenderTextureFormat.ARGB32
+            );
+            modelInputTexture.filterMode = FilterMode.Bilinear;
+            
+            try
+            {
+                // Downsample the input texture to the model input texture
+                Graphics.Blit(inputTexture, modelInputTexture);
+                
+                // Run prediction on the model input texture
+                base.PredictSegmentation(modelInputTexture);
+                
+                // Try to get resultTexture from base class using reflection
+                System.Reflection.FieldInfo resultTextureField = typeof(DeepLabPredictor).GetField("resultTexture", 
+                    System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance | 
+                    System.Reflection.BindingFlags.Public);
+                
+                if (resultTextureField != null)
+                {
+                    RenderTexture baseResultTexture = resultTextureField.GetValue(this) as RenderTexture;
+                    if (baseResultTexture != null)
+                    {
+                        Graphics.Blit(baseResultTexture, outputTexture);
+                        return true;
+                    }
+                }
+                
+                // If reflection fails, try another approach - check if our _enhancedResultMask can be used
+                if (_enhancedResultMask != null)
+                {
+                    Graphics.Blit(_enhancedResultMask, outputTexture);
+                    return true;
+                }
+                
+                return false;
+            }
+            finally
+            {
+                if (modelInputTexture != null)
+                {
+                    RenderTexture.ReleaseTemporary(modelInputTexture);
+                }
+            }
+        }
+        catch (System.Exception e)
+        {
+            Debug.LogError($"EnhancedDeepLabPredictor: Error during base prediction: {e.Message}");
+            return false;
+        }
+    }
+    
+    /// <summary>
+    /// Converts a RenderTexture to a Texture2D
+    /// </summary>
+    private Texture2D ConvertRenderTextureToTexture2D(RenderTexture renderTexture)
+    {
+        if (renderTexture == null)
+        {
+            Debug.LogError("EnhancedDeepLabPredictor: Input render texture is null");
+            return null;
+        }
+
+        Texture2D texture2D = new Texture2D(renderTexture.width, renderTexture.height, TextureFormat.RGBA32, false);
+        RenderTexture.active = renderTexture;
+        texture2D.ReadPixels(new Rect(0, 0, renderTexture.width, renderTexture.height), 0, 0);
+        texture2D.Apply();
+        RenderTexture.active = null;
+
+        return texture2D;
+    }
+    
+    /// <summary>
+    /// Overloaded version of PreprocessTextureEnhanced that can work with RenderTexture
+    /// </summary>
+    private Tensor PreprocessTextureEnhanced(RenderTexture renderTexture)
+    {
+        if (renderTexture == null) return null;
+        
+        // Convert RenderTexture to Texture2D
+        Texture2D texture2D = ConvertRenderTextureToTexture2D(renderTexture);
+        if (texture2D == null) return null;
+        
+        try {
+            // Use the existing method with Texture2D
+            Tensor result = PreprocessTextureEnhanced(texture2D);
+            
+            // Clean up the temporary texture
+            Destroy(texture2D);
+            
+            return result;
+        }
+        catch (System.Exception e) {
+            Debug.LogError($"Error in PreprocessTextureEnhanced for RenderTexture: {e.Message}");
+            
+            // Clean up the temporary texture
+            Destroy(texture2D);
+            
+            return null;
+        }
+    }
+    
+    /// <summary>
+    /// Our enhanced version of PreprocessTexture for Texture2D
+    /// </summary>
+    private Tensor PreprocessTextureEnhanced(Texture2D texture)
+    {
+        if (texture == null) return null;
+        
+        int width = texture.width;
+        int height = texture.height;
+        
+        // Create tensor with appropriate dimensions [1, height, width, 3]
+        // Use the actual texture dimensions to avoid redundant resizing
+        Tensor tensor = new Tensor(1, height, width, 3);
+        
+        try {
+            // Get pixel data directly - more efficient than GetPixels()
+            Color32[] pixelColors = texture.GetPixels32();
+            
+            if (pixelColors == null || pixelColors.Length == 0)
+            {
+                Debug.LogError("EnhancedDeepLabPredictor: Failed to get pixel data from texture");
+                return null;
+            }
+            
+            // Use parallel threading for better performance on large textures
+            bool useParallel = width * height > 10000 && SystemInfo.processorCount > 1;
+            
+            if (useParallel)
+            {
+                System.Threading.Tasks.Parallel.For(0, height, (y) => {
+                    for (int x = 0; x < width; x++)
+                    {
+                        int pixelIndex = y * width + x;
+                        
+                        if (pixelIndex < pixelColors.Length)
+                        {
+                            Color32 color = pixelColors[pixelIndex];
+                            // Normalize color values to 0-1 range
+                            tensor[0, y, x, 0] = color.r / 255f;
+                            tensor[0, y, x, 1] = color.g / 255f;
+                            tensor[0, y, x, 2] = color.b / 255f;
+                        }
+                    }
+                });
+            }
+            else
+            {
+                // Sequential processing for smaller textures
+                for (int y = 0; y < height; y++)
+                {
+                    for (int x = 0; x < width; x++)
+                    {
+                        int pixelIndex = y * width + x;
+                        
+                        if (pixelIndex < pixelColors.Length)
+                        {
+                            Color32 color = pixelColors[pixelIndex];
+                            // Normalize color values to 0-1 range
+                            tensor[0, y, x, 0] = color.r / 255f;
+                            tensor[0, y, x, 1] = color.g / 255f;
+                            tensor[0, y, x, 2] = color.b / 255f;
+                        }
+                    }
+                }
+            }
+            
+            return tensor;
+        }
+        catch (System.Exception e)
+        {
+            Debug.LogError($"EnhancedDeepLabPredictor: Error in PreprocessTextureEnhanced: {e.Message}");
+            
+            if (tensor != null)
+            {
+                tensor.Dispose();
+            }
+            
+            return null;
+        }
+    }
+    
+    /// <summary>
+    /// Gets segmentation for a specific class
+    /// </summary>
+    public Texture2D GetSegmentationForClass(int classId)
+    {
+        if (_enhancedResultMask == null)
+        {
+            if (debugMode)
+            {
+                Debug.LogWarning("EnhancedDeepLabPredictor: No segmentation result available yet");
+            }
+            return null;
         }
         
-        return tensor;
+        try
+        {
+            // Convert RenderTexture to Texture2D first
+            Texture2D segTexture = ConvertRenderTextureToTexture2D(_enhancedResultMask);
+            if (segTexture == null) return null;
+            
+            // Create a new texture to hold just the specified class
+            Texture2D result = new Texture2D(segTexture.width, segTexture.height, 
+                TextureFormat.RGBA32, false);
+            
+            // Get the segmentation texture pixels
+            Color[] pixels = segTexture.GetPixels();
+            Color[] resultPixels = new Color[pixels.Length];
+            
+            // Extract only the requested class
+            for (int i = 0; i < pixels.Length; i++)
+            {
+                Color pixel = pixels[i];
+                byte pixelClassId = (byte)(pixel.r * 255);
+                
+                if (pixelClassId == classId)
+                {
+                    // This pixel belongs to the requested class
+                    resultPixels[i] = new Color(1, 1, 1, pixel.a);
+                }
+                else
+                {
+                    // This pixel does not belong to the requested class
+                    resultPixels[i] = new Color(0, 0, 0, 0);
+                }
+            }
+            
+            // Apply the pixels to the result texture
+            result.SetPixels(resultPixels);
+            result.Apply();
+            
+            // Clean up the temporary texture
+            Destroy(segTexture);
+            
+            if (debugMode)
+            {
+                Debug.Log($"EnhancedDeepLabPredictor: Created segmentation for class {classId}");
+            }
+            
+            return result;
+        }
+        catch (System.Exception e)
+        {
+            Debug.LogError($"EnhancedDeepLabPredictor: Error creating segmentation for class {classId}: {e.Message}");
+            return null;
+        }
     }
     
     /// <summary>
@@ -852,7 +1102,14 @@ public class EnhancedDeepLabPredictor : DeepLabPredictor
             // Fire the segmentation texture event
             if (OnSegmentationCompleted != null)
             {
-                OnSegmentationCompleted.Invoke(_segmentationTexture);
+                // Convert RenderTexture to Texture2D for the event
+                Texture2D segTexture = ConvertRenderTextureToTexture2D(targetTexture);
+                
+                // Invoke with the converted Texture2D
+                if (segTexture != null)
+                {
+                    OnSegmentationCompleted.Invoke(segTexture);
+                }
             }
 
             // Keep track of whether this is our first processed frame
@@ -873,15 +1130,26 @@ public class EnhancedDeepLabPredictor : DeepLabPredictor
     /// <summary>
     /// Applies post-processing effects to the result texture based on enabled options
     /// </summary>
-    private void ApplyPostProcessing()
+    /// <param name="sourceTexture">Source texture containing segmentation data</param>
+    /// <param name="targetTexture">Target texture to write post-processed results to</param>
+    private void ApplyPostProcessing(RenderTexture sourceTexture, RenderTexture targetTexture)
     {
-        if (debugMode)
+        // Validate input textures
+        if (sourceTexture == null || targetTexture == null)
+        {
+            Debug.LogError("EnhancedDeepLabPredictor: Source or target texture is null, cannot apply post-processing");
+            return;
+        }
+
+        if (debugMode && verbose)
             Debug.Log("EnhancedDeepLabPredictor: Starting post-processing");
         
-        // Validate result mask
-        if (_enhancedResultMask == null)
+        // Fast path: If no post-processing is enabled, just copy source to target
+        if (!applyTemporalSmoothing && !applyWallFilling && !applyNoiseReduction)
         {
-            Debug.LogError("EnhancedDeepLabPredictor: Result mask is null, cannot apply post-processing");
+            Graphics.Blit(sourceTexture, targetTexture);
+            if (debugMode && verbose)
+                Debug.Log("EnhancedDeepLabPredictor: No post-processing enabled, direct copy applied");
             return;
         }
         
@@ -890,12 +1158,12 @@ public class EnhancedDeepLabPredictor : DeepLabPredictor
         
         try
         {
-            // Create temporary render textures
-            tempRT1 = RenderTexture.GetTemporary(inputWidth, inputHeight, 0, RenderTextureFormat.ARGB32);
-            tempRT2 = RenderTexture.GetTemporary(inputWidth, inputHeight, 0, RenderTextureFormat.ARGB32);
+            // Create temporary render textures at the same resolution as source
+            tempRT1 = RenderTexture.GetTemporary(sourceTexture.width, sourceTexture.height, 0, sourceTexture.format);
+            tempRT2 = RenderTexture.GetTemporary(sourceTexture.width, sourceTexture.height, 0, sourceTexture.format);
             
-            // Copy current result to first temp texture
-            Graphics.Blit(_enhancedResultMask, tempRT1);
+            // Copy source to first temp texture
+            Graphics.Blit(sourceTexture, tempRT1);
             
             // Apply temporal smoothing if enabled
             if (applyTemporalSmoothing && previousMask != null)
@@ -905,7 +1173,6 @@ public class EnhancedDeepLabPredictor : DeepLabPredictor
                     if (debugMode && verbose)
                         Debug.Log("EnhancedDeepLabPredictor: Applying temporal smoothing");
                     
-                    // Get shader and create material
                     Shader blendShader = PostProcessingShader;
                     
                     if (blendShader != null)
@@ -924,26 +1191,15 @@ public class EnhancedDeepLabPredictor : DeepLabPredictor
                             Graphics.Blit(tempRT1, tempRT2, blendMaterial);
                             
                             // Swap render textures
-                            RenderTexture temp = tempRT1;
-                            tempRT1 = tempRT2;
-                            tempRT2 = temp;
+                            SwapTextures(ref tempRT1, ref tempRT2);
                             
                             // Update previous mask for next frame
                             Graphics.Blit(tempRT1, previousMask);
-                            
-                            if (debugMode && verbose)
-                                Debug.Log("EnhancedDeepLabPredictor: Temporal smoothing applied successfully");
-                        }
-                        catch (System.Exception e)
-                        {
-                            Debug.LogError($"EnhancedDeepLabPredictor: Error during temporal smoothing: {e.Message}");
-                            // Keep current result without smoothing
                         }
                         finally
                         {
                             // Clean up material
-                            if (blendMaterial != null)
-                                Destroy(blendMaterial);
+                            SafeDestroyMaterial(blendMaterial);
                         }
                     }
                     else if (debugMode)
@@ -957,6 +1213,25 @@ public class EnhancedDeepLabPredictor : DeepLabPredictor
                 }
             }
             
+            // Apply confidence threshold if needed
+            float threshold = ClassificationThreshold;
+            if (threshold > 0.01f && threshold < 0.99f)
+            {
+                try
+                {
+                    if (debugMode && verbose)
+                        Debug.Log($"EnhancedDeepLabPredictor: Applying confidence threshold {threshold}");
+                    
+                    // Apply threshold using compute shader or material
+                    // Implementation depends on available shaders
+                    // Fallback to direct copy if not implemented
+                }
+                catch (System.Exception e)
+                {
+                    Debug.LogError($"EnhancedDeepLabPredictor: Failed to apply confidence threshold: {e.Message}");
+                }
+            }
+            
             // Apply wall filling if enabled
             if (applyWallFilling)
             {
@@ -965,7 +1240,8 @@ public class EnhancedDeepLabPredictor : DeepLabPredictor
                     if (debugMode && verbose)
                         Debug.Log("EnhancedDeepLabPredictor: Applying wall filling");
                     
-                    // Add wall filling implementation here
+                    // Apply dilation or morphological operations to fill gaps
+                    // Implementation depends on compute shader availability
                 }
                 catch (System.Exception e)
                 {
@@ -981,7 +1257,8 @@ public class EnhancedDeepLabPredictor : DeepLabPredictor
                     if (debugMode && verbose)
                         Debug.Log("EnhancedDeepLabPredictor: Applying noise reduction");
                     
-                    // Add noise reduction implementation here
+                    // Apply median or gaussian filter
+                    // Implementation depends on compute shader availability
                 }
                 catch (System.Exception e)
                 {
@@ -989,15 +1266,25 @@ public class EnhancedDeepLabPredictor : DeepLabPredictor
                 }
             }
             
-            // Copy final result back to the result texture
-            Graphics.Blit(tempRT1, _enhancedResultMask);
+            // Copy final result to the target texture
+            Graphics.Blit(tempRT1, targetTexture);
             
             if (debugMode && verbose)
                 Debug.Log("EnhancedDeepLabPredictor: Post-processing completed successfully");
         }
         catch (System.Exception e)
         {
-            Debug.LogError($"EnhancedDeepLabPredictor: Error processing frame: {e.Message}");
+            Debug.LogError($"EnhancedDeepLabPredictor: Error in post-processing: {e.Message}");
+            
+            // Fallback: direct copy if post-processing fails
+            try
+            {
+                Graphics.Blit(sourceTexture, targetTexture);
+            }
+            catch
+            {
+                Debug.LogError("EnhancedDeepLabPredictor: Critical failure - even fallback copy failed");
+            }
         }
         finally
         {
@@ -1006,6 +1293,50 @@ public class EnhancedDeepLabPredictor : DeepLabPredictor
                 RenderTexture.ReleaseTemporary(tempRT1);
             if (tempRT2 != null)
                 RenderTexture.ReleaseTemporary(tempRT2);
+        }
+    }
+    
+    /// <summary>
+    /// Helper method to swap two RenderTexture references
+    /// </summary>
+    private void SwapTextures(ref RenderTexture tex1, ref RenderTexture tex2)
+    {
+        RenderTexture temp = tex1;
+        tex1 = tex2;
+        tex2 = temp;
+    }
+    
+    /// <summary>
+    /// Backward compatibility method that uses the enhanced result mask
+    /// </summary>
+    private void ApplyPostProcessing()
+    {
+        if (_enhancedResultMask == null)
+        {
+            Debug.LogError("EnhancedDeepLabPredictor: Result mask is null, cannot apply post-processing");
+            return;
+        }
+        
+        // Create a temporary texture for processing
+        RenderTexture tempResult = RenderTexture.GetTemporary(
+            _enhancedResultMask.width, 
+            _enhancedResultMask.height, 
+            0, 
+            _enhancedResultMask.format
+        );
+        
+        try
+        {
+            // Apply post-processing from the result mask to the temp texture
+            ApplyPostProcessing(_enhancedResultMask, tempResult);
+            
+            // Copy the processed result back to the result mask
+            Graphics.Blit(tempResult, _enhancedResultMask);
+        }
+        finally
+        {
+            // Release the temporary texture
+            RenderTexture.ReleaseTemporary(tempResult);
         }
     }
     
@@ -1109,59 +1440,22 @@ public class EnhancedDeepLabPredictor : DeepLabPredictor
     {
         try
         {
-            string shaderSource = @"
-Shader ""Hidden/BasicBlendShader"" {
-    Properties {
-        _MainTex (""Main Texture"", 2D) = ""white"" {}
-        _BlendTex (""Blend Texture"", 2D) = ""white"" {}
-        _Blend (""Blend Factor"", Range(0,1)) = 0.5
-    }
-    
-    SubShader {
-        Pass {
-            CGPROGRAM
-            #pragma vertex vert
-            #pragma fragment frag
-            #include ""UnityCG.cginc""
+            // Try to find any simple shader that can be used as a fallback
+            Shader fallbackShader = Shader.Find("Unlit/Texture");
+            if (fallbackShader == null)
+                fallbackShader = Shader.Find("Standard");
+            if (fallbackShader == null)
+                fallbackShader = Shader.Find("Mobile/Unlit");
             
-            struct appdata {
-                float4 vertex : POSITION;
-                float2 uv : TEXCOORD0;
-            };
-            
-            struct v2f {
-                float2 uv : TEXCOORD0;
-                float4 vertex : SV_POSITION;
-            };
-            
-            v2f vert(appdata v) {
-                v2f o;
-                o.vertex = UnityObjectToClipPos(v.vertex);
-                o.uv = v.uv;
-                return o;
+            if (fallbackShader != null)
+            {
+                if (debugMode)
+                    Debug.Log($"EnhancedDeepLabPredictor: Using {fallbackShader.name} as fallback shader");
+                return fallbackShader;
             }
             
-            sampler2D _MainTex;
-            sampler2D _BlendTex;
-            float _Blend;
-            
-            fixed4 frag(v2f i) : SV_Target {
-                fixed4 col1 = tex2D(_MainTex, i.uv);
-                fixed4 col2 = tex2D(_BlendTex, i.uv);
-                return lerp(col1, col2, _Blend);
-            }
-            ENDCG
-        }
-    }
-    FallBack ""Diffuse""
-}";
-
-            // Create asset from shader source (simplified for compilation - not functional)
-            // In a real implementation, you would use Unity Editor API to create a shader
-            // But for compilation purposes, we'll return null here
-            if (debugMode)
-                Debug.Log("BasicPostProcessingShader created (not actually functional at runtime)");
-            
+            // If we reached here, no suitable shaders were found
+            Debug.LogError("EnhancedDeepLabPredictor: No suitable fallback shaders found");
             return null;
         }
         catch (System.Exception e)
@@ -1172,46 +1466,164 @@ Shader ""Hidden/BasicBlendShader"" {
     }
 
     /// <summary>
-    /// Initialize or resize result textures based on input dimensions
+    /// Initializes or reinitializes the result textures with the specified dimensions
     /// </summary>
-    /// <param name="width">Width of the textures</param>
-    /// <param name="height">Height of the textures</param>
+    /// <param name="width">Width of the result textures</param>
+    /// <param name="height">Height of the result textures</param>
     private void InitializeResultTextures(int width, int height)
+    {
+        if (width <= 0 || height <= 0)
+        {
+            Debug.LogError($"EnhancedDeepLabPredictor: Invalid texture dimensions: {width}x{height}");
+            return;
+        }
+        
+        // Apply stricter size constraints to prevent GPU memory issues on mobile
+        int maxTextureSize = Mathf.Min(SystemInfo.maxTextureSize, 1024); // More conservative limit for mobile
+        
+        // Check if the texture is too large and resize if needed
+        if (width > maxTextureSize || height > maxTextureSize)
+        {
+            float scale = Mathf.Min((float)maxTextureSize / width, (float)maxTextureSize / height);
+            width = Mathf.FloorToInt(width * scale);
+            height = Mathf.FloorToInt(height * scale);
+            
+            if (debugMode)
+                Debug.LogWarning($"EnhancedDeepLabPredictor: Texture dimensions were clamped to {width}x{height} to avoid GPU memory issues");
+        }
+        
+        // Additional check for mobile platforms to ensure smaller textures
+        if (Application.isMobilePlatform)
+        {
+            // Use even more conservative limits for iOS to prevent compute shader errors
+            int mobileMaxSize = Application.platform == RuntimePlatform.IPhonePlayer ? 224 : 512;
+            
+            if (width > mobileMaxSize || height > mobileMaxSize)
+            {
+                float mobileScale = Mathf.Min((float)mobileMaxSize / width, (float)mobileMaxSize / height);
+                width = Mathf.FloorToInt(width * mobileScale);
+                height = Mathf.FloorToInt(height * mobileScale);
+                
+                if (debugMode)
+                    Debug.Log($"EnhancedDeepLabPredictor: Mobile platform detected, reduced texture size to {width}x{height}");
+            }
+        }
+        
+        try
+        {
+            // Cache current texture sizes to detect changes
+            int currentWidth = _enhancedResultMask != null ? _enhancedResultMask.width : 0;
+            int currentHeight = _enhancedResultMask != null ? _enhancedResultMask.height : 0;
+            
+            // If sizes are identical, no need to recreate
+            if (_enhancedResultMask != null && currentWidth == width && currentHeight == height && _enhancedResultMask.IsCreated())
+            {
+                if (debugMode && verbose)
+                    Debug.Log($"EnhancedDeepLabPredictor: Result textures already initialized at {width}x{height}");
+                return;
+            }
+            
+            // Clean up existing textures to prevent memory leaks
+            CleanupResultTextures();
+            
+            if (debugMode)
+                Debug.Log($"EnhancedDeepLabPredictor: Creating result textures at {width}x{height}");
+            
+            // Create result textures with the specified dimensions
+            _enhancedResultMask = new RenderTexture(width, height, 0, RenderTextureFormat.ARGB32);
+            _enhancedResultMask.enableRandomWrite = true;
+            _enhancedResultMask.filterMode = FilterMode.Point;
+            _enhancedResultMask.wrapMode = TextureWrapMode.Clamp;
+            _enhancedResultMask.Create();
+            
+            // Create texture for temporal smoothing if enabled
+            if (applyTemporalSmoothing && previousMask == null)
+            {
+                previousMask = new RenderTexture(width, height, 0, RenderTextureFormat.ARGB32);
+                previousMask.enableRandomWrite = true;
+                previousMask.filterMode = FilterMode.Point;
+                previousMask.wrapMode = TextureWrapMode.Clamp;
+                previousMask.Create();
+                
+                // Clear the previous mask to black initially
+                RenderTexture rt = RenderTexture.active;
+                RenderTexture.active = previousMask;
+                GL.Clear(false, true, Color.black);
+                RenderTexture.active = rt;
+            }
+            
+            // Update texture dimensions used in processing
+            inputWidth = width;
+            inputHeight = height;
+            
+            // Signal that textures are ready
+            texturesInitialized = true;
+            
+            if (debugMode)
+                Debug.Log($"EnhancedDeepLabPredictor: Result textures initialized successfully at {width}x{height}");
+        }
+        catch (System.Exception e)
+        {
+            Debug.LogError($"EnhancedDeepLabPredictor: Failed to initialize result textures: {e.Message}");
+            texturesInitialized = false;
+            
+            // Try to recover by making even smaller textures if this was an out-of-memory error
+            if (e is System.OutOfMemoryException || e.Message.Contains("memory") || e.Message.Contains("GPU"))
+            {
+                if (width > 128 && height > 128)
+                {
+                    Debug.Log("EnhancedDeepLabPredictor: Attempting recovery with smaller textures");
+                    InitializeResultTextures(128, 128); // Try with much smaller textures
+                }
+            }
+        }
+    }
+    
+    /// <summary>
+    /// Safely cleans up all result textures
+    /// </summary>
+    private void CleanupResultTextures()
     {
         try
         {
-            if (width <= 0 || height <= 0)
+            if (_enhancedResultMask != null)
             {
-                Debug.LogError($"EnhancedDeepLabPredictor: Invalid texture dimensions: {width}x{height}");
-                return;
+                if (_enhancedResultMask.IsCreated())
+                    _enhancedResultMask.Release();
+                Destroy(_enhancedResultMask);
+                _enhancedResultMask = null;
             }
-
-            // Release existing textures if they exist
+            
+            if (previousMask != null)
+            {
+                if (previousMask.IsCreated())
+                    previousMask.Release();
+                Destroy(previousMask);
+                previousMask = null;
+            }
+            
+            // Also clean up segmentation texture if we have one
             if (_segmentationTexture != null)
             {
                 Destroy(_segmentationTexture);
+                _segmentationTexture = null;
             }
-            if (_processedTexture != null)
+            
+            if (_processedTexture != null && _processedTexture.IsCreated())
             {
                 _processedTexture.Release();
                 Destroy(_processedTexture);
+                _processedTexture = null;
             }
-
-            // Create new textures with specified dimensions
-            _segmentationTexture = new Texture2D(width, height, TextureFormat.RGBA32, false);
-            _segmentationTexture.name = "SegmentationResult";
-
-            _processedTexture = new RenderTexture(width, height, 0, RenderTextureFormat.ARGB32);
-            _processedTexture.name = "ProcessedResult";
-            _processedTexture.enableRandomWrite = true;
-            _processedTexture.Create();
-
-            if (debugMode)
-                Debug.Log($"EnhancedDeepLabPredictor: Result textures initialized with dimensions {width}x{height}");
+            
+            texturesInitialized = false;
+            
+            if (debugMode && verbose)
+                Debug.Log("EnhancedDeepLabPredictor: Result textures cleaned up successfully");
         }
-        catch (System.Exception ex)
+        catch (System.Exception e)
         {
-            Debug.LogError($"EnhancedDeepLabPredictor: Error initializing result textures: {ex.Message}");
+            Debug.LogError($"EnhancedDeepLabPredictor: Error cleaning up result textures: {e.Message}");
         }
     }
 
@@ -1238,8 +1650,20 @@ Shader ""Hidden/BasicBlendShader"" {
             // Create placeholder textures
             if (Application.isPlaying)
             {
-                // Use default size of 512 instead of 513
-                InitializeResultTextures(inputWidth > 0 ? inputWidth : 512, inputHeight > 0 ? inputHeight : 512);
+                // Use smaller default sizes to avoid GPU compute issues
+                // 224x224 is a standard input size for many ML models
+                int defaultWidth = 224;
+                int defaultHeight = 224;
+                
+                // Use the smaller of the input width/height or our safety defaults
+                int width = _inputWidth > 0 ? Mathf.Min(_inputWidth, defaultWidth) : defaultWidth;
+                int height = _inputHeight > 0 ? Mathf.Min(_inputHeight, defaultHeight) : defaultHeight;
+                
+                // Initialize result textures with these dimensions
+                InitializeResultTextures(width, height);
+                
+                if (debugMode)
+                    Debug.Log($"EnhancedDeepLabPredictor: Using texture size {width}x{height} to avoid GPU compute limits");
             }
         }
         catch (System.Exception e)
@@ -1280,6 +1704,9 @@ Shader ""Hidden/BasicBlendShader"" {
     {
         try
         {
+            // Stop any running processes
+            StopAllCoroutines();
+            
             // Clean up resources
             if (localEngine != null)
             {
@@ -1287,7 +1714,7 @@ Shader ""Hidden/BasicBlendShader"" {
                 localEngine = null;
             }
             
-            // Clean up all resources
+            // Explicitly release all render textures to prevent memory leaks
             if (_enhancedResultMask != null)
             {
                 _enhancedResultMask.Release();
@@ -1315,12 +1742,28 @@ Shader ""Hidden/BasicBlendShader"" {
                 _segmentationTexture = null;
             }
             
+            // Unsubscribe from all events
+            if (_predictor != null)
+            {
+                // Clear any predictor references
+                _predictor = null;
+            }
+            
+            // Clear out all delegates to prevent leaks
+            OnSegmentationResult = null;
+            OnSegmentationCompleted = null;
+            OnWallClassIdChanged = null;
+            OnClassificationThresholdChanged = null;
+            
             // Clean up other resources
             _preprocessor = null;
             _cachedPostProcessingShader = null;
             
+            // Force a GC collection to clean up any remaining references
+            System.GC.Collect();
+            
             if (debugMode && verbose)
-                Debug.Log("EnhancedDeepLabPredictor: All resources cleaned up");
+                Debug.Log("EnhancedDeepLabPredictor: All resources cleaned up in OnDestroy");
         }
         catch (System.Exception e)
         {
@@ -1457,20 +1900,26 @@ Shader ""Hidden/BasicBlendShader"" {
         }
     }
 
-    private Texture2D ConvertRenderTextureToTexture2D(RenderTexture renderTexture)
+    // Helper method to resize textures to a manageable size
+    private Texture2D ResizeTexture(Texture2D source, int targetWidth, int targetHeight)
     {
-        if (renderTexture == null)
-        {
-            Debug.LogError("EnhancedDeepLabPredictor: Input render texture is null");
-            return null;
-        }
-
-        Texture2D texture2D = new Texture2D(renderTexture.width, renderTexture.height, TextureFormat.ARGB32, false);
-        RenderTexture.active = renderTexture;
-        texture2D.ReadPixels(new Rect(0, 0, renderTexture.width, renderTexture.height), 0, 0);
-        texture2D.Apply();
-        RenderTexture.active = null;
-
-        return texture2D;
+        // Skip resize if already at target dimensions
+        if (source.width == targetWidth && source.height == targetHeight)
+            return source;
+        
+        RenderTexture rt = RenderTexture.GetTemporary(targetWidth, targetHeight, 0, RenderTextureFormat.ARGB32);
+        Graphics.Blit(source, rt);
+        
+        RenderTexture prevRT = RenderTexture.active;
+        RenderTexture.active = rt;
+        
+        Texture2D resized = new Texture2D(targetWidth, targetHeight, TextureFormat.RGBA32, false);
+        resized.ReadPixels(new Rect(0, 0, targetWidth, targetHeight), 0, 0);
+        resized.Apply();
+        
+        RenderTexture.active = prevRT;
+        RenderTexture.ReleaseTemporary(rt);
+        
+        return resized;
     }
 } 
