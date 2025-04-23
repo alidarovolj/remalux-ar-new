@@ -168,9 +168,8 @@ public class MLManager : MonoBehaviour
                 // Use enhanced predictor if available
                 if (_enhancedPredictor != null && useEnhancedPredictor)
                 {
-                    // Используем метод преобразования для конвертации в Texture2D перед вызовом PredictSegmentation
-                    // Даже если frameTexture уже Texture2D, это проверка для безопасности типов
-                    // и обеспечения совместимости с RenderTexture
+                    // frameTexture is already a Texture2D from CaptureCurrentFrame
+                    // so we don't need to convert it
                     _enhancedPredictor.PredictSegmentation(frameTexture);
                 }
                 else
