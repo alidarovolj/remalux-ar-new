@@ -5,9 +5,8 @@ using System.Collections.Generic;
 using System.Linq;
 using Unity.Barracuda;
 
-// Add a directive to access EnhancedDeepLabPredictor
-// Even though they are in the same assembly, we need to be explicit about dependencies
-// Since EnhancedDeepLabPredictor is defined in Assets/ML/DeepLab/EnhancedDeepLabPredictor.cs, using it directly
+// Поскольку класс находится в глобальном пространстве имен,
+// не нужны using-директивы, но нужно подсказать компилятору искать тип в глобальном пространстве
 
 public class MLManager : MonoBehaviour
 {
@@ -21,7 +20,8 @@ public class MLManager : MonoBehaviour
     public byte wallClassId = 9; // ADE20K wall class ID
     
     [SerializeField] private DeepLabPredictor _predictor;
-    private EnhancedDeepLabPredictor _enhancedPredictor;
+    private DeepLabPredictor _enhancedPredictor; // Используем базовый тип для хранения расширенного предиктора
+    
     private Coroutine _predictionCoroutine;
     private bool _isPredicting = false;
     private Texture2D _frameTexture;
@@ -41,11 +41,28 @@ public class MLManager : MonoBehaviour
         // Initialize the enhanced predictor if available and enabled
         if (useEnhancedPredictor)
         {
-            _enhancedPredictor = GetComponent<EnhancedDeepLabPredictor>();
+            // Ищем компонент типа DeepLabPredictor с именем "EnhancedDeepLabPredictor"
+            _enhancedPredictor = GetComponents<DeepLabPredictor>()
+                .FirstOrDefault(p => p.GetType().Name == "EnhancedDeepLabPredictor");
+                
             if (_enhancedPredictor == null)
             {
-                _enhancedPredictor = gameObject.AddComponent<EnhancedDeepLabPredictor>();
-                if (_enhancedPredictor != null)
+                // Пытаемся добавить компонент через reflection
+                try {
+                    var enhancedType = System.Type.GetType("ML.DeepLab.EnhancedDeepLabPredictor, Assembly-CSharp");
+                    if (enhancedType != null) {
+                        _enhancedPredictor = gameObject.AddComponent(enhancedType) as DeepLabPredictor;
+                    } else {
+                        Debug.LogError("MLManager: EnhancedDeepLabPredictor type not found");
+                        _enhancedPredictor = _predictor; // Используем обычный предиктор как запасной вариант
+                    }
+                } 
+                catch (System.Exception e) {
+                    Debug.LogError($"MLManager: Error creating EnhancedDeepLabPredictor: {e.Message}");
+                    _enhancedPredictor = _predictor; // Используем обычный предиктор как запасной вариант
+                }
+                
+                if (_enhancedPredictor != null && _enhancedPredictor != _predictor)
                 {
                     // Copy settings from base predictor
                     _enhancedPredictor.modelAsset = _predictor.modelAsset;
@@ -53,18 +70,35 @@ public class MLManager : MonoBehaviour
                     _enhancedPredictor.ClassificationThreshold = _predictor.ClassificationThreshold;
                     Debug.Log("MLManager: Created EnhancedDeepLabPredictor");
                     
-                    // Subscribe to segmentation events
-                    _enhancedPredictor.OnSegmentationResult += HandleSegmentationResult;
+                    // Subscribe to segmentation events through reflection
+                    var eventInfo = _enhancedPredictor.GetType().GetEvent("OnSegmentationResult");
+                    if (eventInfo != null) {
+                        var delegateType = eventInfo.EventHandlerType;
+                        var handler = Delegate.CreateDelegate(delegateType, this, 
+                            typeof(MLManager).GetMethod("HandleSegmentationResult", 
+                            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance));
+                        eventInfo.AddEventHandler(_enhancedPredictor, handler);
+                        Debug.Log("MLManager: Subscribed to OnSegmentationResult event");
+                    }
                 }
             }
             
             if (_enhancedPredictor != null)
             {
                 _enhancedPredictor.WallClassId = wallClassId;
-                Debug.Log($"MLManager: Using EnhancedDeepLabPredictor with wall class ID: {wallClassId}");
+                Debug.Log($"MLManager: Using enhanced predictor with wall class ID: {wallClassId}");
                 
-                // Subscribe to segmentation events if we didn't already
-                _enhancedPredictor.OnSegmentationResult += HandleSegmentationResult;
+                // Subscribe to events via reflection if not already done
+                if (_enhancedPredictor != _predictor) {
+                    var eventInfo = _enhancedPredictor.GetType().GetEvent("OnSegmentationResult");
+                    if (eventInfo != null) {
+                        var delegateType = eventInfo.EventHandlerType;
+                        var handler = Delegate.CreateDelegate(delegateType, this, 
+                            typeof(MLManager).GetMethod("HandleSegmentationResult", 
+                            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance));
+                        eventInfo.AddEventHandler(_enhancedPredictor, handler);
+                    }
+                }
             }
         }
         
@@ -91,7 +125,12 @@ public class MLManager : MonoBehaviour
         // Unsubscribe from events
         if (_enhancedPredictor != null)
         {
-            _enhancedPredictor.OnSegmentationResult -= HandleSegmentationResult;
+            var eventInfo = _enhancedPredictor.GetType().GetEvent("OnSegmentationResult");
+            if (eventInfo != null) {
+                eventInfo.RemoveEventHandler(_enhancedPredictor, Delegate.CreateDelegate(eventInfo.EventHandlerType, this, 
+                    typeof(MLManager).GetMethod("HandleSegmentationResult", 
+                    System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)));
+            }
         }
     }
     
@@ -153,6 +192,7 @@ public class MLManager : MonoBehaviour
                 // Use enhanced predictor if available
                 if (_enhancedPredictor != null && useEnhancedPredictor)
                 {
+                    // PredictSegmentation устойчив к разным типам предикторов, т.к. метод определен в базовом классе
                     _enhancedPredictor.PredictSegmentation(frameTexture);
                 }
                 else
