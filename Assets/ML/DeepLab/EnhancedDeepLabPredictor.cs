@@ -1537,10 +1537,8 @@ namespace ML.DeepLab
         }
 
         // Не забываем освободить ресурсы
-        protected override void OnDestroy()
+        protected void OnDestroy()
         {
-            base.OnDestroy();
-            
             if (downsampledInput != null)
             {
                 downsampledInput.Release();
