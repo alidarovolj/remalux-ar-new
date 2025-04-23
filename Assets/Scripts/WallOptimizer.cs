@@ -361,12 +361,11 @@ public unsafe class WallOptimizer : MonoBehaviour
             fixed (Color32* pixelPtr = segmentationMask)
             {
                 IntPtr inputPtr = (IntPtr)pixelPtr;
-                using (Mat wallMask = new Mat(height, width, CvType.CV_8UC4, inputPtr))
-                using (Mat grayMat = new Mat(height, width, CvType.CV_8UC1))
+                // Создаем однокальную маску для стен вместо 4-канальной
+                using (Mat wallMask = new Mat(height, width, CvType.CV_8UC1))
                 using (Mat tempProcessedMask = new Mat(height, width, CvType.CV_8UC1))
                 {
-                    // Fill the wall mask by checking each pixel's class ID
-                    // Use direct pixel access with get/put methods since DataPointer isn't available
+                    // Заполняем маску стен путем проверки ID класса каждого пикселя
                     for (int y = 0; y < height; y++)
                     {
                         for (int x = 0; x < width; x++)
@@ -374,14 +373,14 @@ public unsafe class WallOptimizer : MonoBehaviour
                             int index = y * width + x;
                             if (index < segmentationMask.Length)
                             {
-                                // In our segmentation mask, the class ID is stored in the red channel
+                                // В нашей маске сегментации ID класса хранится в красном канале
                                 byte classId = segmentationMask[index].r;
                                 
-                                // Check if this pixel belongs to the wall class
+                                // Проверяем, принадлежит ли этот пиксель классу стены
                                 bool isWall = (classId == wallClassId); 
                                 
-                                // Set the wall mask value (255 for wall, 0 for non-wall)
-                                // Using OpenCVForUnity's put method instead of direct pointer
+                                // Устанавливаем значение маски стены (255 для стены, 0 для не-стены)
+                                // Используем правильный формат для однокального изображения
                                 byte[] pixelValue = { isWall ? (byte)255 : (byte)0 };
                                 wallMask.put(y, x, pixelValue);
                             }
@@ -392,25 +391,15 @@ public unsafe class WallOptimizer : MonoBehaviour
                     OpenCvSharpMat opencvSharpKernel = OpenCvSharp.Cv2.GetStructuringElement(OpenCvSharp.MorphShapes.Rect, new OpenCvSharpSize(3, 3));
                     
                     // Convert OpenCVForUnity Mat to OpenCvSharp Mat for processing
-                    // This is a workaround since we're mixing libraries - in a real implementation,
-                    // you should consistently use just one library
+                    // Проще конвертировать однокальную маску
                     byte[] wallMaskData = new byte[width * height];
                     wallMask.get(0, 0, wallMaskData);
                     
                     using (OpenCvSharpMat opencvSharpWallMask = new OpenCvSharpMat(height, width, OpenCvSharp.MatType.CV_8UC1))
                     {
-                        // Copy data to OpenCvSharp Mat (pseudocode since we can't access DataPointer directly)
-                        unsafe
-                        {
-                            fixed (byte* dataPtr = wallMaskData)
-                            {
-                                // Create a new OpenCvSharp.Mat with our data
-                                IntPtr ptr = (IntPtr)dataPtr;
-                                // Set data manually since we can't use direct constructor
-                                Marshal.Copy(wallMaskData, 0, ptr, wallMaskData.Length);
-                            }
-                        }
-                    
+                        // Копируем данные в OpenCvSharp Mat
+                        Marshal.Copy(wallMaskData, 0, opencvSharpWallMask.Data, wallMaskData.Length);
+                        
                         // Closing operation (dilation followed by erosion)
                         OpenCvSharpMat processedMask = new OpenCvSharpMat(height, width, OpenCvSharp.MatType.CV_8UC1);
                         OpenCvSharp.Cv2.MorphologyEx(opencvSharpWallMask, processedMask, OpenCvSharp.MorphTypes.Close, opencvSharpKernel, iterations: 2);
