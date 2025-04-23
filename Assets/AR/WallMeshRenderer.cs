@@ -872,4 +872,21 @@ public class WallMeshRenderer : MonoBehaviour
             }
         }
     }
+    
+    /// <summary>
+    /// Возвращает GameObject стены по её индексу
+    /// </summary>
+    /// <param name="wallIndex">Индекс стены</param>
+    /// <returns>GameObject стены или null, если индекс некорректный</returns>
+    public GameObject GetWall(int wallIndex)
+    {
+        // Найти контейнер со стенами
+        Transform wallsContainer = transform.Find("Walls");
+        if (wallsContainer == null || wallIndex < 0 || wallIndex >= wallsContainer.childCount)
+        {
+            return null;
+        }
+        
+        return wallsContainer.GetChild(wallIndex).gameObject;
+    }
 } 

@@ -14,6 +14,8 @@ using OpenCvSharpSize = OpenCvSharp.Size;
 using OpenCvSharpMoments = OpenCvSharp.Moments;
 using OpenCvSharpHierarchyIndex = OpenCvSharp.HierarchyIndex;
 using ML.DeepLab; // Add namespace for EnhancedDeepLabPredictor
+using UnityEngine.XR.ARFoundation; // Добавляем для AR компонентов
+using UnityEngine.XR.ARSubsystems; // Добавляем для TrackedEntityTypeFlags
 
 // Add standard warning disables
 #pragma warning disable 0169, 0649
@@ -186,10 +188,25 @@ public unsafe class WallOptimizer : MonoBehaviour
     
     [Tooltip("How often to combine walls (in frames)")]
     public int combineWallsInterval = 30;
+
+    [Header("AR Integration")]
+    [Tooltip("Привязывать стены к AR плоскостям с помощью raycast")]
+    public bool useARPlaneAttachment = true;
+
+    [Tooltip("Создавать AR якоря для стабилизации стен")]
+    public bool createARAnchors = true;
+
+    [Tooltip("Максимальное расстояние для raycast в метрах")]
+    public float maxRaycastDistance = 5.0f;
     
     // Ссылки на компоненты
     private EnhancedDeepLabPredictor predictor;
     private WallMeshRenderer meshRenderer;
+    
+    // Компоненты AR для привязки стен к реальному миру
+    private ARRaycastManager arRaycastManager;
+    private ARAnchorManager arAnchorManager;
+    private ARPlaneManager arPlaneManager;
     
     // Internal fields
     private int segmentationWidth = 0;
@@ -198,6 +215,13 @@ public unsafe class WallOptimizer : MonoBehaviour
     private float lastUpdateTime = 0f;
     private GameObject wallParent;
     private EnhancedDeepLabPredictor enhancedPredictor;
+    
+    // Кэш для стен и их якорей
+    private Dictionary<int, ARAnchor> wallAnchors = new Dictionary<int, ARAnchor>();
+    
+    // Для пакетной обработки
+    private List<OpenCvSharpPoint[]> pendingContours = new List<OpenCvSharpPoint[]>();
+    private List<OpenCvSharpRect> pendingRects = new List<OpenCvSharpRect>();
 
     private void Awake()
     {
@@ -227,6 +251,23 @@ public unsafe class WallOptimizer : MonoBehaviour
         
         // Initialize the wall layer mask
         wallLayerMask = LayerMask.GetMask("Default");
+        
+        // Находим AR компоненты
+        arRaycastManager = FindObjectOfType<ARRaycastManager>();
+        arAnchorManager = FindObjectOfType<ARAnchorManager>();
+        arPlaneManager = FindObjectOfType<ARPlaneManager>();
+        
+        if (arRaycastManager == null)
+        {
+            Debug.LogWarning("WallOptimizer: ARRaycastManager не найден в сцене. Стены не будут привязаны к реальному миру.");
+            useARPlaneAttachment = false;
+        }
+        
+        if (arAnchorManager == null && createARAnchors)
+        {
+            Debug.LogWarning("WallOptimizer: ARAnchorManager не найден в сцене. Стены не будут привязаны к якорям.");
+            createARAnchors = false;
+        }
     }
     
     private void Start()
@@ -360,6 +401,10 @@ public unsafe class WallOptimizer : MonoBehaviour
             int width = segmentationWidth;
             int height = segmentationHeight;
 
+            // Очищаем буферы обработки
+            pendingContours.Clear();
+            pendingRects.Clear();
+
             // Create OpenCV Mat for processing
             fixed (Color32* pixelPtr = segmentationMask)
             {
@@ -442,8 +487,25 @@ public unsafe class WallOptimizer : MonoBehaviour
                         if (showDebugInfo)
                             Debug.Log($"WallOptimizer: Found {contours.Length} wall contours in segmentation mask");
                         
+                        // Фильтруем контуры и сохраняем их для последующей обработки
+                        for (int i = 0; i < contours.Length; i++)
+                        {
+                            double area = OpenCvSharp.Cv2.ContourArea(contours[i]);
+                            if (area < minContourArea)
+                                continue;
+                            
+                            OpenCvSharpRect boundingRect = OpenCvSharp.Cv2.BoundingRect(contours[i]);
+                            
+                            if (boundingRect.Width < minContourWidth || boundingRect.Height < minContourHeight)
+                                continue;
+                            
+                            // Сохраняем для последующей обработки
+                            pendingContours.Add(contours[i]);
+                            pendingRects.Add(boundingRect);
+                        }
+                        
                         // Create walls from the filtered contours
-                        CreateWallsFromContours(contours, hierarchy, camera);
+                        CreateWallsFromContours(camera);
                     }
                 }
             }
@@ -492,16 +554,54 @@ public unsafe class WallOptimizer : MonoBehaviour
         Vector3 position;
         Vector3 normal;
         
-        if (Physics.Raycast(ray, out RaycastHit hit, 10f, LayerMask.GetMask("Default")))
+        // Проверяем доступность AR функционала для привязки стен к реальным плоскостям
+        if (useARPlaneAttachment && arRaycastManager != null)
+        {
+            List<ARRaycastHit> hits = new List<ARRaycastHit>();
+            
+            // Выполняем рейкаст по AR плоскостям
+            if (arRaycastManager.Raycast(ray, hits, TrackableType.PlaneWithinPolygon))
+            {
+                // Берем первое пересечение лучше всего подходящее (обычно ближайшее)
+                ARRaycastHit hit = hits[0];
+                position = hit.pose.position;
+                
+                // Получаем нормаль плоскости
+                if (arPlaneManager != null)
+                {
+                    ARPlane plane = arPlaneManager.GetPlane(hit.trackableId);
+                    if (plane != null)
+                    {
+                        normal = plane.normal;
+                        
+                        // Debug информация
+                        if (showDebugInfo)
+                        {
+                            Debug.Log($"WallOptimizer: Wall attached to AR plane at {position}, normal: {normal}");
+                            Debug.DrawRay(position, normal, Color.blue, 2.0f);
+                        }
+                        
+                        return (position, normal, boundingRect.Width, boundingRect.Height);
+                    }
+                }
+                
+                // Если не получили нормаль через плоскость, используем из pose
+                normal = hit.pose.up;
+                return (position, normal, boundingRect.Width, boundingRect.Height);
+            }
+        }
+        
+        // Fallback к физическому рейкасту (если нет AR плоскостей)
+        if (Physics.Raycast(ray, out RaycastHit physicsHit, maxRaycastDistance, wallLayerMask))
         {
             // We hit something in the real world
-            position = hit.point;
-            normal = hit.normal;
+            position = physicsHit.point;
+            normal = physicsHit.normal;
         }
         else
         {
             // Fallback - place at a fixed distance from camera
-            position = ray.GetPoint(2f); // Adjust this distance as needed
+            position = ray.GetPoint(wallDistanceFromCamera);
             normal = -ray.direction; // Face toward camera
         }
         
@@ -512,94 +612,33 @@ public unsafe class WallOptimizer : MonoBehaviour
     /// <summary>
     /// Создает 3D-стены из отфильтрованных контуров
     /// </summary>
-    private void CreateWallsFromContours(OpenCvSharpPoint[][] contours, OpenCvSharpHierarchyIndex[] hierarchy, Camera camera)
+    private void CreateWallsFromContours(Camera camera)
     {
-        if (contours == null || contours.Length == 0 || camera == null)
+        if (pendingContours.Count == 0 || camera == null)
             return;
         
         int wallsCreated = 0;
-        int validContours = 0;
         
-        for (int i = 0; i < contours.Length && wallsCreated < maxWallsPerFrame; i++)
+        for (int i = 0; i < pendingContours.Count && wallsCreated < maxWallsPerFrame; i++)
         {
-            // Skip small contours
-            double area = OpenCvSharp.Cv2.ContourArea(contours[i]);
-            if (area < minContourArea)
-                continue;
-            
-            validContours++;
-            
-            // Get bounding rectangle
-            OpenCvSharpRect boundingRect = OpenCvSharp.Cv2.BoundingRect(contours[i]);
-            
-            // Skip if rectangle is too small
-            if (boundingRect.Width < minContourWidth || boundingRect.Height < minContourHeight)
-                continue;
-                
             // Calculate wall position and parameters
-            var (position, normal, width, height) = CalculateWorldPositionFromContour(contours[i], boundingRect, camera);
+            var (position, normal, width, height) = CalculateWorldPositionFromContour(
+                pendingContours[i], pendingRects[i], camera);
             
             // Try to create or update wall
             CreateOrUpdateWall(position, normal, width, height);
             wallsCreated++;
         }
         
-        if (showDebugInfo && validContours > 0)
+        if (showDebugInfo && pendingContours.Count > 0)
         {
-            Debug.Log($"WallOptimizer: Processed {validContours} valid contours, created/updated {wallsCreated} walls");
-        }
-    }
-    
-    /// <summary>
-    /// Process the current frame and request wall segmentation from the predictor
-    /// </summary>
-    public void ProcessCurrentFrame()
-    {
-        if (predictor != null)
-        {
-            if (showDebugInfo)
-            {
-                Debug.Log($"WallOptimizer: Requesting segmentation for wall class ID: {wallClassId}");
-            }
-            
-            // Ensure we're using the correct wall class ID (9 for ADE20K)
-            if (wallClassId != 9)
-            {
-                Debug.LogWarning($"WallOptimizer: Correcting wall class ID from {wallClassId} to 9 (ADE20K wall class)");
-                wallClassId = 9;
-            }
-            
-            Texture2D segmentationResult = predictor.GetSegmentationForClass(wallClassId);
-            
-            if (segmentationResult != null)
-            {
-                if (showDebugInfo)
-                {
-                    Debug.Log($"WallOptimizer: Processing segmentation result with dimensions {segmentationResult.width}x{segmentationResult.height}");
-                }
-                ProcessWallMask(segmentationResult.GetPixels32(), Camera.main);
-            }
-            else if (showDebugInfo)
-            {
-                Debug.LogWarning($"WallOptimizer: No segmentation result received for class {wallClassId}");
-            }
-        }
-        else
-        {
-            if (showDebugInfo)
-            {
-                Debug.LogError("WallOptimizer: Cannot process frame - predictor is null");
-            }
+            Debug.Log($"WallOptimizer: Processed {pendingContours.Count} valid contours, created/updated {wallsCreated} walls");
         }
     }
 
     /// <summary>
     /// Creates or updates a wall at the specified position with the given dimensions and orientation
     /// </summary>
-    /// <param name="position">World position for the wall's center</param>
-    /// <param name="normal">Wall normal direction (perpendicular to wall surface)</param>
-    /// <param name="width">Width in pixels from segmentation</param>
-    /// <param name="height">Height in pixels from segmentation</param>
     private void CreateOrUpdateWall(Vector3 position, Vector3 normal, float width, float height)
     {
         if (meshRenderer == null) return;
@@ -719,8 +758,77 @@ public unsafe class WallOptimizer : MonoBehaviour
                 }
             }
         }
+        
+        // После создания wall, привяжем его к AR anchor если нужно
+        if (createARAnchors && arAnchorManager != null && wallIndex >= 0)
+        {
+            // Создаем привязку через ARAnchorManager для стабилизации стены
+            ARAnchor anchor = arAnchorManager.AddAnchor(new Pose(position, rotation));
+            
+            if (anchor != null)
+            {
+                // Сохраняем якорь и привязываем стену к нему
+                wallAnchors[wallIndex] = anchor;
+                
+                // Поцучаем GameObject стены
+                GameObject wallObject = meshRenderer.GetWall(wallIndex);
+                if (wallObject != null)
+                {
+                    // Привязываем стену к якорю
+                    wallObject.transform.SetParent(anchor.transform, true);
+                    
+                    if (showDebugInfo)
+                    {
+                        Debug.Log($"WallOptimizer: Привязали стену {wallIndex} к AR якорю для стабильности");
+                    }
+                }
+            }
+        }
     }
     
+    /// <summary>
+    /// Process the current frame and request wall segmentation from the predictor
+    /// </summary>
+    public void ProcessCurrentFrame()
+    {
+        if (predictor != null)
+        {
+            if (showDebugInfo)
+            {
+                Debug.Log($"WallOptimizer: Requesting segmentation for wall class ID: {wallClassId}");
+            }
+            
+            // Ensure we're using the correct wall class ID (9 for ADE20K)
+            if (wallClassId != 9)
+            {
+                Debug.LogWarning($"WallOptimizer: Correcting wall class ID from {wallClassId} to 9 (ADE20K wall class)");
+                wallClassId = 9;
+            }
+            
+            Texture2D segmentationResult = predictor.GetSegmentationForClass(wallClassId);
+            
+            if (segmentationResult != null)
+            {
+                if (showDebugInfo)
+                {
+                    Debug.Log($"WallOptimizer: Processing segmentation result with dimensions {segmentationResult.width}x{segmentationResult.height}");
+                }
+                ProcessWallMask(segmentationResult.GetPixels32(), Camera.main);
+            }
+            else if (showDebugInfo)
+            {
+                Debug.LogWarning($"WallOptimizer: No segmentation result received for class {wallClassId}");
+            }
+        }
+        else
+        {
+            if (showDebugInfo)
+            {
+                Debug.LogError("WallOptimizer: Cannot process frame - predictor is null");
+            }
+        }
+    }
+
     /// <summary>
     /// Initialize and prepare for wall detection
     /// </summary>

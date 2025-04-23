@@ -260,7 +260,7 @@ public class DeepLabPredictor : MonoBehaviour
         }
         
         // Process output tensor to mask
-        ConvertOutputToMask(outputTensor, resultMask, selectedWallClassId);
+        ProcessOutputToMask(outputTensor, resultMask);
         
         // If we're struggling to detect walls, try rotating through different class IDs
         if (!hasDetectedWalls && alternateWallClassIds.Length > 0 && frameCount % 60 == 0)
@@ -275,7 +275,7 @@ public class DeepLabPredictor : MonoBehaviour
             Debug.Log($"Trying alternate wall class ID: {selectedWallClassId}");
             
             // Reprocess the tensor with new class ID
-            ConvertOutputToMask(outputTensor, resultMask, selectedWallClassId);
+            ProcessOutputToMask(outputTensor, resultMask);
         }
         
         // Save output for debugging
@@ -310,134 +310,57 @@ public class DeepLabPredictor : MonoBehaviour
         return tensor;
     }
     
-    private void ConvertOutputToMask(Tensor output, RenderTexture targetTexture, int? overrideClassId = null)
+    /// <summary>
+    /// Process the output tensor to create a mask
+    /// </summary>
+    private unsafe void ProcessOutputToMask(Tensor output, RenderTexture targetTexture)
     {
-        // Use provided class ID or default
-        int classIdToUse = overrideClassId ?? wallClassId;
-        
-        // Log tensor shape for debugging
-        Debug.Log($"Output tensor shape: {output.shape}");
-        
-        // Get raw data from tensor
-        float[] rawData = output.data.Download(output.shape);
-        
-        // Create texture for mask
+        // Создаем временную текстуру для результата
         Texture2D maskTexture = new Texture2D(inputWidth, inputHeight, TextureFormat.RGBA32, false);
+        
+        // Get raw data from the output tensor
+        float[] rawData = output.AsFloats();
+        
+        // Prepare color array for the mask texture
         Color[] colors = new Color[inputWidth * inputHeight];
         
-        // Counters for wall detection statistics
+        // Used for counting wall pixels
         int totalPixels = 0;
         int wallPixels = 0;
         
-        // Handle different tensor formats
-        // Special case for the (n:1, h:1, w:513, c:513) shape
-        if (output.shape.height == 1 && output.shape.width == 513 && output.shape.channels == 513)
+        // Get class ID to use for wall detection
+        int classIdToUse = selectedWallClassId > 0 ? selectedWallClassId : WallClassId;
+        
+        // ArgMax format (one channel with class IDs)
+        if (useArgMax)
         {
-            // Add debug log
-            Debug.Log("Processing tensor with shape (1,1,513,513) - reshaping to 513x513");
-            
-            // If autoDetectWallClass is enabled, scan all possible classes
-            Dictionary<int, int> classPixelCounts = new Dictionary<int, int>();
-            
-            // Reshape the tensor data to treat it as a flattened 513x513 image
-            for (int y = 0; y < inputHeight; y++)
+            // Safety check
+            if (rawData.Length < inputWidth * inputHeight)
             {
-                for (int x = 0; x < inputWidth; x++)
+                Debug.LogError($"Tensor data size mismatch: {rawData.Length} vs {inputWidth * inputHeight}");
+                Destroy(maskTexture);
+                return;
+            }
+            
+            // Оптимизированный подсчет пикселей стен с использованием unsafe
+            fixed (float* rawDataPtr = rawData)
+            {
+                float* ptr = rawDataPtr;
+                for (int i = 0; i < inputWidth * inputHeight; i++, ptr++)
                 {
-                    int idx = y * inputWidth + x;
                     totalPixels++;
+                    int classId = (int)(*ptr + 0.5f); // Rounded class ID
                     
-                    if (idx < colors.Length && idx < rawData.Length)
-                    {
-                        float value = rawData[idx];
-                        int classId = Mathf.RoundToInt(value);
-                        
-                        // Count pixels per class for auto-detection
-                        if (autoDetectWallClass)
-                        {
-                            if (!classPixelCounts.ContainsKey(classId))
-                                classPixelCounts[classId] = 0;
-                            classPixelCounts[classId]++;
-                        }
-                        
-                        bool isWall = (classId == classIdToUse);
-                        if (isWall) wallPixels++;
-                        
-                        // Make walls visible with full white, other pixels transparent
-                        colors[idx] = isWall ? Color.white : new Color(0, 0, 0, 0);
-                        
-                        // Log some wall pixels for debugging
-                        if (isWall && enableDebugLogging && idx % 10000 == 0)
-                        {
-                            Debug.Log($"Wall pixel detected at ({x},{y}), value={value}, classId={classId}");
-                        }
-                    }
+                    // Проверка на принадлежность к классу стены
+                    bool isWall = (classId == classIdToUse);
+                    if (isWall) wallPixels++;
+                    
+                    // Устанавливаем цвет (белый для стен, прозрачный для остальных)
+                    colors[i] = isWall ? Color.white : new Color(0, 0, 0, 0);
                 }
             }
             
-            // If auto-detection is enabled, log statistics about classes
-            if (autoDetectWallClass && classPixelCounts.Count > 0)
-            {
-                Debug.Log("Class distribution in segmentation output:");
-                foreach (var kvp in classPixelCounts.OrderByDescending(k => k.Value))
-                {
-                    float percentage = (float)kvp.Value / totalPixels * 100f;
-                    Debug.Log($"  Class {kvp.Key}: {kvp.Value} pixels ({percentage:F2}%)");
-                    
-                    // If this class has significant coverage (>5%), suggest it might be walls
-                    if (percentage > 3f && kvp.Key != 0)
-                    {
-                        Debug.Log($"  Class {kvp.Key} has significant coverage and might represent walls. Consider setting wallClassId to {kvp.Key}.");
-                        
-                        // Auto-update wall class if we found a good candidate and haven't detected walls yet
-                        if (!hasDetectedWalls && percentage > 5f)
-                        {
-                            Debug.Log($"Auto-selecting class {kvp.Key} as wall class");
-                            selectedWallClassId = kvp.Key;
-                            
-                            // Reprocess with this class ID
-                            for (int i = 0; i < colors.Length; i++)
-                            {
-                                if (i < rawData.Length)
-                                {
-                                    bool isWall = Mathf.RoundToInt(rawData[i]) == selectedWallClassId;
-                                    colors[i] = isWall ? Color.white : new Color(0, 0, 0, 0);
-                                }
-                            }
-                            wallPixels = classPixelCounts[selectedWallClassId]; // Update wall pixel count
-                        }
-                    }
-                }
-            }
-            
-            // Count how many wall pixels we found for debugging
-            float wallPercentage = (float)wallPixels / totalPixels * 100f;
-            Debug.Log($"Wall pixels found: {wallPixels} out of {totalPixels} ({wallPercentage:F2}%)");
-            
-            // Update our detection status for future frames
-            hasDetectedWalls = wallPixels > 100;
-            
-            // If very few wall pixels are found, suggest trying different class ID
-            if (wallPixels < 100 && !autoDetectWallClass)
-            {
-                Debug.LogWarning($"Very few wall pixels detected with current wallClassId={classIdToUse}. Try enabling autoDetectWallClass or manually trying different values for wallClassId.");
-            }
-        }
-        // Original single-channel format
-        else if (output.shape.channels == 1)
-        {
-            Debug.Log("Processing single-channel tensor");
-            // Single-channel tensor (already argmax'd)
-            for (int i = 0; i < Mathf.Min(rawData.Length, colors.Length); i++)
-            {
-                totalPixels++;
-                int classId = Mathf.RoundToInt(rawData[i]);
-                bool isWall = (classId == classIdToUse);
-                if (isWall) wallPixels++;
-                colors[i] = isWall ? Color.white : new Color(0, 0, 0, 0);
-            }
-            
-            // Count how many wall pixels for debugging
+            // Log wall statistics for debug
             float wallPercentage = (float)wallPixels / totalPixels * 100f;
             Debug.Log($"Wall pixels found: {wallPixels} out of {totalPixels} ({wallPercentage:F2}%)");
             
@@ -452,42 +375,49 @@ public class DeepLabPredictor : MonoBehaviour
             int numClasses = output.shape.channels;
             Dictionary<int, int> classPixelCounts = new Dictionary<int, int>();
             
-            for (int y = 0; y < inputHeight; y++)
+            // Оптимизированная обработка с небезопасным кодом
+            fixed (float* rawDataPtr = rawData)
             {
-                for (int x = 0; x < inputWidth; x++)
+                for (int y = 0; y < inputHeight; y++)
                 {
-                    totalPixels++;
-                    int pixelIdx = y * inputWidth + x;
-                    int maxClassId = 0;
-                    float maxProb = float.MinValue;
-                    
-                    // Find the class with highest probability
-                    for (int c = 0; c < numClasses; c++)
+                    for (int x = 0; x < inputWidth; x++)
                     {
-                        int idx = (pixelIdx * numClasses) + c;
-                        if (idx < rawData.Length)
+                        totalPixels++;
+                        int pixelIdx = y * inputWidth + x;
+                        int maxClassId = 0;
+                        float maxProb = float.MinValue;
+                        
+                        // Базовый индекс для текущего пикселя
+                        int baseIdx = pixelIdx * numClasses;
+                        
+                        // Find the class with highest probability
+                        for (int c = 0; c < numClasses; c++)
                         {
-                            float prob = rawData[idx];
-                            if (prob > maxProb)
+                            int idx = baseIdx + c;
+                            if (idx < rawData.Length)
                             {
-                                maxProb = prob;
-                                maxClassId = c;
+                                float prob = rawDataPtr[idx];
+                                if (prob > maxProb)
+                                {
+                                    maxProb = prob;
+                                    maxClassId = c;
+                                }
                             }
                         }
+                        
+                        // If auto-detection is enabled, track class counts
+                        if (autoDetectWallClass)
+                        {
+                            if (!classPixelCounts.ContainsKey(maxClassId))
+                                classPixelCounts[maxClassId] = 0;
+                            classPixelCounts[maxClassId]++;
+                        }
+                        
+                        // Set color based on whether it's a wall or not
+                        bool isWall = (maxClassId == classIdToUse && maxProb > classificationThreshold);
+                        if (isWall) wallPixels++;
+                        colors[pixelIdx] = isWall ? Color.white : new Color(0, 0, 0, 0);
                     }
-                    
-                    // If auto-detection is enabled, track class counts
-                    if (autoDetectWallClass)
-                    {
-                        if (!classPixelCounts.ContainsKey(maxClassId))
-                            classPixelCounts[maxClassId] = 0;
-                        classPixelCounts[maxClassId]++;
-                    }
-                    
-                    // Set color based on whether it's a wall or not
-                    bool isWall = (maxClassId == classIdToUse && maxProb > classificationThreshold);
-                    if (isWall) wallPixels++;
-                    colors[pixelIdx] = isWall ? Color.white : new Color(0, 0, 0, 0);
                 }
             }
             

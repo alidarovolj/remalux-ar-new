@@ -127,6 +127,21 @@ namespace ML.DeepLab
         private bool texturesInitialized = false;
         // Note: We use inputWidth and inputHeight from the base class DeepLabPredictor
 
+        [Header("Performance Optimization")]
+        [Tooltip("Включить даунсемплинг для повышения производительности")]
+        public bool enableDownsampling = true;
+
+        [Tooltip("Коэффициент даунсемплинга (1 = оригинальный размер, 2 = половина размера и т.д.)")]
+        [Range(1, 4)]
+        public int downsamplingFactor = 2;
+
+        [Tooltip("Минимальный интервал между сегментациями (в секундах)")]
+        [Range(0.05f, 2.0f)]
+        public float minSegmentationInterval = 0.2f;
+
+        private float lastSegmentationTime = 0f;
+        private RenderTexture downsampledInput;
+
         /// <summary>
         /// Width of the input texture
         /// </summary>
@@ -822,41 +837,68 @@ namespace ML.DeepLab
         }
         
         /// <summary>
-        /// Process the current camera frame
+        /// Обработка текущего кадра с оптимизациями производительности
         /// </summary>
         public Texture2D ProcessCurrentFrame(RenderTexture frameTexture)
         {
-            if (frameTexture == null)
+            // Проверяем интервал между обработками для ограничения частоты
+            if (Time.time - lastSegmentationTime < minSegmentationInterval)
             {
-                Debug.LogError("Cannot process null frame texture");
                 return null;
             }
 
-            try
-            {
-                // Fix: Properly convert RenderTexture to Texture2D using conversion method
-                Texture2D texture2D = ConvertRenderTextureToTexture2D(frameTexture);
-                
-                if (texture2D == null)
-                {
-                    Debug.LogError("Failed to convert RenderTexture to Texture2D");
-                    return null;
-                }
+            lastSegmentationTime = Time.time;
 
-                ProcessFrames(texture2D);
+            // Если включено даунсемплирование, уменьшим размер входного изображения
+            RenderTexture textureToProcess = frameTexture;
+            
+            if (enableDownsampling && downsamplingFactor > 1)
+            {
+                int newWidth = frameTexture.width / downsamplingFactor;
+                int newHeight = frameTexture.height / downsamplingFactor;
                 
-                if (OnSegmentationUpdated != null && _segmentationTexture != null)
+                // Используем или создаем буфер с уменьшенным размером
+                if (downsampledInput == null || downsampledInput.width != newWidth || downsampledInput.height != newHeight)
                 {
-                    OnSegmentationUpdated.Invoke(_segmentationTexture);
+                    if (downsampledInput != null)
+                        downsampledInput.Release();
+                    
+                    downsampledInput = new RenderTexture(newWidth, newHeight, 0, RenderTextureFormat.ARGB32);
+                    downsampledInput.enableRandomWrite = true;
+                    downsampledInput.Create();
+                    
+                    if (debugMode)
+                        Debug.Log($"EnhancedDeepLabPredictor: Created downsampled buffer {newWidth}x{newHeight}");
                 }
                 
-                return texture2D;
+                // Создаем уменьшенную копию
+                Graphics.Blit(frameTexture, downsampledInput);
+                textureToProcess = downsampledInput;
+                
+                if (verbose)
+                    Debug.Log($"EnhancedDeepLabPredictor: Downsampled input from {frameTexture.width}x{frameTexture.height} to {newWidth}x{newHeight}");
             }
-            catch (Exception e)
+            
+            // Далее используем уменьшенное изображение для обработки
+            RenderTexture result = PredictSegmentation(textureToProcess);
+            
+            if (result != null)
             {
-                Debug.LogError($"Error processing frame: {e.Message}");
-                return null;
+                Texture2D segmentationTexture = ConvertRenderTextureToTexture2D(result);
+                
+                // Обновляем статистику если нужно
+                if (collectStatistics && _enhancedFrameCount % statisticsUpdateInterval == 0)
+                {
+                    UpdateSegmentationStatistics(result);
+                }
+                
+                // Вызываем событие обновления
+                OnSegmentationUpdated?.Invoke(segmentationTexture);
+                
+                return segmentationTexture;
             }
+            
+            return null;
         }
         
         /// <summary>
@@ -1491,6 +1533,18 @@ namespace ML.DeepLab
             catch (System.Exception e)
             {
                 Debug.LogError($"EnhancedDeepLabPredictor: Error updating segmentation statistics: {e.Message}");
+            }
+        }
+
+        // Не забываем освободить ресурсы
+        protected override void OnDestroy()
+        {
+            base.OnDestroy();
+            
+            if (downsampledInput != null)
+            {
+                downsampledInput.Release();
+                downsampledInput = null;
             }
         }
     }
