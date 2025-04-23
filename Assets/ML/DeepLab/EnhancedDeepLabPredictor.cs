@@ -118,17 +118,12 @@ namespace ML.DeepLab
         // Add field for processed texture
         private RenderTexture _processedTexture;
 
-        // Find a section that defines input tensor resolution
-        [SerializeField] private int _inputWidth = 256; // Reduce from 512 
-        [SerializeField] private int _inputHeight = 256; // Reduce from 512
-
         // Add missing private fields
         private float lastPredictionTime = 0f;
         private float minPredictionInterval = 0.1f; // Min interval between predictions (100ms)
         private bool texturesInitialized = false;
-        private int inputWidth = 224;
-        private int inputHeight = 224;
-        
+        // Note: We use inputWidth and inputHeight from the base class DeepLabPredictor
+
         /// <summary>
         /// Width of the input texture
         /// </summary>
