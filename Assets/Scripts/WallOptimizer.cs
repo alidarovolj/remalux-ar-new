@@ -312,85 +312,107 @@ public unsafe class WallOptimizer : MonoBehaviour
     /// </summary>
     private unsafe void ProcessWallMask(Color32[] segmentationMask, Camera camera)
     {
-        if (segmentationMask == null || segmentationMask.Length == 0)
-            return;
-            
-        // Check if we have valid dimensions
-        if (segmentationWidth <= 0 || segmentationHeight <= 0)
+        try
         {
-            if (segmentationMask.Length > 0)
+            if (segmentationMask == null || segmentationMask.Length == 0)
             {
-                // Try to infer dimensions - probably square
-                segmentationWidth = Mathf.FloorToInt(Mathf.Sqrt(segmentationMask.Length));
-                segmentationHeight = segmentationWidth;
+                Debug.LogWarning("WallOptimizer: Received null or empty segmentation mask");
+                return;
             }
-            else
+
+            // Try to infer dimensions if they're not set
+            if (segmentationWidth <= 0 || segmentationHeight <= 0)
             {
-                return; // No valid data
-            }
-        }
-        
-        try 
-        {
-            // Convert Unity mask to OpenCV mask
-            // Create OpenCV Mat for processing the wall mask
-            using (OpenCvSharpMat wallMask = new OpenCvSharpMat(segmentationHeight, segmentationWidth, OpenCvSharp.MatType.CV_8UC1))
-            {
-                // Fill the wall mask by checking each pixel's class ID
-                byte* dataPtr = wallMask.DataPointer;
-                if (dataPtr != null)
+                // Try to infer dimensions from the array length
+                if (segmentationMask.Length > 0)
                 {
-                    unsafe
+                    // Common aspect ratios: 4:3, 16:9, etc.
+                    if (Mathf.Sqrt(segmentationMask.Length) % 1 == 0)
                     {
-                        fixed (Color32* segPtr = segmentationMask)
+                        // Perfect square
+                        segmentationWidth = (int)Mathf.Sqrt(segmentationMask.Length);
+                        segmentationHeight = segmentationWidth;
+                    }
+                    else if (segmentationMask.Length % 16 == 0 && segmentationMask.Length / 16 * 9 == segmentationMask.Length)
+                    {
+                        // 16:9 aspect ratio
+                        segmentationWidth = 16;
+                        segmentationHeight = 9;
+                    }
+                    else
+                    {
+                        Debug.LogError($"WallOptimizer: Cannot infer dimensions from segmentation mask with length {segmentationMask.Length}");
+                        return;
+                    }
+                }
+                else
+                {
+                    Debug.LogError("WallOptimizer: Cannot process segmentation mask with unknown dimensions");
+                    return;
+                }
+            }
+
+            int width = segmentationWidth;
+            int height = segmentationHeight;
+
+            // Create OpenCV Mat for processing
+            fixed (Color32* pixelPtr = segmentationMask)
+            {
+                IntPtr inputPtr = (IntPtr)pixelPtr;
+                using (Mat wallMask = new Mat(height, width, CvType.CV_8UC4, inputPtr))
+                using (Mat grayMat = new Mat(height, width, CvType.CV_8UC1))
+                using (Mat processedMask = new Mat(height, width, CvType.CV_8UC1))
+                {
+                    // Fill the wall mask by checking each pixel's class ID
+                    byte* dataPtr = wallMask.DataPointer;
+                    if (dataPtr != null)
+                    {
+                        for (int y = 0; y < height; y++)
                         {
-                            for (int y = 0; y < segmentationHeight; y++)
+                            for (int x = 0; x < width; x++)
                             {
-                                for (int x = 0; x < segmentationWidth; x++)
+                                int index = y * width + x;
+                                if (index < segmentationMask.Length)
                                 {
-                                    int index = y * segmentationWidth + x;
-                                    if (index < segmentationMask.Length)
-                                    {
-                                        // In our segmentation mask, the class ID is stored in the red channel
-                                        byte classId = segPtr[index].r;
-                                        
-                                        // Check if this pixel belongs to the wall class
-                                        bool isWall = (classId == wallClassId); 
-                                        
-                                        // Set the wall mask value (255 for wall, 0 for non-wall)
-                                        dataPtr[index] = isWall ? (byte)255 : (byte)0;
-                                    }
+                                    // In our segmentation mask, the class ID is stored in the red channel
+                                    byte classId = segmentationMask[index].r;
+                                    
+                                    // Check if this pixel belongs to the wall class
+                                    bool isWall = (classId == wallClassId); 
+                                    
+                                    // Set the wall mask value (255 for wall, 0 for non-wall)
+                                    dataPtr[index] = isWall ? (byte)255 : (byte)0;
                                 }
                             }
                         }
                     }
+                    
+                    // Apply morphological operations to reduce noise
+                    OpenCvSharpMat kernel = OpenCvSharp.Cv2.GetStructuringElement(OpenCvSharp.MorphShapes.Rect, new OpenCvSharpSize(3, 3));
+                    
+                    // Closing operation (dilation followed by erosion)
+                    OpenCvSharpMat processedMask = new OpenCvSharpMat(height, width, OpenCvSharp.MatType.CV_8UC1);
+                    OpenCvSharp.Cv2.MorphologyEx(wallMask, processedMask, OpenCvSharp.MorphTypes.Close, kernel, iterations: 2);
+                    
+                    // Opening operation to remove small noise (erosion followed by dilation)
+                    OpenCvSharp.Cv2.MorphologyEx(processedMask, processedMask, OpenCvSharp.MorphTypes.Open, kernel, iterations: 1);
+                    
+                    // Find contours in the processed mask
+                    OpenCvSharpPoint[][] contours;
+                    OpenCvSharpHierarchyIndex[] hierarchy;
+                    OpenCvSharp.Cv2.FindContours(processedMask, out contours, out hierarchy, OpenCvSharp.RetrievalModes.External, OpenCvSharp.ContourApproximationModes.ApproxSimple);
+                    
+                    if (showDebugInfo)
+                        Debug.Log($"WallOptimizer: Found {contours.Length} wall contours in segmentation mask");
+                    
+                    // Create walls from the filtered contours
+                    CreateWallsFromContours(contours, hierarchy, camera);
                 }
-                
-                // Apply morphological operations to reduce noise
-                OpenCvSharpMat kernel = OpenCvSharp.Cv2.GetStructuringElement(OpenCvSharp.MorphShapes.Rect, new OpenCvSharpSize(3, 3));
-                
-                // Closing operation (dilation followed by erosion)
-                OpenCvSharpMat processedMask = new OpenCvSharpMat(segmentationHeight, segmentationWidth, OpenCvSharp.MatType.CV_8UC1);
-                OpenCvSharp.Cv2.MorphologyEx(wallMask, processedMask, OpenCvSharp.MorphTypes.Close, kernel, iterations: 2);
-                
-                // Opening operation to remove small noise (erosion followed by dilation)
-                OpenCvSharp.Cv2.MorphologyEx(processedMask, processedMask, OpenCvSharp.MorphTypes.Open, kernel, iterations: 1);
-                
-                // Find contours in the processed mask
-                OpenCvSharpPoint[][] contours;
-                OpenCvSharpHierarchyIndex[] hierarchy;
-                OpenCvSharp.Cv2.FindContours(processedMask, out contours, out hierarchy, OpenCvSharp.RetrievalModes.External, OpenCvSharp.ContourApproximationModes.ApproxSimple);
-                
-                if (showDebugInfo)
-                    Debug.Log($"WallOptimizer: Found {contours.Length} wall contours in segmentation mask");
-                
-                // Create walls from the filtered contours
-                CreateWallsFromContours(contours, hierarchy, camera);
             }
-        } 
-        catch (System.Exception e) 
+        }
+        catch (Exception e)
         {
-            Debug.LogError($"WallOptimizer: Error processing wall mask: {e.Message}");
+            Debug.LogError($"WallOptimizer: Error processing wall mask: {e.Message}\n{e.StackTrace}");
         }
     }
     

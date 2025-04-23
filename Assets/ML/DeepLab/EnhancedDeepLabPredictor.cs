@@ -9,6 +9,9 @@ using System.Runtime.InteropServices;
 using Random = UnityEngine.Random;
 using System.Linq;
 using System.Reflection;
+using Unity.Collections;
+using UnityEngine.Profiling;
+using System.Threading.Tasks;
 
 namespace ML.DeepLab
 {
@@ -737,151 +740,71 @@ namespace ML.DeepLab
         }
         
         /// <summary>
-        /// Converts a RenderTexture to a Texture2D
+        /// Converts RenderTexture to Texture2D properly with error handling
         /// </summary>
         private Texture2D ConvertRenderTextureToTexture2D(RenderTexture renderTexture)
         {
             if (renderTexture == null)
             {
-                Debug.LogError("EnhancedDeepLabPredictor: Input render texture is null");
+                Debug.LogError("Cannot convert null RenderTexture to Texture2D");
                 return null;
             }
 
-            // Переиспользуем существующую текстуру или создаем новую с правильными размерами
-            if (_segmentationTexture == null || 
-                _segmentationTexture.width != renderTexture.width || 
-                _segmentationTexture.height != renderTexture.height)
-            {
-                // Очистка предыдущей текстуры, если она существует
-                if (_segmentationTexture != null)
-                    Destroy(_segmentationTexture);
-                
-                _segmentationTexture = new Texture2D(renderTexture.width, renderTexture.height, TextureFormat.RGBA32, false);
-            }
-            
-            // Сохраняем текущий активный RenderTexture
-            RenderTexture prevActive = RenderTexture.active;
-            
-            // Делаем наш renderTexture активным для чтения пикселей
+            Texture2D texture2D = new Texture2D(renderTexture.width, renderTexture.height, TextureFormat.RGBA32, false);
             RenderTexture.active = renderTexture;
             
-            // Читаем пиксели из активного renderTexture в текстуру
-            _segmentationTexture.ReadPixels(new Rect(0, 0, renderTexture.width, renderTexture.height), 0, 0);
-            _segmentationTexture.Apply();
-            
-            // Восстанавливаем предыдущий активный RenderTexture
-            RenderTexture.active = prevActive;
-
-            return _segmentationTexture;
-        }
-        
-        /// <summary>
-        /// Overloaded version of PreprocessTextureEnhanced that can work with RenderTexture
-        /// </summary>
-        private Tensor PreprocessTextureEnhanced(RenderTexture renderTexture)
-        {
-            if (renderTexture == null) return null;
-            
-            // Convert RenderTexture to Texture2D
-            Texture2D texture2D = ConvertRenderTextureToTexture2D(renderTexture);
-            if (texture2D == null) return null;
-            
-            try {
-                // Use the existing method with Texture2D
-                Tensor result = PreprocessTextureEnhanced(texture2D);
-                
-                // Не уничтожаем текстуру, так как она теперь переиспользуется
-                // Destroy(texture2D);
-                
-                return result;
+            try
+            {
+                texture2D.ReadPixels(new Rect(0, 0, renderTexture.width, renderTexture.height), 0, 0);
+                texture2D.Apply();
+                return texture2D;
             }
-            catch (System.Exception e) {
-                Debug.LogError($"Error in PreprocessTextureEnhanced for RenderTexture: {e.Message}");
-                
-                // Не уничтожаем текстуру, так как она теперь переиспользуется
-                // Destroy(texture2D);
-                
+            catch (Exception e)
+            {
+                Debug.LogError($"Error converting RenderTexture to Texture2D: {e.Message}");
+                Destroy(texture2D);
                 return null;
             }
+            finally
+            {
+                RenderTexture.active = null;
+            }
         }
         
         /// <summary>
-        /// Our enhanced version of PreprocessTexture for Texture2D
+        /// Process the current camera frame
         /// </summary>
-        private Tensor PreprocessTextureEnhanced(Texture2D texture)
+        public Texture2D ProcessCurrentFrame(RenderTexture frameTexture)
         {
-            if (texture == null) return null;
-            
-            int width = texture.width;
-            int height = texture.height;
-            
-            // Create tensor with appropriate dimensions [1, height, width, 3]
-            // Use the actual texture dimensions to avoid redundant resizing
-            Tensor tensor = new Tensor(1, height, width, 3);
-            
-            try {
-                // Get pixel data directly - more efficient than GetPixels()
-                Color32[] pixelColors = texture.GetPixels32();
+            if (frameTexture == null)
+            {
+                Debug.LogError("Cannot process null frame texture");
+                return null;
+            }
+
+            try
+            {
+                // Fix: Properly convert RenderTexture to Texture2D using conversion method
+                Texture2D texture2D = ConvertRenderTextureToTexture2D(frameTexture);
                 
-                if (pixelColors == null || pixelColors.Length == 0)
+                if (texture2D == null)
                 {
-                    Debug.LogError("EnhancedDeepLabPredictor: Failed to get pixel data from texture");
+                    Debug.LogError("Failed to convert RenderTexture to Texture2D");
                     return null;
                 }
+
+                ProcessFrames(texture2D);
                 
-                // Use parallel threading for better performance on large textures
-                bool useParallel = width * height > 10000 && SystemInfo.processorCount > 1;
-                
-                if (useParallel)
+                if (OnSegmentationUpdated != null && _segmentationTexture != null)
                 {
-                    System.Threading.Tasks.Parallel.For(0, height, (y) => {
-                        for (int x = 0; x < width; x++)
-                        {
-                            int pixelIndex = y * width + x;
-                            
-                            if (pixelIndex < pixelColors.Length)
-                            {
-                                Color32 color = pixelColors[pixelIndex];
-                                // Normalize color values to 0-1 range
-                                tensor[0, y, x, 0] = color.r / 255f;
-                                tensor[0, y, x, 1] = color.g / 255f;
-                                tensor[0, y, x, 2] = color.b / 255f;
-                            }
-                        }
-                    });
-                }
-                else
-                {
-                    // Sequential processing for smaller textures
-                    for (int y = 0; y < height; y++)
-                    {
-                        for (int x = 0; x < width; x++)
-                        {
-                            int pixelIndex = y * width + x;
-                            
-                            if (pixelIndex < pixelColors.Length)
-                            {
-                                Color32 color = pixelColors[pixelIndex];
-                                // Normalize color values to 0-1 range
-                                tensor[0, y, x, 0] = color.r / 255f;
-                                tensor[0, y, x, 1] = color.g / 255f;
-                                tensor[0, y, x, 2] = color.b / 255f;
-                            }
-                        }
-                    }
+                    OnSegmentationUpdated.Invoke(_segmentationTexture);
                 }
                 
-                return tensor;
+                return texture2D;
             }
-            catch (System.Exception e)
+            catch (Exception e)
             {
-                Debug.LogError($"EnhancedDeepLabPredictor: Error in PreprocessTextureEnhanced: {e.Message}");
-                
-                if (tensor != null)
-                {
-                    tensor.Dispose();
-                }
-                
+                Debug.LogError($"Error processing frame: {e.Message}");
                 return null;
             }
         }
@@ -1518,49 +1441,6 @@ namespace ML.DeepLab
             catch (System.Exception e)
             {
                 Debug.LogError($"EnhancedDeepLabPredictor: Error updating segmentation statistics: {e.Message}");
-            }
-        }
-
-        private void ProcessCurrentFrame(RenderTexture frameTexture)
-        {
-            try
-            {
-                if (frameTexture == null)
-                {
-                    Debug.LogWarning("[EnhancedDeepLabPredictor] Null frame texture provided to ProcessCurrentFrame");
-                    return;
-                }
-
-                // Convert the RenderTexture to Texture2D for processing
-                Texture2D texture2D = ConvertRenderTextureToTexture2D(frameTexture);
-                if (texture2D == null)
-                {
-                    Debug.LogWarning("[EnhancedDeepLabPredictor] Failed to convert RenderTexture to Texture2D");
-                    return;
-                }
-                
-                // Process the texture as needed
-                // Properly handle the processed texture - do not attempt implicit cast
-                if (_processedTexture != null)
-                {
-                    RenderTexture.ReleaseTemporary(_processedTexture);
-                }
-                
-                // Create a new RenderTexture with the same dimensions as texture2D
-                _processedTexture = RenderTexture.GetTemporary(texture2D.width, texture2D.height, 0, RenderTextureFormat.ARGB32);
-                
-                // Copy the Texture2D to the RenderTexture
-                Graphics.Blit(texture2D, _processedTexture);
-                
-                // Invoke event to notify listeners about the updated segmentation
-                if (OnSegmentationUpdated != null)
-                {
-                    OnSegmentationUpdated.Invoke(texture2D);
-                }
-            }
-            catch (System.Exception e)
-            {
-                Debug.LogError($"Error in ProcessCurrentFrame: {e.Message}");
             }
         }
     }
