@@ -562,6 +562,13 @@ public unsafe class WallOptimizer : MonoBehaviour
                 Debug.Log($"WallOptimizer: Requesting segmentation for wall class ID: {wallClassId}");
             }
             
+            // Ensure we're using the correct wall class ID (9 for ADE20K)
+            if (wallClassId != 9)
+            {
+                Debug.LogWarning($"WallOptimizer: Correcting wall class ID from {wallClassId} to 9 (ADE20K wall class)");
+                wallClassId = 9;
+            }
+            
             Texture2D segmentationResult = predictor.GetSegmentationForClass(wallClassId);
             
             if (segmentationResult != null)
