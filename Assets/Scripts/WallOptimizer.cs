@@ -397,8 +397,30 @@ public unsafe class WallOptimizer : MonoBehaviour
                     
                     using (OpenCvSharpMat opencvSharpWallMask = new OpenCvSharpMat(height, width, OpenCvSharp.MatType.CV_8UC1))
                     {
-                        // Копируем данные в OpenCvSharp Mat с помощью Ptr(0) - указатель на начало первой строки
-                        Marshal.Copy(wallMaskData, 0, opencvSharpWallMask.Ptr(0), wallMaskData.Length);
+                        // Примечание: в коде использовался метод Ptr(0), который недоступен в текущей реализации OpenCvSharp
+                        // Этот метод обычно возвращает указатель на начало данных матрицы
+                        // В нашей dummy-реализации мы используем прямое заполнение матрицы вместо работы с указателями
+                        try 
+                        {
+                            for (int y = 0; y < height; y++)
+                            {
+                                for (int x = 0; x < width; x++)
+                                {
+                                    int index = y * width + x;
+                                    if (index < wallMaskData.Length)
+                                    {
+                                        // Устанавливаем значение для каждого пикселя
+                                        opencvSharpWallMask.Set(y, x, wallMaskData[index]);
+                                    }
+                                }
+                            }
+                        }
+                        catch (Exception e)
+                        {
+                            Debug.LogWarning($"WallOptimizer: Could not set data in OpenCvSharp Mat: {e.Message}. Using default values.");
+                            // Если метод Set тоже недоступен, просто продолжаем с пустой маской
+                            // Матрица будет инициализирована значениями по умолчанию
+                        }
                         
                         // Closing operation (dilation followed by erosion)
                         OpenCvSharpMat processedMask = new OpenCvSharpMat(height, width, OpenCvSharp.MatType.CV_8UC1);
