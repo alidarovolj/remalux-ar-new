@@ -92,6 +92,9 @@ namespace OpenCvSharp
         
         public unsafe byte* DataPointer;
         public void Dispose() { }
+        
+        // Add a Set method for our implementation
+        public void Set(int y, int x, byte value) { }
     }
 }
 #endif
@@ -399,7 +402,10 @@ public unsafe class WallOptimizer : MonoBehaviour
                     {
                         // Примечание: в коде использовался метод Ptr(0), который недоступен в текущей реализации OpenCvSharp
                         // Этот метод обычно возвращает указатель на начало данных матрицы
-                        // В нашей dummy-реализации мы используем прямое заполнение матрицы вместо работы с указателями
+                        // В dummy-реализации OpenCvSharp мы оставляем маску пустой, так как в ней нет реальных методов для заполнения
+                        // В реальной реализации OpenCvSharp здесь был бы код для копирования данных в матрицу
+
+                        #if USING_OPENCVSHARP
                         try 
                         {
                             for (int y = 0; y < height; y++)
@@ -418,9 +424,8 @@ public unsafe class WallOptimizer : MonoBehaviour
                         catch (Exception e)
                         {
                             Debug.LogWarning($"WallOptimizer: Could not set data in OpenCvSharp Mat: {e.Message}. Using default values.");
-                            // Если метод Set тоже недоступен, просто продолжаем с пустой маской
-                            // Матрица будет инициализирована значениями по умолчанию
                         }
+                        #endif
                         
                         // Closing operation (dilation followed by erosion)
                         OpenCvSharpMat processedMask = new OpenCvSharpMat(height, width, OpenCvSharp.MatType.CV_8UC1);
