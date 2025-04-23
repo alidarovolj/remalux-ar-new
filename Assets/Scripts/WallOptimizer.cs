@@ -397,8 +397,8 @@ public unsafe class WallOptimizer : MonoBehaviour
                     
                     using (OpenCvSharpMat opencvSharpWallMask = new OpenCvSharpMat(height, width, OpenCvSharp.MatType.CV_8UC1))
                     {
-                        // Копируем данные в OpenCvSharp Mat
-                        Marshal.Copy(wallMaskData, 0, opencvSharpWallMask.Data, wallMaskData.Length);
+                        // Копируем данные в OpenCvSharp Mat с помощью Ptr(0) - указатель на начало первой строки
+                        Marshal.Copy(wallMaskData, 0, opencvSharpWallMask.Ptr(0), wallMaskData.Length);
                         
                         // Closing operation (dilation followed by erosion)
                         OpenCvSharpMat processedMask = new OpenCvSharpMat(height, width, OpenCvSharp.MatType.CV_8UC1);
