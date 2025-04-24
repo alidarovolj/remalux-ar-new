@@ -223,8 +223,7 @@ public class FixARMLController : MonoBehaviour
             
             if (enhancedPredictor != null)
             {
-                // Connect events - we'll handle forwarding instead of direct field assignment
-                // since EnhancedDeepLabPredictor is not compatible with DeepLabPredictor
+                // Connect events
                 enhancedPredictor.OnSegmentationResult += OnSegmentationResult;
                 
                 if (logFixDetails)
@@ -361,17 +360,21 @@ public class FixARMLController : MonoBehaviour
     }
     
     // Handler for segmentation results to ensure they're passed to ARMLController
-    private void OnSegmentationResult(RenderTexture segmentationMask)
+    private void OnSegmentationResult(Texture2D segmentationTexture)
     {
         if (armlController != null)
         {
+            // Convert to RenderTexture if needed for ARMLController
+            RenderTexture renderTexture = new RenderTexture(segmentationTexture.width, segmentationTexture.height, 0);
+            Graphics.Blit(segmentationTexture, renderTexture);
+            
             // Use reflection to call the private HandleSegmentationResult method
             var method = armlController.GetType().GetMethod("HandleSegmentationResult", 
                 System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
                 
             if (method != null)
             {
-                method.Invoke(armlController, new object[] { segmentationMask });
+                method.Invoke(armlController, new object[] { renderTexture });
                 
                 if (logFixDetails && Time.frameCount % 100 == 0) // Log only occasionally to avoid spam
                     Debug.Log("FixARMLController: Forwarded segmentation result to ARMLController");

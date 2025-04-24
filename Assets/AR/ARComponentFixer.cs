@@ -201,10 +201,24 @@ public class ARComponentFixer : MonoBehaviour
         {
             // Cast wallClassId to byte explicitly
             predictor.WallClassId = (byte)wallClassId;
-            predictor.ClassificationThreshold = classificationThreshold;
-            predictor.debugMode = debugMode;
-            predictor.verbose = verbose;
-            Log($"Configured EnhancedDeepLabPredictor: WallClassId={predictor.WallClassId}, Threshold={predictor.ClassificationThreshold:F2}");
+            
+            // Using reflection to set properties/fields that might be private
+            var classThresholdField = predictor.GetType().GetField("ClassificationThreshold", 
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public);
+            if (classThresholdField != null)
+                classThresholdField.SetValue(predictor, classificationThreshold);
+                
+            var debugModeField = predictor.GetType().GetField("debugMode", 
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public);
+            if (debugModeField != null)
+                debugModeField.SetValue(predictor, debugMode);
+                
+            var verboseField = predictor.GetType().GetField("verbose", 
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public);
+            if (verboseField != null)
+                verboseField.SetValue(predictor, verbose);
+                
+            Log($"Configured EnhancedDeepLabPredictor: WallClassId={predictor.WallClassId}, Threshold={classificationThreshold:F2}");
         }
 
         // Find or add WallMeshRenderer

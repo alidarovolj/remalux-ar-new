@@ -246,7 +246,7 @@ public class WallDetectionSetup : MonoBehaviour
                         foreach (var listener in listeners.GetInvocationList())
                         {
                             // Добавляем каждый обработчик к новому событию
-                            newPredictor.OnSegmentationResult += (EnhancedDeepLabPredictor.SegmentationResultHandler)listener;
+                            newPredictor.OnSegmentationResult += (ML.DeepLab.SegmentationResultHandler)listener;
                         }
                         
                         Debug.Log("WallDetectionSetup: Successfully copied event listeners from original predictor");
@@ -391,7 +391,7 @@ public class WallDetectionSetup : MonoBehaviour
                 {
                     // Copy settings from the original predictor
                     enhancedPredictor.modelAsset = originalPredictor.modelAsset;
-                    enhancedPredictor.WallClassId = 9; // Always use ADE20K wall class ID (9)
+                    enhancedPredictor.WallClassId = (byte)9; // Always use ADE20K wall class ID (9)
                     enhancedPredictor.inputWidth = originalPredictor.inputWidth > 0 ? originalPredictor.inputWidth : 512;
                     enhancedPredictor.inputHeight = originalPredictor.inputHeight > 0 ? originalPredictor.inputHeight : 512;
                     enhancedPredictor.ClassificationThreshold = initialThreshold;
@@ -408,7 +408,7 @@ public class WallDetectionSetup : MonoBehaviour
                 else
                 {
                     // Set default values
-                    enhancedPredictor.WallClassId = 9; // ADE20K wall class ID (9)
+                    enhancedPredictor.WallClassId = (byte)9; // ADE20K wall class ID (9)
                     enhancedPredictor.inputWidth = 512;
                     enhancedPredictor.inputHeight = 512;
                     enhancedPredictor.ClassificationThreshold = initialThreshold;
@@ -424,7 +424,7 @@ public class WallDetectionSetup : MonoBehaviour
             else
             {
                 // Update existing predictor settings
-                enhancedPredictor.WallClassId = 9; // ADE20K wall class ID (9)
+                enhancedPredictor.WallClassId = (byte)9; // ADE20K wall class ID (9)
                 enhancedPredictor.ClassificationThreshold = initialThreshold;
                 enhancedPredictor.useArgMaxMode = useArgMaxMode;
                 enhancedPredictor.applyNoiseReduction = true;
@@ -475,7 +475,7 @@ public class WallDetectionSetup : MonoBehaviour
                     wallPainter._wallMaterial = wallMat;
                     
                     // Configure settings
-                    wallPainter._wallClassId = 9;
+                    wallPainter._wallClassId = (byte)9;
                     wallPainter._wallConfidenceThreshold = initialThreshold;
                     wallPainter.enabled = true;
                     
@@ -485,7 +485,7 @@ public class WallDetectionSetup : MonoBehaviour
                 {
                     // Update existing wall painter settings
                     wallPainter._predictor = enhancedPredictor;
-                    wallPainter._wallClassId = 9;
+                    wallPainter._wallClassId = (byte)9;
                     wallPainter._wallConfidenceThreshold = initialThreshold;
                     
                     Debug.Log("WallDetectionSetup: Updated existing ARWallPainter");
@@ -501,7 +501,7 @@ public class WallDetectionSetup : MonoBehaviour
             if (wallMeshRenderer != null)
             {
                 wallMeshRenderer.Predictor = enhancedPredictor;
-                wallMeshRenderer._wallClassId = 9; // ADE20K wall class ID (9)
+                wallMeshRenderer._wallClassId = (byte)9; // ADE20K wall class ID (9)
                 wallMeshRenderer.WallConfidenceThreshold = initialThreshold;
                 wallMeshRenderer._onlyUseVerticalPlanes = true;
                 

@@ -10,6 +10,9 @@ using UnityEngine.InputSystem;
 using System;
 using UnityEngine.SceneManagement;
 using ML.DeepLab;
+using System.Collections;
+using System.Collections.Generic;
+using UnityEngine.XR.Interaction.Toolkit;
 
 public class ARSceneSetup : EditorWindow
 {
@@ -42,50 +45,302 @@ public class ARSceneSetup : EditorWindow
         return target.AddComponent<T>();
     }
     
-    [MenuItem("AR/Setup AR Scene")]
-    public static void SetupARScene()
+    [MenuItem("AR/Setup AR Scene", false, 0)]
+    static void SetupARScene()
     {
-        // Создаем новую сцену
-        Scene newScene = CreateARScene();
-        
-        // Добавляем необходимые AR компоненты
-        GameObject arSessionOrigin = CreateARComponents();
-        
-        // Добавляем интерфейс управления (только палитру цветов)
-        GameObject uiCanvas = CreateARUICanvas();
-        
-        // Сохраняем сцену
-        string scenePath = EditorUtility.SaveFilePanel("Save AR Scene", "Assets", "ARScene", "unity");
-        if (!string.IsNullOrEmpty(scenePath))
+        // Создаем новую сцену или используем текущую
+        if (EditorUtility.DisplayDialog("Создание AR сцены", 
+            "Создать новую сцену или использовать текущую?", 
+            "Создать новую", "Использовать текущую"))
         {
-            // Преобразуем абсолютный путь в относительный путь проекта
-            string relativePath = scenePath.Substring(Application.dataPath.Length - "Assets".Length);
-            EditorSceneManager.SaveScene(newScene, relativePath);
-            Debug.Log("AR сцена создана и сохранена в: " + relativePath);
+            Scene newScene = EditorSceneManager.NewScene(NewSceneSetup.DefaultGameObjects, NewSceneMode.Single);
         }
-        else
+        
+        // Создаем основные объекты AR сцены
+        CreateARComponents();
+        
+        // Создаем и настраиваем объект с ARSceneInitializer
+        GameObject initializerObject = new GameObject("AR Scene Initializer");
+        ARSceneInitializer setupInitializer = initializerObject.AddComponent<ARSceneInitializer>();
+        
+        // Автоматически заполняем ссылки на необходимые компоненты
+        setupInitializer.FillReferences();
+        
+        // Выводим сообщение об успешной настройке
+        Debug.Log("AR сцена успешно настроена!");
+        
+        // Выбираем объект в иерархии
+        Selection.activeGameObject = initializerObject;
+        
+        // Спрашиваем, нужно ли настроить Wall Optimizer
+        if (EditorUtility.DisplayDialog("Wall Optimizer", 
+            "Хотите добавить и настроить Wall Optimizer?", 
+            "Да", "Нет"))
         {
-            Debug.Log("AR сцена создана, но не сохранена.");
+            // Вызываем настройку Wall Optimizer
+            SetupWallOptimizer();
+            
+            // Предлагаем оптимизировать производительность
+            if (EditorUtility.DisplayDialog("Оптимизация производительности", 
+                "Хотите применить оптимизацию производительности для Wall Optimizer?", 
+                "Да", "Нет"))
+            {
+                OptimizeWallOptimizerPerformance();
+            }
+        }
+    }
+    
+    [MenuItem("AR/Fix AR Scene References", false, 1)]
+    static void FixSceneReferences()
+    {
+        // Ищем ARSceneInitializer в сцене
+        ARSceneInitializer[] initializers = GameObject.FindObjectsOfType<ARSceneInitializer>();
+        
+        if (initializers == null || initializers.Length == 0)
+        {
+            // Если не найден, предлагаем создать
+            if (EditorUtility.DisplayDialog("ARSceneInitializer не найден", 
+                "ARSceneInitializer не найден в сцене. Создать новый?", 
+                "Да", "Нет"))
+            {
+                GameObject initializerObject = new GameObject("AR Scene Initializer");
+                ARSceneInitializer newSceneInitializer = initializerObject.AddComponent<ARSceneInitializer>();
+                initializers = new ARSceneInitializer[] { newSceneInitializer };
+            }
+            else
+            {
+                return;
+            }
+        }
+        
+        // Если найдено несколько, выбираем первый и предупреждаем
+        if (initializers.Length > 1)
+        {
+            Debug.LogWarning($"Найдено {initializers.Length} компонентов ARSceneInitializer. Используем первый из них.");
+        }
+        
+        // Заполняем ссылки и исправляем дубликаты
+        ARSceneInitializer activeInitializer = initializers[0];
+        activeInitializer.FillReferences();
+        activeInitializer.CheckForDuplicates();
+        
+        // Выбираем объект в иерархии
+        Selection.activeGameObject = activeInitializer.gameObject;
+        
+        // Отображаем сообщение об успешном исправлении
+        Debug.Log("Ссылки AR сцены успешно исправлены!");
+        EditorUtility.DisplayDialog("AR Scene Setup", "Ссылки AR сцены успешно исправлены!", "OK");
+        
+        // Предлагаем настроить Wall Optimizer, если он есть
+        WallOptimizer wallOptimizer = GameObject.FindObjectOfType<WallOptimizer>();
+        if (wallOptimizer != null)
+        {
+            if (EditorUtility.DisplayDialog("Wall Optimizer найден", 
+                "Wall Optimizer найден в сцене. Хотите проверить его настройки?", 
+                "Да", "Нет"))
+            {
+                SetupWallOptimizer();
+            }
         }
     }
     
     /// <summary>
-    /// Создает новую сцену для AR
+    /// Создание базовых компонентов AR
     /// </summary>
-    private static Scene CreateARScene()
+    private static void CreateARComponents()
     {
-        // Создаем новую пустую сцену
-        Scene newScene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
+        // Создаем AR Session Origin, если его нет
+        ARSessionOrigin sessionOrigin = GameObject.FindObjectOfType<ARSessionOrigin>();
+        GameObject originObject = null;
         
-        // Добавляем основной свет
-        GameObject directionalLight = new GameObject("Directional Light");
-        Light light = directionalLight.AddComponent<Light>();
-        light.type = LightType.Directional;
-        light.intensity = 1.0f;
-        light.color = new Color(1.0f, 0.95f, 0.84f);
-        directionalLight.transform.rotation = Quaternion.Euler(50, -30, 0);
+        if (sessionOrigin == null)
+        {
+            originObject = new GameObject("AR Session Origin");
+            sessionOrigin = originObject.AddComponent<ARSessionOrigin>();
+            
+            // Добавляем камеру, если её нет
+            Camera mainCamera = UnityEngine.Object.FindObjectOfType<Camera>();
+            if (mainCamera == null)
+            {
+                GameObject cameraObject = new GameObject("AR Camera");
+                cameraObject.transform.SetParent(originObject.transform);
+                
+                // Настраиваем камеру
+                mainCamera = cameraObject.AddComponent<Camera>();
+                cameraObject.AddComponent<ARCameraManager>();
+                cameraObject.AddComponent<ARCameraBackground>();
+            }
+            else
+            {
+                // Если камера уже существует, делаем её дочерним объектом AR Session Origin
+                mainCamera.gameObject.transform.SetParent(originObject.transform);
+                
+                // Добавляем необходимые компоненты, если их нет
+                if (mainCamera.GetComponent<ARCameraManager>() == null)
+                    mainCamera.gameObject.AddComponent<ARCameraManager>();
+                
+                if (mainCamera.GetComponent<ARCameraBackground>() == null)
+                    mainCamera.gameObject.AddComponent<ARCameraBackground>();
+            }
+            
+            // Устанавливаем камеру как Camera в ARSessionOrigin
+            sessionOrigin.camera = mainCamera;
+        }
+        else
+        {
+            originObject = sessionOrigin.gameObject;
+        }
         
-        return newScene;
+        // Создаем AR Session, если его нет
+        ARSession session = UnityEngine.Object.FindObjectOfType<ARSession>();
+        if (session == null)
+        {
+            GameObject sessionObject = new GameObject("AR Session");
+            session = sessionObject.AddComponent<ARSession>();
+            sessionObject.AddComponent<ARInputManager>();
+        }
+        
+        // Добавляем трекеры и менеджеры в AR Session Origin
+        AddRequiredTrackersToOrigin(sessionOrigin);
+    }
+    
+    /// <summary>
+    /// Добавление необходимых трекеров к AR Session Origin
+    /// </summary>
+    private static void AddRequiredTrackersToOrigin(ARSessionOrigin sessionOrigin)
+    {
+        GameObject originObject = sessionOrigin.gameObject;
+        
+        // Добавляем основные трекеры, если их нет
+        if (originObject.GetComponent<ARPlaneManager>() == null)
+            originObject.AddComponent<ARPlaneManager>();
+        
+        if (originObject.GetComponent<ARRaycastManager>() == null)
+            originObject.AddComponent<ARRaycastManager>();
+        
+        if (originObject.GetComponent<ARAnchorManager>() == null)
+            originObject.AddComponent<ARAnchorManager>();
+        
+        if (originObject.GetComponent<ARPointCloudManager>() == null)
+            originObject.AddComponent<ARPointCloudManager>();
+
+        // Создаем AR canvas для UI
+        CreateARCanvas(sessionOrigin);
+        
+        // Создаем ML System, если необходимо
+        CreateMLSystem(sessionOrigin);
+        
+        // Создаем Wall System, если необходимо
+        CreateWallSystem(sessionOrigin);
+    }
+    
+    /// <summary>
+    /// Создание Canvas для AR UI
+    /// </summary>
+    private static void CreateARCanvas(ARSessionOrigin sessionOrigin)
+    {
+        // Проверяем наличие Canvas в сцене
+        Canvas[] canvases = UnityEngine.Object.FindObjectsOfType<Canvas>();
+        Canvas arCanvas = null;
+        
+        foreach (Canvas canvas in canvases)
+        {
+            if (canvas.renderMode == RenderMode.WorldSpace)
+            {
+                arCanvas = canvas;
+                break;
+            }
+        }
+        
+        // Если нет подходящего Canvas, создаем новый
+        if (arCanvas == null)
+        {
+            // Создаем объект для Canvas
+            GameObject canvasObject = new GameObject("AR UI Canvas");
+            arCanvas = canvasObject.AddComponent<Canvas>();
+            arCanvas.renderMode = RenderMode.WorldSpace;
+            
+            // Добавляем компоненты для UI
+            canvasObject.AddComponent<UnityEngine.UI.CanvasScaler>();
+            canvasObject.AddComponent<UnityEngine.UI.GraphicRaycaster>();
+            
+            // Позиционируем Canvas перед камерой
+            if (sessionOrigin.camera != null)
+            {
+                canvasObject.transform.position = sessionOrigin.camera.transform.position + sessionOrigin.camera.transform.forward * 2;
+                canvasObject.transform.rotation = sessionOrigin.camera.transform.rotation;
+                canvasObject.transform.localScale = new Vector3(0.01f, 0.01f, 0.01f);
+            }
+            
+            // Добавляем панель управления
+            GameObject panel = new GameObject("Control Panel");
+            panel.transform.SetParent(canvasObject.transform, false);
+            UnityEngine.UI.Image panelImage = panel.AddComponent<UnityEngine.UI.Image>();
+            panelImage.color = new Color(0.1f, 0.1f, 0.1f, 0.7f);
+            
+            // Настраиваем размеры панели
+            RectTransform panelRect = panel.GetComponent<RectTransform>();
+            panelRect.sizeDelta = new Vector2(800, 400);
+            panelRect.anchoredPosition = Vector2.zero;
+        }
+    }
+    
+    /// <summary>
+    /// Создание ML System для сцены
+    /// </summary>
+    private static void CreateMLSystem(ARSessionOrigin sessionOrigin)
+    {
+        // Проверяем наличие ML System в сцене
+        GameObject mlSystem = GameObject.Find("ML System");
+        
+        if (mlSystem == null)
+        {
+            mlSystem = new GameObject("ML System");
+            
+            // Добавляем необходимые компоненты, если поддерживаются в проекте
+            // В зависимости от того, какие ML компоненты есть в проекте, 
+            // может потребоваться добавление соответствующих компонентов
+            // Это только заглушка для демонстрации
+            
+            // Пример (в реальном проекте нужно проверить наличие этих компонентов):
+            // mlSystem.AddComponent<MLModelLoader>();
+            // mlSystem.AddComponent<TensorInterpreter>();
+        }
+    }
+    
+    /// <summary>
+    /// Создание Wall System для сцены
+    /// </summary>
+    private static void CreateWallSystem(ARSessionOrigin sessionOrigin)
+    {
+        // Проверяем наличие Wall System в сцене
+        GameObject wallSystem = GameObject.Find("Wall System");
+        
+        if (wallSystem == null)
+        {
+            wallSystem = new GameObject("Wall System");
+            
+            // Добавляем компоненты для работы со стенами, если поддерживаются в проекте
+            // В зависимости от того, какие компоненты для стен есть в проекте,
+            // может потребоваться добавление соответствующих компонентов
+            
+            // Если в проекте есть WallOptimizer, можно добавить его
+            System.Type wallOptimizerType = System.Type.GetType("WallOptimizer");
+            if (wallOptimizerType != null)
+            {
+                wallSystem.AddComponent(wallOptimizerType);
+                
+                // Предложим настроить Wall Optimizer после создания сцены
+                bool setupWallOptimizer = EditorUtility.DisplayDialog("Wall Optimizer", 
+                    "Wall Optimizer добавлен. Настроить его сейчас?", 
+                    "Да", "Позже");
+                
+                if (setupWallOptimizer)
+                {
+                    SetupWallOptimizer();
+                }
+            }
+        }
     }
     
     private static GameObject SetupARSystem()
@@ -193,8 +448,11 @@ public class ARSceneSetup : EditorWindow
             // This is critical for proper world-space positioning of meshes
             GameObject meshManagerObj = new GameObject("AR Mesh Manager");
             meshManagerObj.transform.SetParent(xrOriginObj.transform);
+            meshManagerObj.transform.localPosition = Vector3.zero;
+            meshManagerObj.transform.localRotation = Quaternion.identity;
+            meshManagerObj.transform.localScale = Vector3.one;
             
-            // Add ARMeshManager directly to XROrigin
+            // Add ARMeshManager directly to the meshManagerObj (which is a child of XROrigin)
             ARMeshManager meshManager = SafeAddComponent<ARMeshManager>(meshManagerObj);
             meshManager.density = 0.5f;
             Debug.Log("Added ARMeshManager as child of XROrigin for mesh processing in world space");
@@ -1644,7 +1902,7 @@ public class ARSceneSetup : EditorWindow
     /// Creates the AR components for the scene
     /// </summary>
     /// <returns>The XR Origin GameObject</returns>
-    private static GameObject CreateARComponents()
+    private static GameObject CreateARComponentsWithResult()
     {
         // Create the AR system with all necessary components
         GameObject arSystem = SetupARSystem();
@@ -1707,5 +1965,280 @@ public class ARSceneSetup : EditorWindow
         GameObject colorButton = CreateButton(toolPanel.transform, "ColorButton", "Color", new Vector2(0.74f, 0.3f), new Vector2(0.92f, 0.9f));
         
         return toolPanel;
+    }
+
+    [MenuItem("Tools/AR/Fix AR Components Structure")]
+    public static void FixARComponentsStructure()
+    {
+        try
+        {
+            // Find XR Origin
+            XROrigin xrOrigin = UnityEngine.Object.FindObjectOfType<XROrigin>();
+            if (xrOrigin == null)
+            {
+                Debug.LogError("XR Origin не найден в сцене. Невозможно исправить структуру AR компонентов.");
+                return;
+            }
+            
+            // Find AR Mesh Manager that's not a child of XR Origin
+            ARMeshManager[] meshManagers = UnityEngine.Object.FindObjectsOfType<ARMeshManager>();
+            foreach (ARMeshManager meshManager in meshManagers)
+            {
+                GameObject meshManagerObj = meshManager.gameObject;
+                
+                // Check if this mesh manager is not a child of XR Origin
+                if (!meshManagerObj.transform.IsChildOf(xrOrigin.transform))
+                {
+                    Debug.Log($"Найден AR Mesh Manager '{meshManagerObj.name}' вне XR Origin. Исправляем структуру...");
+                    
+                    // Find or create AR Mesh Manager under XR Origin
+                    GameObject meshManagerUnderXROrigin = null;
+                    Transform existingMeshManager = xrOrigin.transform.Find("AR Mesh Manager");
+                    if (existingMeshManager != null)
+                    {
+                        meshManagerUnderXROrigin = existingMeshManager.gameObject;
+                        Debug.Log("Найден существующий AR Mesh Manager под XR Origin. Перенесем компоненты.");
+                        
+                        // Transfer components to existing one
+                        Component[] components = meshManagerObj.GetComponents<Component>();
+                        foreach (Component component in components)
+                        {
+                            if (!(component is Transform) && !(component is ARMeshManager))
+                            {
+                                UnityEditorInternal.ComponentUtility.CopyComponent(component);
+                                UnityEditorInternal.ComponentUtility.PasteComponentAsNew(meshManagerUnderXROrigin);
+                                Debug.Log($"Перенесен компонент {component.GetType().Name} на правильный AR Mesh Manager.");
+                            }
+                        }
+                        
+                        // Disable the original object
+                        meshManagerObj.SetActive(false);
+                        Debug.Log($"Отключен исходный AR Mesh Manager '{meshManagerObj.name}'.");
+                    }
+                    else
+                    {
+                        // Create new AR Mesh Manager under XR Origin
+                        meshManagerUnderXROrigin = new GameObject("AR Mesh Manager");
+                        meshManagerUnderXROrigin.transform.SetParent(xrOrigin.transform);
+                        meshManagerUnderXROrigin.transform.localPosition = Vector3.zero;
+                        meshManagerUnderXROrigin.transform.localRotation = Quaternion.identity;
+                        meshManagerUnderXROrigin.transform.localScale = Vector3.one;
+                        
+                        // Copy the components from the original to the new one
+                        Component[] components = meshManagerObj.GetComponents<Component>();
+                        foreach (Component component in components)
+                        {
+                            if (!(component is Transform))
+                            {
+                                UnityEditorInternal.ComponentUtility.CopyComponent(component);
+                                UnityEditorInternal.ComponentUtility.PasteComponentAsNew(meshManagerUnderXROrigin);
+                                Debug.Log($"Скопирован компонент {component.GetType().Name} на новый AR Mesh Manager.");
+                            }
+                        }
+                        
+                        // Disable the original object
+                        meshManagerObj.SetActive(false);
+                        Debug.Log($"Отключен исходный AR Mesh Manager '{meshManagerObj.name}'.");
+                    }
+                    
+                    // Make sure it has an ARMeshManager component
+                    ARMeshManager newMeshManager = meshManagerUnderXROrigin.GetComponent<ARMeshManager>();
+                    if (newMeshManager == null)
+                    {
+                        newMeshManager = meshManagerUnderXROrigin.AddComponent<ARMeshManager>();
+                        newMeshManager.density = meshManager.density;
+                    }
+                    
+                    // Ensure it has WallAligner component if original had it
+                    WallAligner originalWallAligner = meshManagerObj.GetComponent<WallAligner>();
+                    if (originalWallAligner != null)
+                    {
+                        WallAligner newWallAligner = meshManagerUnderXROrigin.GetComponent<WallAligner>();
+                        if (newWallAligner == null)
+                        {
+                            newWallAligner = meshManagerUnderXROrigin.AddComponent<WallAligner>();
+                            
+                            // Copy material reference if it exists
+                            if (originalWallAligner.wallMaterial != null)
+                            {
+                                newWallAligner.wallMaterial = originalWallAligner.wallMaterial;
+                            }
+                        }
+                    }
+                    
+                    // Mark scene as dirty
+                    EditorSceneManager.MarkSceneDirty(EditorSceneManager.GetActiveScene());
+                    Debug.Log("Структура AR компонентов успешно исправлена.");
+                }
+            }
+        }
+        catch (System.Exception ex)
+        {
+            Debug.LogError($"Ошибка при исправлении структуры AR компонентов: {ex.Message}\n{ex.StackTrace}");
+        }
+    }
+
+    [MenuItem("AR/Fix AR Scene References")]
+    public static void FixARSceneReferences()
+    {
+        try
+        {
+            // Проверяем, есть ли уже инициализатор
+            ARSceneInitializer[] existingInitializers = GameObject.FindObjectsOfType<ARSceneInitializer>();
+            ARSceneInitializer sceneInitializer = null;
+            
+            if (existingInitializers != null && existingInitializers.Length > 0)
+            {
+                sceneInitializer = existingInitializers[0];
+                Debug.Log("Найден существующий ARSceneInitializer, используем его");
+            }
+            else
+            {
+                // Создаем GameObject для автоматической настройки
+                GameObject setupObject = new GameObject("ARSceneInitializer");
+                sceneInitializer = setupObject.AddComponent<ARSceneInitializer>();
+                Debug.Log("Создан новый ARSceneInitializer");
+            }
+            
+            if (sceneInitializer != null)
+            {
+                // Заполняем ссылки на компоненты
+                GameObject arSystem = GameObject.Find("AR System");
+                GameObject mlSystem = GameObject.Find("ML System");
+                GameObject wallSystem = GameObject.Find("Wall System");
+                GameObject uiCanvas = GameObject.Find("UI Canvas");
+                GameObject wallOptimizationManager = GameObject.Find("Wall Optimization Manager");
+                
+                // Создаем Wall Optimization Manager если его нет
+                if (wallOptimizationManager == null)
+                {
+                    wallOptimizationManager = new GameObject("Wall Optimization Manager");
+                    WallOptimizationManager optimizationManager = wallOptimizationManager.AddComponent<WallOptimizationManager>();
+                    Debug.Log("Создан новый Wall Optimization Manager");
+                }
+                
+                // Устанавливаем ссылки на основные объекты
+                SerializedObject serializedInitializer = new SerializedObject(sceneInitializer);
+                
+                var arSystemProp = serializedInitializer.FindProperty("arSystem");
+                if (arSystemProp != null && arSystem != null)
+                {
+                    arSystemProp.objectReferenceValue = arSystem;
+                }
+                
+                var mlSystemProp = serializedInitializer.FindProperty("mlSystem");
+                if (mlSystemProp != null && mlSystem != null)
+                {
+                    mlSystemProp.objectReferenceValue = mlSystem;
+                }
+                
+                var wallSystemProp = serializedInitializer.FindProperty("wallSystem");
+                if (wallSystemProp != null && wallSystem != null)
+                {
+                    wallSystemProp.objectReferenceValue = wallSystem;
+                }
+                
+                var uiCanvasProp = serializedInitializer.FindProperty("uiCanvas");
+                if (uiCanvasProp != null && uiCanvas != null)
+                {
+                    uiCanvasProp.objectReferenceValue = uiCanvas;
+                }
+                
+                var wallOptMgrProp = serializedInitializer.FindProperty("wallOptimizationManager");
+                if (wallOptMgrProp != null && wallOptimizationManager != null)
+                {
+                    wallOptMgrProp.objectReferenceValue = wallOptimizationManager;
+                }
+                
+                var wallMaterialProp = serializedInitializer.FindProperty("wallMaterial");
+                if (wallMaterialProp != null)
+                {
+                    Material wallMaterial = AssetDatabase.LoadAssetAtPath<Material>("Assets/Materials/WallMaterial.mat");
+                    if (wallMaterial == null)
+                    {
+                        wallMaterial = AssetDatabase.LoadAssetAtPath<Material>("Assets/Materials/SimpleWallMaterial.mat");
+                    }
+                    
+                    if (wallMaterial != null)
+                    {
+                        wallMaterialProp.objectReferenceValue = wallMaterial;
+                    }
+                }
+                
+                serializedInitializer.ApplyModifiedProperties();
+                
+                // Автоматически запускаем настройку ссылок
+                sceneInitializer.SetupARScene();
+                
+                Debug.Log("Настройка ссылок AR сцены завершена успешно!");
+                
+                // Помечаем сцену как измененную
+                EditorSceneManager.MarkSceneDirty(EditorSceneManager.GetActiveScene());
+            }
+        }
+        catch (System.Exception e)
+        {
+            Debug.LogError($"Ошибка при настройке AR сцены: {e.Message}\n{e.StackTrace}");
+        }
+    }
+
+    /// <summary>
+    /// Настройка Wall Optimizer
+    /// </summary>
+    private static void SetupWallOptimizer()
+    {
+        // Находим Wall Optimizer в сцене
+        WallOptimizer wallOptimizer = GameObject.FindObjectOfType<WallOptimizer>();
+        
+        if (wallOptimizer == null)
+        {
+            // Если не найден, создаем новый
+            GameObject wallOptimizerObj = new GameObject("Wall Optimizer");
+            wallOptimizer = wallOptimizerObj.AddComponent<WallOptimizer>();
+            Debug.Log("Wall Optimizer создан");
+        }
+        
+        // Настраиваем параметры Wall Optimizer
+        SerializedObject serializedObj = new SerializedObject(wallOptimizer);
+        
+        // Настраиваем основные параметры
+        var densityProp = serializedObj.FindProperty("meshDensity");
+        if (densityProp != null) densityProp.floatValue = 0.5f;
+        
+        var thresholdProp = serializedObj.FindProperty("wallDetectionThreshold");
+        if (thresholdProp != null) thresholdProp.floatValue = 0.7f;
+        
+        // Применяем изменения
+        serializedObj.ApplyModifiedProperties();
+        
+        Debug.Log("Wall Optimizer настроен");
+    }
+    
+    /// <summary>
+    /// Оптимизация производительности Wall Optimizer
+    /// </summary>
+    private static void OptimizeWallOptimizerPerformance()
+    {
+        // Находим Wall Optimizer в сцене
+        WallOptimizer wallOptimizer = GameObject.FindObjectOfType<WallOptimizer>();
+        
+        if (wallOptimizer != null)
+        {
+            // Настраиваем параметры для лучшей производительности
+            SerializedObject serializedObj = new SerializedObject(wallOptimizer);
+            
+            // Снижаем плотность сетки для улучшения производительности
+            var densityProp = serializedObj.FindProperty("meshDensity");
+            if (densityProp != null) densityProp.floatValue = 0.3f;
+            
+            // Увеличиваем порог детекции для снижения числа обрабатываемых стен
+            var thresholdProp = serializedObj.FindProperty("wallDetectionThreshold");
+            if (thresholdProp != null) thresholdProp.floatValue = 0.8f;
+            
+            // Применяем изменения
+            serializedObj.ApplyModifiedProperties();
+            
+            Debug.Log("Производительность Wall Optimizer оптимизирована");
+        }
     }
 } 
