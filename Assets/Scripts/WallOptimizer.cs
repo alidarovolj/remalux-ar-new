@@ -766,28 +766,47 @@ public unsafe class WallOptimizer : MonoBehaviour
         }
         
         // После создания wall, привяжем его к AR anchor если нужно
-        if (createARAnchors && wallIndex >= 0)
+        if (createARAnchors && wallIndex >= 0 && arAnchorManager != null)
         {
-            // Создаем свободноплавающий якорь (вариант B из вашего сообщения)
-            var go = new GameObject($"WallAnchor[{wallIndex}]");
-            go.transform.SetPositionAndRotation(position, rotation);
-            var anchor = go.AddComponent<ARAnchor>();
+            // Создаем pose в мировых координатах
+            Pose pose = new Pose(position, rotation);
             
-            if (anchor != null)
+            // Получаем GameObject стены
+            GameObject wallObject = meshRenderer.GetWall(wallIndex);
+            if (wallObject != null)
             {
-                // Сохраняем якорь и привязываем стену к нему
-                wallAnchors[wallIndex] = anchor;
+                // В AR Foundation 6.x используется другой подход для создания якорей
+                // Создаем GameObject для якоря 
+                GameObject anchorGO = new GameObject($"WallAnchor_{wallIndex}");
+                anchorGO.transform.position = pose.position;
+                anchorGO.transform.rotation = pose.rotation;
                 
-                // Получаем GameObject стены
-                GameObject wallObject = meshRenderer.GetWall(wallIndex);
-                if (wallObject != null)
+                // Добавляем компонент ARAnchor к созданному GameObject
+                ARAnchor anchor = anchorGO.AddComponent<ARAnchor>();
+                
+                if (anchor != null)
                 {
-                    // Привязываем стену к якорю
-                    wallObject.transform.SetParent(anchor.transform, true);
+                    // Сохраняем якорь и привязываем стену к нему
+                    wallAnchors[wallIndex] = anchor;
+                    
+                    // «наклеиваем» кусочек стены на этот якорь
+                    wallObject.transform.SetParent(anchor.transform, false);
                     
                     if (showDebugInfo)
                     {
                         Debug.Log($"WallOptimizer: Привязали стену {wallIndex} к AR якорю для стабильности");
+                    }
+                }
+                else
+                {
+                    // если с ар-якорем не получилось, ставим плоский объект в мировые coords
+                    wallObject.transform.SetParent(null, true);
+                    wallObject.transform.position = pose.position;
+                    wallObject.transform.rotation = pose.rotation;
+                    
+                    if (showDebugInfo)
+                    {
+                        Debug.Log($"WallOptimizer: Невозможно создать AR якорь, стена размещена в мировых координатах");
                     }
                 }
             }
