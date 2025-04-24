@@ -30,8 +30,18 @@ public class FixARStructure : MonoBehaviour
         GameObject meshManagerObj = meshManager.gameObject;
         Debug.Log($"Найден ARMeshManager на объекте: {meshManagerObj.name}");
         
-        // 3. Найти WallAligner
-        Component wallAligner = meshManagerObj.GetComponent("WallAligner");
+        // 3. Найти WallAligner - используем рефлексию, так как мы не можем напрямую обратиться к типу WallAligner
+        Component wallAligner = null;
+        // Пробуем найти WallAligner через рефлексию
+        foreach (var component in meshManagerObj.GetComponents<Component>())
+        {
+            if (component.GetType().Name == "WallAligner")
+            {
+                wallAligner = component;
+                break;
+            }
+        }
+        
         if (wallAligner == null)
         {
             Debug.LogWarning("WallAligner не найден на объекте с ARMeshManager!");
@@ -41,7 +51,8 @@ public class FixARStructure : MonoBehaviour
             Debug.Log("Найден WallAligner на том же объекте, что и ARMeshManager");
             
             // Проверка на дубликаты WallAligner
-            Component[] wallAligners = meshManagerObj.GetComponents("WallAligner");
+            System.Type wallAlignerType = wallAligner.GetType();
+            Component[] wallAligners = meshManagerObj.GetComponents(wallAlignerType);
             if (wallAligners.Length > 1)
             {
                 Debug.LogWarning($"Найдено несколько компонентов WallAligner ({wallAligners.Length}). Удаляем лишние...");
@@ -91,15 +102,26 @@ public class FixARStructure : MonoBehaviour
     
     private static GameObject FindXROrigin()
     {
-        // Сначала ищем новый XR Origin (AR Foundation 5.0+)
-        var xrOrigin = FindObjectOfType<Unity.XR.CoreUtils.XROrigin>();
-        if (xrOrigin != null)
-            return xrOrigin.gameObject;
+        // Попробуем найти объекты через рефлексию, чтобы избежать прямой зависимости
+        // от Unity.XR.CoreUtils (он может отсутствовать в проекте)
         
-        // Затем ищем ARSessionOrigin (старые версии)
+        // Сначала ищем ARSessionOrigin (старые версии AR Foundation)
         var arSessionOrigin = FindObjectOfType<ARSessionOrigin>();
         if (arSessionOrigin != null)
             return arSessionOrigin.gameObject;
+        
+        // Затем ищем XROrigin (AR Foundation 4.x+) через рефлексию
+        foreach (var gameObj in FindObjectsOfType<GameObject>())
+        {
+            foreach (var component in gameObj.GetComponents<Component>())
+            {
+                if (component != null && component.GetType().Name == "XROrigin")
+                {
+                    Debug.Log("Найден XROrigin через рефлексию");
+                    return gameObj;
+                }
+            }
+        }
         
         return null;
     }
