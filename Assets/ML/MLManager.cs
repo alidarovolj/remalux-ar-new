@@ -6,6 +6,7 @@ using System.Linq;
 using Unity.Barracuda;
 using UnityEngine.XR.ARFoundation;
 using UnityEngine.XR.ARSubsystems;
+using ML.DeepLab;
 
 public class MLManager : MonoBehaviour
 {
@@ -128,9 +129,19 @@ public class MLManager : MonoBehaviour
     {
         if (_predictor == null)
         {
-            Debug.LogError("MLManager: DeepLabPredictor not assigned!");
-            enabled = false;
-            return;
+            // Попытка найти DeepLabPredictor автоматически
+            _predictor = FindFirstObjectByType<DeepLabPredictor>();
+            
+            if (_predictor == null)
+            {
+                Debug.LogError("MLManager: DeepLabPredictor not assigned!");
+                enabled = false;
+                return;
+            }
+            else
+            {
+                Debug.Log("MLManager: Automatically found and assigned DeepLabPredictor");
+            }
         }
         
         // Find ARCameraManager if not assigned
@@ -147,7 +158,22 @@ public class MLManager : MonoBehaviour
         if (useEnhancedPredictor) 
         {
             _enhancedPredictor = GetComponent<DeepLabPredictor>();
-            // (Kept generic to avoid namespace issues)
+            
+            // Если не нашли на этом объекте, попробуем найти в сцене
+            if (_enhancedPredictor == null)
+            {
+                // Ищем Enhanced предиктор особым способом, т.к. нам неизвестно точное имя класса
+                DeepLabPredictor[] allPredictors = FindObjectsOfType<DeepLabPredictor>();
+                foreach (var predictor in allPredictors)
+                {
+                    if (predictor.GetType().Name.Contains("Enhanced"))
+                    {
+                        _enhancedPredictor = predictor;
+                        Debug.Log("MLManager: Found Enhanced DeepLab predictor in scene");
+                        break;
+                    }
+                }
+            }
             
             if (_enhancedPredictor != null) 
             {

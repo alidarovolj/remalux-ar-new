@@ -51,6 +51,52 @@ public class WallDetectionSetup : MonoBehaviour
         // Создаем или находим EnhancedPredictor
         yield return StartCoroutine(CreateEnhancedPredictor());
 
+        // Создаем WallMeshRenderer
+        WallMeshRenderer meshRenderer = gameObject.GetComponent<WallMeshRenderer>();
+        if (meshRenderer == null)
+        {
+            meshRenderer = gameObject.AddComponent<WallMeshRenderer>();
+            Debug.Log("WallDetectionSetup: Added WallMeshRenderer component");
+            
+            // Настройка WallMeshRenderer
+            meshRenderer.ARCameraManager = FindFirstObjectByType<ARCameraManager>();
+            meshRenderer.Predictor = enhancedPredictor;
+            meshRenderer._wallClassId = wallClassId;
+            meshRenderer.WallConfidenceThreshold = initialThreshold;
+        }
+
+        // Создаем WallOptimizer
+        WallOptimizer wallOptimizer = gameObject.GetComponent<WallOptimizer>();
+        if (wallOptimizer == null)
+        {
+            wallOptimizer = gameObject.AddComponent<WallOptimizer>();
+            Debug.Log("WallDetectionSetup: Added WallOptimizer component");
+            
+            // Настройка WallOptimizer
+            wallOptimizer.wallClassId = wallClassId;
+            wallOptimizer.confidenceThreshold = initialThreshold;
+            wallOptimizer.showDebugInfo = false;
+            
+            // Альтернативный подход - используем reflection как крайнюю меру
+            try {
+                var meshRendererField = wallOptimizer.GetType().GetField("meshRenderer", 
+                    System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+                if (meshRendererField != null) {
+                    meshRendererField.SetValue(wallOptimizer, meshRenderer);
+                    Debug.Log("WallDetectionSetup: Set meshRenderer reference via reflection");
+                }
+                
+                var enhancedPredictorField = wallOptimizer.GetType().GetField("enhancedPredictor", 
+                    System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+                if (enhancedPredictorField != null) {
+                    enhancedPredictorField.SetValue(wallOptimizer, enhancedPredictor);
+                    Debug.Log("WallDetectionSetup: Set enhancedPredictor reference via reflection");
+                }
+            } catch (System.Exception e) {
+                Debug.LogWarning($"WallDetectionSetup: Failed to set private fields: {e.Message}");
+            }
+        }
+
         // Создаем оптимизатор
         optimizer = CreateOptimizer();
         if (optimizer != null)

@@ -281,7 +281,7 @@ public class WallDetectionTuner : MonoBehaviour
             wallOptimizer.morphKernelSize = 3;
             wallOptimizer.minAspectRatio = 0.3f;
             wallOptimizer.maxAspectRatio = 4.0f;
-            wallOptimizer.wallClassId = 15;
+            wallOptimizer.wallClassId = 9;
             
             // Обновляем слайдеры, если они доступны
             if (confidenceSlider != null)
