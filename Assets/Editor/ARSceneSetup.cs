@@ -10,6 +10,7 @@ using UnityEngine.InputSystem;
 using System;
 using UnityEngine.SceneManagement;
 using ML.DeepLab;
+using System.Collections.Generic;
 
 public class ARSceneSetup : EditorWindow
 {
@@ -116,12 +117,13 @@ public class ARSceneSetup : EditorWindow
         return newScene;
     }
     
-    public static void SetupARSystem()
+    public static XROrigin SetupARSystem()
     {
         try
         {
-            // КРИТИЧЕСКИ ВАЖНО: сначала находим или создаем XROrigin,
-            // прежде чем создавать ARMeshManager
+            // Удаляем все старые ARMeshManager, чтобы не плодить дубли
+            foreach (var old in GameObject.FindObjectsOfType<ARMeshManager>())
+                GameObject.DestroyImmediate(old.gameObject);
             
             // Проверяем существование необходимых компонентов
             XROrigin xrOrigin = GameObject.FindObjectOfType<XROrigin>();
@@ -137,7 +139,7 @@ public class ARSceneSetup : EditorWindow
                 Debug.Log("Created AR Session");
             }
             
-            // Первоочередная задача: создать XR Origin если его нет
+            // Создаем XR Origin если его нет
             GameObject xrOriginObj = null;
             if (xrOrigin == null)
             {
@@ -159,6 +161,7 @@ public class ARSceneSetup : EditorWindow
                 arCamera.backgroundColor = Color.black;
                 arCamera.nearClipPlane = 0.1f;
                 arCamera.farClipPlane = 20f;
+                arCameraObj.tag = "MainCamera";
                 
                 // Добавляем компоненты AR к камере
                 arCameraObj.AddComponent<UnityEngine.XR.ARFoundation.ARCameraManager>();
@@ -170,53 +173,21 @@ public class ARSceneSetup : EditorWindow
                 
                 Debug.Log("Created XR Origin with AR Camera");
             }
-            
-            // Ищем существующий AR Mesh Manager
-            ARMeshManager existingMeshManager = null;
-            if (xrOrigin != null)
-            {
-                // Сначала проверяем, есть ли ARMeshManager среди прямых потомков XROrigin
-                existingMeshManager = xrOrigin.GetComponentInChildren<ARMeshManager>(true);
-            }
-            
-            // Если ARMeshManager не найден среди детей XROrigin, проверяем всю сцену
-            if (existingMeshManager == null)
-            {
-                existingMeshManager = GameObject.FindObjectOfType<ARMeshManager>();
-            }
-            
-            // Создаем AR Mesh Manager если его нет
-            if (existingMeshManager == null)
-            {
-                GameObject meshManagerObj = new GameObject("AR Mesh Manager");
-                
-                // Важно: делаем AR Mesh Manager дочерним объектом XR Origin
-                if (xrOrigin != null)
-                {
-                    meshManagerObj.transform.SetParent(xrOrigin.transform);
-                    meshManagerObj.transform.localPosition = Vector3.zero;
-                    meshManagerObj.transform.localRotation = Quaternion.identity;
-                    meshManagerObj.transform.localScale = Vector3.one;
-                }
-                
-                ARMeshManager meshManager = meshManagerObj.AddComponent<ARMeshManager>();
-                meshManager.density = 0.5f;  // Настраиваем плотность сетки
-                
-                Debug.Log("Created AR Mesh Manager");
-            }
             else
             {
-                // Если ARMeshManager существует, но не под XROrigin, исправляем его иерархию
-                if (xrOrigin != null && existingMeshManager.transform.parent != xrOrigin.transform)
-                {
-                    existingMeshManager.transform.SetParent(xrOrigin.transform);
-                    existingMeshManager.transform.localPosition = Vector3.zero;
-                    existingMeshManager.transform.localRotation = Quaternion.identity;
-                    existingMeshManager.transform.localScale = Vector3.one;
-                    
-                    Debug.Log($"Moved existing AR Mesh Manager '{existingMeshManager.gameObject.name}' under XR Origin");
-                }
+                xrOriginObj = xrOrigin.gameObject;
             }
+            
+            // Строго привязываем ARMeshManager к только что созданному XR Origin
+            var meshManagerObj = new GameObject("AR Mesh Manager");
+            meshManagerObj.transform.SetParent(xrOrigin.transform, false);
+            meshManagerObj.transform.localPosition = Vector3.zero;
+            meshManagerObj.transform.localRotation = Quaternion.identity;
+            meshManagerObj.transform.localScale = Vector3.one;
+            ARMeshManager meshManager = meshManagerObj.AddComponent<ARMeshManager>();
+            meshManager.density = 0.5f;
+            
+            Debug.Log("Created AR Mesh Manager as child of XR Origin");
             
             // Добавляем недостающие компоненты для работы с AR
             if (xrOrigin != null && xrOrigin.gameObject.GetComponent<ARRaycastManager>() == null)
@@ -225,14 +196,14 @@ public class ARSceneSetup : EditorWindow
                 Debug.Log("Added AR Raycast Manager to XR Origin");
             }
             
-            // Вызываем функцию для проверки и исправления иерархии всех ARMeshManager в сцене
-            FixARMeshManagerHierarchy();
-            
             Debug.Log("AR System setup completed successfully");
+            
+            return xrOrigin;
         }
         catch (System.Exception ex)
         {
             Debug.LogError($"Error setting up AR System: {ex.Message}\n{ex.StackTrace}");
+            return null;
         }
     }
     
@@ -1076,44 +1047,66 @@ public class ARSceneSetup : EditorWindow
             XROrigin xrOrigin = GameObject.FindObjectOfType<XROrigin>();
             if (xrOrigin == null)
             {
-                Debug.LogError("ОШИБКА: XROrigin не найден в сцене! Создаю новый XROrigin...");
-                
-                // Создаем XROrigin, если он не существует
-                GameObject xrOriginObj = new GameObject("XR Origin");
-                xrOrigin = xrOriginObj.AddComponent<XROrigin>();
-                
-                // Настраиваем Camera Offset
-                GameObject cameraOffsetObj = new GameObject("Camera Offset");
-                cameraOffsetObj.transform.SetParent(xrOriginObj.transform);
-                
-                // Создаем AR Camera
-                GameObject arCameraObj = new GameObject("AR Camera");
-                arCameraObj.transform.SetParent(cameraOffsetObj.transform);
-                
-                // Настраиваем камеру
-                Camera arCamera = arCameraObj.AddComponent<Camera>();
-                arCamera.clearFlags = CameraClearFlags.SolidColor;
-                arCamera.backgroundColor = Color.black;
-                arCamera.nearClipPlane = 0.1f;
-                arCamera.farClipPlane = 20f;
-                
-                // Настраиваем XROrigin
-                xrOrigin.Camera = arCamera;
-                xrOrigin.CameraFloorOffsetObject = cameraOffsetObj;
-                
-                Debug.Log("Создан новый XROrigin так как не нашли существующий");
+                Debug.LogError("ОШИБКА: XROrigin не найден в сцене! Невозможно исправить иерархию.");
+                return;
             }
             
-            // Получаем все ARMeshManager в сцене
-            ARMeshManager[] meshManagers = GameObject.FindObjectsOfType<ARMeshManager>();
+            // Получаем все ARMeshManager в сцене, которые НЕ являются детьми XROrigin
+            List<ARMeshManager> invalidManagers = new List<ARMeshManager>();
             
-            if (meshManagers.Length == 0)
+            ARMeshManager[] allManagers = GameObject.FindObjectsOfType<ARMeshManager>();
+            foreach (ARMeshManager meshManager in allManagers)
             {
-                Debug.Log("ARMeshManager не найден в сцене. Создаю новый...");
+                if (meshManager != null && meshManager.transform.parent != xrOrigin.transform)
+                {
+                    invalidManagers.Add(meshManager);
+                }
+            }
+            
+            int invalidCount = invalidManagers.Count;
+            if (invalidCount == 0)
+            {
+                // Проверяем, есть ли вообще ARMeshManager в сцене
+                ARMeshManager existingManager = xrOrigin.GetComponentInChildren<ARMeshManager>(true);
+                bool hasMeshManager = existingManager != null;
                 
-                // Создаем новый ARMeshManager как дочерний объект XROrigin
+                if (!hasMeshManager)
+                {
+                    Debug.Log("ARMeshManager не найден. Создаем новый как дочерний объект XROrigin.");
+                    
+                    // Создаем новый ARMeshManager под XROrigin
+                    GameObject meshManagerObj = new GameObject("AR Mesh Manager");
+                    meshManagerObj.transform.SetParent(xrOrigin.transform, false);
+                    meshManagerObj.transform.localPosition = Vector3.zero;
+                    meshManagerObj.transform.localRotation = Quaternion.identity;
+                    meshManagerObj.transform.localScale = Vector3.one;
+                    
+                    ARMeshManager meshManager = meshManagerObj.AddComponent<ARMeshManager>();
+                    meshManager.density = 0.5f;
+                }
+                else
+                {
+                    Debug.Log("Все ARMeshManager уже имеют правильную иерархию.");
+                }
+                
+                return;
+            }
+            
+            Debug.LogWarning($"Найдено {invalidCount} ARMeshManager с неправильной иерархией.");
+            
+            // Удаляем все неправильные ARMeshManager
+            foreach (ARMeshManager manager in invalidManagers)
+            {
+                Debug.LogWarning($"Удаляем ARMeshManager с неправильной иерархией: {manager.gameObject.name}");
+                GameObject.DestroyImmediate(manager.gameObject);
+            }
+            
+            // Создаем новый ARMeshManager под XROrigin, если его еще нет
+            ARMeshManager existingMeshManager = xrOrigin.GetComponentInChildren<ARMeshManager>(true);
+            if (existingMeshManager == null)
+            {
                 GameObject meshManagerObj = new GameObject("AR Mesh Manager");
-                meshManagerObj.transform.SetParent(xrOrigin.transform);
+                meshManagerObj.transform.SetParent(xrOrigin.transform, false);
                 meshManagerObj.transform.localPosition = Vector3.zero;
                 meshManagerObj.transform.localRotation = Quaternion.identity;
                 meshManagerObj.transform.localScale = Vector3.one;
@@ -1122,70 +1115,9 @@ public class ARSceneSetup : EditorWindow
                 meshManager.density = 0.5f;
                 
                 Debug.Log("Создан новый ARMeshManager как дочерний объект XROrigin");
-                return;
-            }
-
-            bool anyChanges = false;
-            
-            // Проверяем все найденные ARMeshManager
-            foreach (ARMeshManager meshManager in meshManagers)
-            {
-                if (meshManager == null) continue;
-                
-                // Проверяем иерархию
-                if (meshManager.transform.parent != xrOrigin.transform)
-                {
-                    Debug.LogWarning($"ИСПРАВЛЕНИЕ: ARMeshManager '{meshManager.gameObject.name}' имеет неправильного родителя! Перемещаем под XROrigin.");
-                    
-                    // Перемещаем под XROrigin или удаляем и создаем новый
-                    if (true) // Вариант 1: перемещение существующего
-                    {
-                        // Сохраняем имя
-                        string originalName = meshManager.gameObject.name;
-                        
-                        // Перемещаем под XROrigin
-                        meshManager.transform.SetParent(xrOrigin.transform);
-                        
-                        // Сбрасываем трансформацию
-                        meshManager.transform.localPosition = Vector3.zero;
-                        meshManager.transform.localRotation = Quaternion.identity;
-                        meshManager.transform.localScale = Vector3.one;
-                        
-                        // Возвращаем имя
-                        meshManager.gameObject.name = originalName;
-                        
-                        Debug.Log($"Перемещен ARMeshManager '{meshManager.gameObject.name}' под XROrigin");
-                    }
-                    else // Вариант 2: удаление и создание нового (на случай проблем)
-                    {
-                        // Удаляем некорректный ARMeshManager
-                        GameObject.DestroyImmediate(meshManager.gameObject);
-                        
-                        // Создаем новый как дочерний объект XROrigin
-                        GameObject meshManagerObj = new GameObject("AR Mesh Manager");
-                        meshManagerObj.transform.SetParent(xrOrigin.transform);
-                        meshManagerObj.transform.localPosition = Vector3.zero;
-                        meshManagerObj.transform.localRotation = Quaternion.identity;
-                        meshManagerObj.transform.localScale = Vector3.one;
-                        
-                        ARMeshManager newMeshManager = meshManagerObj.AddComponent<ARMeshManager>();
-                        newMeshManager.density = 0.5f;
-                        
-                        Debug.Log("Создан новый ARMeshManager взамен удаленного");
-                    }
-                    
-                    anyChanges = true;
-                }
             }
             
-            if (anyChanges)
-            {
-                Debug.Log("Исправление иерархии ARMeshManager завершено успешно");
-            }
-            else
-            {
-                Debug.Log("Проверка иерархии завершена: все ARMeshManager имеют правильное расположение");
-            }
+            Debug.Log("Исправление иерархии ARMeshManager завершено успешно");
         }
         catch (System.Exception ex)
         {
@@ -1768,24 +1700,43 @@ public class ARSceneSetup : EditorWindow
     /// <returns>The XR Origin GameObject</returns>
     private static GameObject CreateARComponents()
     {
-        // Create a parent object for AR system
-        GameObject arSystem = new GameObject("AR System");
-        
-        // Setup the AR system with all necessary components
-        SetupARSystem();
-        
-        // Find XROrigin to return
-        XROrigin xrOrigin = GameObject.FindObjectOfType<XROrigin>();
-        GameObject xrOriginObj = xrOrigin != null ? xrOrigin.gameObject : null;
-        
-        // Setup ML components for wall detection
-        SetupMLComponents(arSystem);
-        
-        // Setup wall detection system
-        SetupWallDetectionSystem();
-        
-        // Return the XR Origin to be used for reference
-        return xrOriginObj != null ? xrOriginObj : arSystem;
+        try
+        {
+            // Create a parent object for AR system
+            GameObject arSystem = new GameObject("AR System");
+            
+            // Setup the AR system and получаем XROrigin
+            XROrigin xrOrigin = SetupARSystem();
+            
+            // Обязательно вкладываем XR Origin и AR Session в arSystem
+            if (xrOrigin != null)
+            {
+                xrOrigin.transform.SetParent(arSystem.transform, false);
+                Debug.Log("XR Origin added to AR System container");
+            }
+            
+            // Найдём ARSession и тоже прицепим
+            var arSession = GameObject.FindObjectOfType<UnityEngine.XR.ARFoundation.ARSession>();
+            if (arSession != null)
+            {
+                arSession.transform.SetParent(arSystem.transform, false);
+                Debug.Log("AR Session added to AR System container");
+            }
+            
+            // Setup ML components for wall detection
+            SetupMLComponents(arSystem);
+            
+            // Setup wall detection system
+            SetupWallDetectionSystem();
+            
+            // Return the container system
+            return arSystem;
+        }
+        catch (System.Exception ex)
+        {
+            Debug.LogError($"Error creating AR components: {ex.Message}\n{ex.StackTrace}");
+            return new GameObject("AR System (Error)");
+        }
     }
     
     /// <summary>
