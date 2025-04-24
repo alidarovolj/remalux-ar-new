@@ -246,7 +246,7 @@ public unsafe class WallOptimizer : MonoBehaviour
                 Debug.Log($"WallOptimizer: Using enhancedPredictor with dimensions {segmentationWidth}x{segmentationHeight}");
             
             // Subscribe to segmentation updates
-            enhancedPredictor.OnSegmentationUpdated.AddListener(OnSegmentationUpdated);
+            enhancedPredictor.OnSegmentationUpdated += OnSegmentationUpdated;
         }
         
         // Initialize the wall layer mask
@@ -282,7 +282,7 @@ public unsafe class WallOptimizer : MonoBehaviour
             if (predictor.WallClassId != wallClassId)
             {
                 Debug.LogWarning($"WallOptimizer: Synchronizing wallClassId from {wallClassId} to predictor's value {predictor.WallClassId}");
-                wallClassId = predictor.WallClassId;
+                wallClassId = (byte)predictor.WallClassId;
             }
             
             Debug.Log($"WallOptimizer: Using wallClassId: {wallClassId} for wall detection");
@@ -324,7 +324,7 @@ public unsafe class WallOptimizer : MonoBehaviour
         // Clean up resources
         if (enhancedPredictor != null)
         {
-            enhancedPredictor.OnSegmentationUpdated.RemoveListener(OnSegmentationUpdated);
+            enhancedPredictor.OnSegmentationUpdated -= OnSegmentationUpdated;
         }
         
         if (meshRenderer != null)
