@@ -130,8 +130,8 @@ public static class ARBootstrapper
         ARCameraSetup.EnsureARCameraExists();
         
         // Try to add Tracked Pose Driver if possible
-        var xrOrigins = Object.FindObjectsByType<XROrigin>(FindObjectsSortMode.None);
-        foreach (var origin in xrOrigins)
+        var xrOriginInstances = Object.FindObjectsByType<XROrigin>(FindObjectsSortMode.None);
+        foreach (var origin in xrOriginInstances)
         {
             if (origin.Camera != null)
             {
