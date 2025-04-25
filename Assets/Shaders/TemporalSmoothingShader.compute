@@ -1,0 +1,51 @@
+#pragma kernel TemporalSmoothing
+
+// Input and output textures
+Texture2D<float4> CurrentFrame;
+Texture2D<float4> PreviousFrame;
+RWTexture2D<float4> Result;
+
+// Parameters
+float _BlendFactor = 0.2; // How much of the current frame to blend in (0-1)
+
+[numthreads(8, 8, 1)]
+void TemporalSmoothing(uint3 id : SV_DispatchThreadID)
+{
+    // Get dimensions of texture
+    uint width, height;
+    Result.GetDimensions(width, height);
+    
+    // Check if within texture bounds
+    if (id.x >= width || id.y >= height)
+        return;
+    
+    // Sample current and previous frame
+    float4 current = CurrentFrame[id.xy];
+    float4 previous = PreviousFrame[id.xy];
+    
+    // Simple linear interpolation (exponential moving average)
+    // current * blendFactor + previous * (1 - blendFactor)
+    float4 blended = lerp(previous, current, _BlendFactor);
+    
+    // Add a bit of hysteresis to reduce flickering
+    // If current value is close to previous, favor more stability
+    float difference = abs(current.r - previous.r);
+    
+    // Apply stronger smoothing (less of current frame) when small changes occur
+    float adaptiveBlendFactor = lerp(_BlendFactor, _BlendFactor * 0.5, 
+                                    saturate(1.0 - difference * 5.0));
+    
+    // Recalculate blend with adaptive factor
+    blended = lerp(previous, current, adaptiveBlendFactor);
+    
+    // For values close to 0 or 1, snap to those values to avoid half-transparent edges
+    // This prevents "ghost" edges where the mask is fading in/out
+    float threshold = 0.1;
+    if (blended.r < threshold)
+        blended.r = 0.0;
+    else if (blended.r > 1.0 - threshold)
+        blended.r = 1.0;
+    
+    // Write result
+    Result[id.xy] = float4(blended.r, blended.r, blended.r, 1.0);
+} 

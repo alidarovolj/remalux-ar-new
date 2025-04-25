@@ -1,0 +1,89 @@
+#pragma kernel Erode
+#pragma kernel Dilate
+
+// Input/output textures
+Texture2D<float4> Source;
+RWTexture2D<float4> Result;
+
+// Parameters
+int _KernelSize = 3;
+
+[numthreads(8, 8, 1)]
+void Erode(uint3 id : SV_DispatchThreadID)
+{
+    // Get dimensions of texture
+    uint width, height;
+    Result.GetDimensions(width, height);
+    
+    // Check if within texture bounds
+    if (id.x >= width || id.y >= height)
+        return;
+    
+    // Erosion: find minimum value in kernel neighborhood
+    float minValue = 1.0;
+    
+    // Half kernel size for iterating around pixel
+    int halfKernel = _KernelSize / 2;
+    
+    // Iterate over kernel neighborhood
+    for (int y = -halfKernel; y <= halfKernel; y++)
+    {
+        for (int x = -halfKernel; x <= halfKernel; x++)
+        {
+            // Calculate neighbor coordinates
+            int2 neighborCoord = int2(id.x + x, id.y + y);
+            
+            // Clamp to texture boundaries
+            neighborCoord = clamp(neighborCoord, int2(0, 0), int2(width - 1, height - 1));
+            
+            // Load neighbor pixel
+            float4 neighborColor = Source[neighborCoord];
+            
+            // Update minimum (we use red channel as the mask)
+            minValue = min(minValue, neighborColor.r);
+        }
+    }
+    
+    // Write result (preserve other channels if needed)
+    Result[id.xy] = float4(minValue, minValue, minValue, 1.0);
+}
+
+[numthreads(8, 8, 1)]
+void Dilate(uint3 id : SV_DispatchThreadID)
+{
+    // Get dimensions of texture
+    uint width, height;
+    Result.GetDimensions(width, height);
+    
+    // Check if within texture bounds
+    if (id.x >= width || id.y >= height)
+        return;
+    
+    // Dilation: find maximum value in kernel neighborhood
+    float maxValue = 0.0;
+    
+    // Half kernel size for iterating around pixel
+    int halfKernel = _KernelSize / 2;
+    
+    // Iterate over kernel neighborhood
+    for (int y = -halfKernel; y <= halfKernel; y++)
+    {
+        for (int x = -halfKernel; x <= halfKernel; x++)
+        {
+            // Calculate neighbor coordinates
+            int2 neighborCoord = int2(id.x + x, id.y + y);
+            
+            // Clamp to texture boundaries
+            neighborCoord = clamp(neighborCoord, int2(0, 0), int2(width - 1, height - 1));
+            
+            // Load neighbor pixel
+            float4 neighborColor = Source[neighborCoord];
+            
+            // Update maximum (we use red channel as the mask)
+            maxValue = max(maxValue, neighborColor.r);
+        }
+    }
+    
+    // Write result (preserve other channels if needed)
+    Result[id.xy] = float4(maxValue, maxValue, maxValue, 1.0);
+} 
