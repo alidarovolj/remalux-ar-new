@@ -25,6 +25,7 @@ public class SegmentationManager : MonoBehaviour
     [SerializeField] private byte wallClassId = 9; // ADE20K wall class ID
     [SerializeField] private bool useComputeOptimization = true;
     [SerializeField] private int processingInterval = 5; // Process every N frames
+    [SerializeField] private bool modelOutputNeedsArgMax = false; // Set true if model outputs logits/probabilities
     
     [Header("Performance")]
     [SerializeField] private WorkerFactory.Type workerType = WorkerFactory.Type.ComputePrecompiled;
@@ -74,29 +75,120 @@ public class SegmentationManager : MonoBehaviour
         bool validInputs = false;
         bool validOutputs = false;
         
+        // Log all available inputs/outputs
+        Debug.Log($"Model inputs: {string.Join(", ", GetInputLayerNames(_runtimeModel))}");
+        Debug.Log($"Model outputs: {string.Join(", ", _runtimeModel.outputs)}");
+        
+        // Exact match for input name
         foreach (var input in _runtimeModel.inputs)
         {
-            if (input.name.Contains(inputName))
+            if (input.name.Equals(inputName, StringComparison.OrdinalIgnoreCase) || 
+                input.name.Contains(inputName))
             {
-                inputName = input.name;
+                inputName = input.name; // Use actual name from model
                 validInputs = true;
+                Debug.Log($"Using input layer: {inputName}");
                 break;
             }
         }
         
+        // If exact match not found, try partial match but log a warning
+        if (!validInputs)
+        {
+            foreach (var input in _runtimeModel.inputs)
+            {
+                if (input.name.Contains(inputName))
+                {
+                    inputName = input.name;
+                    validInputs = true;
+                    Debug.LogWarning($"Exact input layer name not found. Using closest match: {inputName}");
+                    break;
+                }
+            }
+            
+            // If still not found, use the first input as fallback
+            if (!validInputs && _runtimeModel.inputs.Count > 0)
+            {
+                inputName = _runtimeModel.inputs[0].name;
+                validInputs = true;
+                Debug.LogWarning($"Input layer '{inputName}' not found. Using first available input: {inputName}");
+            }
+        }
+        
+        // Exact match for output name
         foreach (var output in _runtimeModel.outputs)
         {
-            if (output.Contains(outputName))
+            if (output.Equals(outputName, StringComparison.OrdinalIgnoreCase))
             {
-                outputName = output;
+                outputName = output; // Use actual name from model
                 validOutputs = true;
+                Debug.Log($"Using output layer: {outputName}");
                 break;
+            }
+        }
+        
+        // If exact match not found, try partial match or standard names
+        if (!validOutputs)
+        {
+            // Common output layer names for segmentation models
+            string[] possibleOutputNames = new string[] 
+            {
+                "SemanticPredictions", "ArgMax", "final_output", "predictions", 
+                "softmax", "logits", "output"
+            };
+            
+            // First try partial match with original name
+            foreach (var output in _runtimeModel.outputs)
+            {
+                if (output.Contains(outputName))
+                {
+                    outputName = output;
+                    validOutputs = true;
+                    Debug.LogWarning($"Exact output layer name not found. Using closest match: {outputName}");
+                    break;
+                }
+            }
+            
+            // If still not found, try common output names
+            if (!validOutputs)
+            {
+                foreach (var possibleName in possibleOutputNames)
+                {
+                    foreach (var output in _runtimeModel.outputs)
+                    {
+                        if (output.Contains(possibleName))
+                        {
+                            outputName = output;
+                            validOutputs = true;
+                            Debug.LogWarning($"Output layer '{outputName}' not found. Using common name match: {outputName}");
+                            
+                            // If we found logits/softmax, we likely need to perform argmax
+                            if (possibleName == "logits" || possibleName == "softmax")
+                            {
+                                modelOutputNeedsArgMax = true;
+                                Debug.LogWarning("Found logits/softmax output - enabling ArgMax processing");
+                            }
+                            
+                            break;
+                        }
+                    }
+                    
+                    if (validOutputs) break;
+                }
+            }
+            
+            // Final fallback to first output
+            if (!validOutputs && _runtimeModel.outputs.Count > 0)
+            {
+                outputName = _runtimeModel.outputs[0];
+                validOutputs = true;
+                Debug.LogWarning($"No matching output layer found. Using first available output: {outputName}");
             }
         }
         
         if (!validInputs || !validOutputs)
         {
-            Debug.LogError($"Model doesn't contain expected input/output layers. Inputs: {string.Join(", ", _runtimeModel.inputs)} Outputs: {string.Join(", ", _runtimeModel.outputs)}");
+            Debug.LogError($"Model doesn't contain expected input/output layers. Disabling segmentation.");
             enabled = false;
             return;
         }
@@ -129,6 +221,14 @@ public class SegmentationManager : MonoBehaviour
         {
             Debug.LogError($"Failed to create ML worker: {e.Message}. Falling back to CPU.");
             _engine = WorkerFactory.CreateWorker(WorkerFactory.Type.CSharpBurst, _runtimeModel);
+        }
+    }
+    
+    private IEnumerable<string> GetInputLayerNames(Model model)
+    {
+        foreach (var input in model.inputs)
+        {
+            yield return input.name;
         }
     }
     
@@ -168,7 +268,7 @@ public class SegmentationManager : MonoBehaviour
         }
         catch (Exception e)
         {
-            Debug.LogError($"Error during segmentation: {e.Message}");
+            Debug.LogError($"Error during segmentation: {e.Message}\n{e.StackTrace}");
         }
         finally
         {
@@ -213,28 +313,79 @@ public class SegmentationManager : MonoBehaviour
         float[] data = tensor.AsFloats();
         Color32[] pixels = new Color32[width * height];
         
-        // Process each pixel to find wall class
-        for (int y = 0; y < height; y++)
+        // Different processing depending on whether the model gives class indices directly
+        // or we need to perform argmax ourselves
+        if (modelOutputNeedsArgMax)
         {
-            for (int x = 0; x < width; x++) 
+            // Model outputs class probabilities, we need to find the highest value (argmax)
+            int numClasses = tensor.shape.channels;
+            
+            // Process each pixel to find wall class
+            for (int y = 0; y < height; y++)
             {
-                int pixelIndex = y * width + x;
-                
-                // Expected format: [batch, width, height, channels]
-                // For segmentation, each pixel has a class ID value
-                float classId = data[pixelIndex];
-                
-                // Check if this pixel is a wall
-                byte value = classId == wallClassId ? (byte)255 : (byte)0;
-                
-                // Set all channels for compatibility
-                pixels[pixelIndex] = new Color32(value, value, value, 255);
+                for (int x = 0; x < width; x++)
+                {
+                    int pixelIndex = y * width + x;
+                    
+                    // Perform argmax across the channels (classes) dimension
+                    int bestClassId = 0;
+                    float bestClassConfidence = -1f;
+                    
+                    // Find class with highest probability
+                    for (int c = 0; c < numClasses; c++)
+                    {
+                        int index = GetTensorIndex(x, y, c, width, height, numClasses);
+                        float probability = data[index];
+                        
+                        if (probability > bestClassConfidence)
+                        {
+                            bestClassConfidence = probability;
+                            bestClassId = c;
+                        }
+                    }
+                    
+                    // Check if this pixel is a wall (best class is wall class)
+                    byte value = bestClassId == wallClassId ? (byte)255 : (byte)0;
+                    
+                    // Set all channels for compatibility
+                    pixels[pixelIndex] = new Color32(value, value, value, 255);
+                }
+            }
+        }
+        else
+        {
+            // Model already outputs class indices directly
+            for (int y = 0; y < height; y++)
+            {
+                for (int x = 0; x < width; x++)
+                {
+                    int pixelIndex = y * width + x;
+                    
+                    // Expected format: [batch, width, height, 1] where value is the class ID
+                    float classId = data[pixelIndex];
+                    
+                    // Check if this pixel is a wall
+                    byte value = Mathf.RoundToInt(classId) == wallClassId ? (byte)255 : (byte)0;
+                    
+                    // Set all channels for compatibility
+                    pixels[pixelIndex] = new Color32(value, value, value, 255);
+                }
             }
         }
         
         // Apply to texture
         texture.SetPixels32(pixels);
         texture.Apply();
+    }
+    
+    /// <summary>
+    /// Calculate tensor index for a specific pixel and channel
+    /// </summary>
+    private int GetTensorIndex(int x, int y, int channel, int width, int height, int numChannels)
+    {
+        // Different models might have different memory layouts (NHWC vs NCHW)
+        // This assumes NHWC layout (batch, height, width, channel) - most common in TensorFlow/ONNX
+        return (y * width * numChannels) + (x * numChannels) + channel;
     }
     
     private void OnDestroy()
@@ -259,6 +410,29 @@ public class SegmentationManager : MonoBehaviour
             byte[] bytes = _outputTexture.EncodeToPNG();
             File.WriteAllBytes(Application.dataPath + "/debug_segmentation.png", bytes);
             Debug.Log("Saved debug output to Assets/debug_segmentation.png");
+        }
+    }
+    
+    [ContextMenu("Log Model Layer Info")]
+    public void LogModelLayerInfo()
+    {
+        if (_runtimeModel != null)
+        {
+            Debug.Log("MODEL INPUT LAYERS:");
+            foreach (var input in _runtimeModel.inputs)
+            {
+                Debug.Log($"  - {input.name} (Shape: {input.shape})");
+            }
+            
+            Debug.Log("MODEL OUTPUT LAYERS:");
+            foreach (var output in _runtimeModel.outputs)
+            {
+                Debug.Log($"  - {output}");
+            }
+        }
+        else
+        {
+            Debug.LogWarning("No model loaded yet.");
         }
     }
 #endif

@@ -1,6 +1,7 @@
 using UnityEngine;
 using UnityEngine.XR.ARFoundation;
 using UnityEngine.XR.ARSubsystems;
+using System.Collections.Generic;
 
 /// <summary>
 /// Manages AR Foundation components and provides centralized access to them.
@@ -36,7 +37,11 @@ public class ARManager : MonoBehaviour
             
         PlaneManager = GetComponent<ARPlaneManager>();
         RaycastManager = GetComponent<ARRaycastManager>();
+        
+        // Get or add AnchorManager
         AnchorManager = GetComponent<ARAnchorManager>();
+        if (AnchorManager == null)
+            AnchorManager = gameObject.AddComponent<ARAnchorManager>();
         
         // Set AR camera reference
         ARCamera = sessionOrigin.camera;
@@ -74,7 +79,8 @@ public class ARManager : MonoBehaviour
     /// </summary>
     public ARAnchor CreateAnchor(Vector3 position, Quaternion rotation)
     {
-        if (AnchorManager == null) return null;
+        if (AnchorManager == null) 
+            return null;
         
         // Try to find a plane at this position
         var hits = new List<ARRaycastHit>();
@@ -87,7 +93,9 @@ public class ARManager : MonoBehaviour
             
             if (plane != null)
             {
-                return AnchorManager.AttachAnchor(plane, position, rotation);
+                // Use correct signature for AttachAnchor (requires Pose)
+                Pose anchorPose = new Pose(position, rotation);
+                return AnchorManager.AttachAnchor(plane, anchorPose);
             }
         }
         
