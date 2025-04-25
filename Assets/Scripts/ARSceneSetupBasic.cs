@@ -78,7 +78,8 @@ public class ARSceneSetupBasic : EditorWindow
         return component;
     }
     
-    [MenuItem("AR/Setup AR Scene (Basic)")]
+    // Commenting out to avoid duplicate menu items with Editor/ARSceneSetupBasic.cs
+    // [MenuItem("AR/Setup AR Scene (Basic)")]
     public static void SetupARScene()
     {
         // Создаем новую сцену

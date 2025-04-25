@@ -38,6 +38,10 @@ public class ARWallPainterController : MonoBehaviour
     
     private void Awake()
     {
+        // Try to find ARWallSystem if not assigned
+        if (arSystem == null)
+            arSystem = FindObjectOfType<ARWallSystem>();
+            
         // Create required textures
         _cameraTexture = new Texture2D(captureWidth, captureHeight, TextureFormat.RGB24, false);
         
@@ -138,12 +142,14 @@ public class ARWallPainterController : MonoBehaviour
     /// </summary>
     private void OnARInitialized()
     {
-        // For the PlaneManager, we need to use ARManager since ARWallSystem doesn't have PlaneManager
-        // You'll need to add a reference to an ARPlaneManager component
-        ARPlaneManager planeManager = FindObjectOfType<ARPlaneManager>();
-        if (planeManager != null)
+        // Use PlaneManager directly from arSystem instead of finding it
+        if (arSystem != null && arSystem.PlaneManager != null)
         {
-            planeManager.planesChanged += OnPlanesChanged;
+            arSystem.PlaneManager.planesChanged += OnPlanesChanged;
+        }
+        else
+        {
+            Debug.LogError("Cannot find ARPlaneManager. Wall detection will not work.");
         }
     }
     
