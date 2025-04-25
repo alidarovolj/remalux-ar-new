@@ -117,8 +117,8 @@ public static class ARBootstrapper
         }
         
         // Постепенно включаем ARMLController через небольшую задержку
-        GameObject bootstrapHelper = new GameObject("ARBootstrapHelper");
-        var helper = bootstrapHelper.AddComponent<ARBootstrapHelper>();
+        GameObject bootstrapHelper = new GameObject("ARBootstrapperHelper");
+        var helper = bootstrapHelper.AddComponent<ARBootstrapperHelper>();
         
         // Передаем ссылки на контроллеры
         helper.SetControllers(armlControllers);
@@ -139,7 +139,7 @@ public static class ARBootstrapper
 /// <summary>
 /// Вспомогательный класс для выполнения отложенных действий
 /// </summary>
-public class ARBootstrapHelper : MonoBehaviour
+public class ARBootstrapperHelper : MonoBehaviour
 {
     private ARMLController[] controllers;
     private float startTime;

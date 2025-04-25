@@ -81,21 +81,24 @@ public class ARWallPainter : MonoBehaviour
     
     private void OnEnable()
     {
-        // Subscribe to events
+        // Subscribe to AR planes changed event
         if (_planeManager != null)
         {
             _planeManager.planesChanged += OnPlanesChanged;
-            
-            if (_debugMode)
-                Debug.Log("ARWallPainter: Subscribed to planesChanged event");
         }
         
-        if (_predictor != null)
+        // Subscribe to segmentation events if predictor is available
+        EnhancedDeepLabPredictor predictor = FindObjectOfType<EnhancedDeepLabPredictor>();
+        if (predictor != null)
         {
-            _predictor.OnSegmentationCompleted += OnSegmentationCompleted;
+            predictor.OnSegmentationCompleted += OnSegmentationCompleted;
+            
+            // Update wall class ID to match predictor
+            _wallClassId = (byte)predictor.WallClassId;
+            _normalizedClassId = _wallClassId / 255f;
             
             if (_debugMode)
-                Debug.Log("ARWallPainter: Subscribed to OnSegmentationCompleted event");
+                Debug.Log($"ARWallPainter: Connected to predictor with wall class ID {_wallClassId}");
         }
         
         // Cache AR camera reference
@@ -105,12 +108,18 @@ public class ARWallPainter : MonoBehaviour
     
     private void OnDisable()
     {
-        // Unsubscribe from events
+        // Unsubscribe from AR planes changed event
         if (_planeManager != null)
+        {
             _planeManager.planesChanged -= OnPlanesChanged;
-            
-        if (_predictor != null)
-            _predictor.OnSegmentationCompleted -= OnSegmentationCompleted;
+        }
+        
+        // Unsubscribe from segmentation events
+        EnhancedDeepLabPredictor predictor = FindObjectOfType<EnhancedDeepLabPredictor>();
+        if (predictor != null)
+        {
+            predictor.OnSegmentationCompleted -= OnSegmentationCompleted;
+        }
     }
     
     private void Update()
@@ -211,6 +220,7 @@ public class ARWallPainter : MonoBehaviour
         int processedCount = 0;
         int maxPlanesPerFrame = 3; // Limit number of planes processed per frame
         
+        // Loop through tracked AR planes
         foreach (ARPlane plane in _planeManager.trackables)
         {
             // Skip if already processed enough planes this frame

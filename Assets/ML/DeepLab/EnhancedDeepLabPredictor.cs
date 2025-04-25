@@ -160,14 +160,14 @@ namespace ML.DeepLab
         /// <summary>
         /// Class ID for walls in the segmentation output
         /// </summary>
-        public byte WallClassId
+        public override int WallClassId
         {
             get => _wallClassId;
             set
             {
                 if (_wallClassId != value)
                 {
-                    _wallClassId = value;
+                    _wallClassId = (byte)value;
                     
                     // Notify of change
                     if (debugMode)
@@ -182,12 +182,12 @@ namespace ML.DeepLab
         /// <summary>
         /// Event fired when the wall class ID changes
         /// </summary>
-        public event System.Action<byte> OnWallClassIdChanged;
+        public override event System.Action<byte> OnWallClassIdChanged;
 
         /// <summary>
         /// Minimum confidence threshold for class detection (0-1)
         /// </summary>
-        public float ClassificationThreshold
+        public override float ClassificationThreshold
         {
             get => _classificationThreshold;
             set
@@ -1030,8 +1030,8 @@ namespace ML.DeepLab
                         // Focus on wall class - check if confidence is high enough
                         else
                         {
-                            maxConfidence = outputData[baseIndex + _wallClassId];
-                            classId = (maxConfidence >= _classificationThreshold) ? _wallClassId : (byte)0;
+                            maxConfidence = outputData[baseIndex + (int)WallClassId];
+                            classId = (maxConfidence >= _classificationThreshold) ? (byte)WallClassId : (byte)0;
                         }
 
                         // Store class ID and confidence in the mask pixels
@@ -1039,7 +1039,7 @@ namespace ML.DeepLab
                         maskPixels[pixelIndex] = new Color32(
                             classId,  // Class ID in R channel
                             (byte)(maxConfidence * 255), // Confidence in G channel
-                            (byte)(classId == _wallClassId ? 255 : 0), // Highlight walls in B channel
+                            (byte)(classId == (byte)WallClassId ? 255 : 0), // Highlight walls in B channel
                             255);
                     }
                 }
@@ -1504,7 +1504,7 @@ namespace ML.DeepLab
                 // Count wall pixels
                 foreach (Color pixel in pixels)
                 {
-                    if (pixel.r == WallClassId / 255f)
+                    if (pixel.r == (int)WallClassId / 255f)
                     {
                         wallPixelCount++;
                     }
@@ -1518,13 +1518,13 @@ namespace ML.DeepLab
                 lastTotalPixelCount = totalPixelCount;
 
                 // Update class distribution
-                if (classDistribution.ContainsKey(WallClassId))
+                if (classDistribution.ContainsKey((byte)WallClassId))
                 {
-                    classDistribution[WallClassId]++;
+                    classDistribution[(byte)WallClassId]++;
                 }
                 else
                 {
-                    classDistribution.Add(WallClassId, 1);
+                    classDistribution.Add((byte)WallClassId, 1);
                 }
 
                 // Clean up temporary texture

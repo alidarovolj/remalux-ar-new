@@ -282,7 +282,7 @@ public unsafe class WallOptimizer : MonoBehaviour
             if (predictor.WallClassId != wallClassId)
             {
                 Debug.LogWarning($"WallOptimizer: Synchronizing wallClassId from {wallClassId} to predictor's value {predictor.WallClassId}");
-                wallClassId = predictor.WallClassId;
+                wallClassId = (byte)predictor.WallClassId;
             }
             
             Debug.Log($"WallOptimizer: Using wallClassId: {wallClassId} for wall detection");
@@ -832,7 +832,7 @@ public unsafe class WallOptimizer : MonoBehaviour
                 wallClassId = 9;
             }
             
-            Texture2D segmentationResult = predictor.GetSegmentationForClass(wallClassId);
+            Texture2D segmentationResult = predictor.GetSegmentationForClass((int)wallClassId);
             
             if (segmentationResult != null)
             {

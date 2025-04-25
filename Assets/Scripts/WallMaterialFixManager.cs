@@ -1,5 +1,6 @@
 using UnityEngine;
 using UnityEngine.XR.ARFoundation;
+using Unity.XR.CoreUtils; // Added for XROrigin
 
 /// <summary>
 /// Управляет материалами стен и исправляет проблемы с ними
@@ -13,9 +14,14 @@ public class WallMaterialFixManager : MonoBehaviour
     public Material transparentWallMaterial;
     
     [Header("Component References")]
-    public ARSessionOrigin arSessionOrigin;
+    public XROrigin xrOrigin;
     public ARPlaneManager planeManager;
     public ARCameraManager cameraManager;
+    
+    // Legacy reference for backward compatibility
+    [System.Obsolete("Use xrOrigin instead")]
+    [HideInInspector]
+    public ARSessionOrigin arSessionOrigin;
     
     [Header("Settings")]
     public bool fixOnAwake = true;
@@ -30,15 +36,21 @@ public class WallMaterialFixManager : MonoBehaviour
     
     private void Awake()
     {
+        // Migrate from ARSessionOrigin to XROrigin if needed
+        if (xrOrigin == null && arSessionOrigin != null)
+        {
+            xrOrigin = arSessionOrigin.GetComponent<XROrigin>();
+        }
+        
         // Find references if not set
-        if (arSessionOrigin == null)
-            arSessionOrigin = FindObjectOfType<ARSessionOrigin>();
+        if (xrOrigin == null)
+            xrOrigin = FindObjectOfType<XROrigin>();
             
-        if (planeManager == null && arSessionOrigin != null)
-            planeManager = arSessionOrigin.GetComponent<ARPlaneManager>();
+        if (planeManager == null && xrOrigin != null)
+            planeManager = xrOrigin.GetComponent<ARPlaneManager>();
             
-        if (cameraManager == null && arSessionOrigin != null)
-            cameraManager = arSessionOrigin.camera.GetComponent<ARCameraManager>();
+        if (cameraManager == null && xrOrigin != null)
+            cameraManager = xrOrigin.Camera.GetComponent<ARCameraManager>();
             
         // Create default materials if not set
         InitializeMaterials();

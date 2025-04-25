@@ -1,7 +1,7 @@
 using UnityEngine;
 using UnityEngine.UI;
 
-[RequireComponent(typeof(SurfaceVisualizer))]
+[RequireComponent(typeof(MeshSurfaceVisualizer))]
 public class SurfaceVisualizerUI : MonoBehaviour
 {
     [Header("UI References")]
@@ -9,12 +9,12 @@ public class SurfaceVisualizerUI : MonoBehaviour
     [SerializeField] private Slider opacitySlider;
     [SerializeField] private Text statusText;
 
-    private SurfaceVisualizer surfaceVisualizer;
+    private MeshSurfaceVisualizer surfaceVisualizer;
     private bool planesVisible = true;
 
     private void Awake()
     {
-        surfaceVisualizer = GetComponent<SurfaceVisualizer>();
+        surfaceVisualizer = GetComponent<MeshSurfaceVisualizer>();
     }
 
     private void Start()

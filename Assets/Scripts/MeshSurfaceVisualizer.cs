@@ -3,7 +3,7 @@ using UnityEngine.XR.ARFoundation;
 using System.Collections.Generic;
 
 [RequireComponent(typeof(ARPlaneManager))]
-public class SurfaceVisualizer : MonoBehaviour
+public class MeshSurfaceVisualizer : MonoBehaviour
 {
     [Header("Visualization Settings")]
     [SerializeField] private Material surfaceMaterial;

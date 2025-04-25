@@ -34,7 +34,10 @@ public class ARPlaneHelper : MonoBehaviour
         ConfigurePlaneMaterial();
         
         // Subscribe to plane detection event
-        _planeManager.planesChanged += OnPlanesChanged;
+        if (_planeManager != null)
+        {
+            _planeManager.planesChanged += OnPlanesChanged;
+        }
         
         // Check detection mode
         if (showOnlyVerticals)
