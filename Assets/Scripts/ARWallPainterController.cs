@@ -11,7 +11,7 @@ using UnityEngine.XR.ARSubsystems;
 public class ARWallPainterController : MonoBehaviour
 {
     [Header("Component References")]
-    [SerializeField] private ARSystemManager arManager;
+    [SerializeField] private ARWallSystem arSystem;
     [SerializeField] private SegmentationManager segmentationManager;
     [SerializeField] private MaskProcessor maskProcessor;
     [SerializeField] private PaintRenderer paintRendererPrefab;
@@ -52,9 +52,9 @@ public class ARWallPainterController : MonoBehaviour
     private void OnEnable()
     {
         // Subscribe to events
-        if (arManager != null)
+        if (arSystem != null)
         {
-            arManager.OnARInitialized += OnARInitialized;
+            arSystem.OnARInitialized += OnARInitialized;
         }
         
         if (segmentationManager != null)
@@ -71,9 +71,9 @@ public class ARWallPainterController : MonoBehaviour
     private void OnDisable()
     {
         // Unsubscribe from events
-        if (arManager != null)
+        if (arSystem != null)
         {
-            arManager.OnARInitialized -= OnARInitialized;
+            arSystem.OnARInitialized -= OnARInitialized;
         }
         
         if (segmentationManager != null)
@@ -103,7 +103,7 @@ public class ARWallPainterController : MonoBehaviour
     /// </summary>
     private void CaptureCameraFrame()
     {
-        if (arManager == null || arManager.ARCamera == null || segmentationManager == null)
+        if (arSystem == null || arSystem.ARCamera == null || segmentationManager == null)
             return;
             
         _isProcessingFrame = true;
@@ -113,9 +113,9 @@ public class ARWallPainterController : MonoBehaviour
         RenderTexture cameraRT = new RenderTexture(captureWidth, captureHeight, 24);
         
         // Render camera view to texture
-        arManager.ARCamera.targetTexture = cameraRT;
-        arManager.ARCamera.Render();
-        arManager.ARCamera.targetTexture = null;
+        arSystem.ARCamera.targetTexture = cameraRT;
+        arSystem.ARCamera.Render();
+        arSystem.ARCamera.targetTexture = null;
         
         // Read pixels from render texture
         RenderTexture.active = cameraRT;
@@ -138,10 +138,12 @@ public class ARWallPainterController : MonoBehaviour
     /// </summary>
     private void OnARInitialized()
     {
-        // Subscribe to plane events
-        if (arManager.PlaneManager != null)
+        // For the PlaneManager, we need to use ARManager since ARWallSystem doesn't have PlaneManager
+        // You'll need to add a reference to an ARPlaneManager component
+        ARPlaneManager planeManager = FindObjectOfType<ARPlaneManager>();
+        if (planeManager != null)
         {
-            arManager.PlaneManager.planesChanged += OnPlanesChanged;
+            planeManager.planesChanged += OnPlanesChanged;
         }
     }
     

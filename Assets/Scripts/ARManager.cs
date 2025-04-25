@@ -67,8 +67,11 @@ public class ARSystemManager : MonoBehaviour
         // Configure camera
         if (CameraManager != null)
         {
-            CameraManager.requestedFocusMode = autoFocusRequested ? 
+            #if !UNITY_EDITOR && (UNITY_IOS || UNITY_ANDROID)
+            // Use focus mode on actual devices
+            CameraManager.focusMode = autoFocusRequested ? 
                 CameraFocusMode.Auto : CameraFocusMode.Fixed;
+            #endif
         }
     }
 
@@ -96,14 +99,22 @@ public class ARSystemManager : MonoBehaviour
             
             if (plane != null)
             {
-                // Use correct signature for AttachAnchor (requires Pose)
-                Pose anchorPose = new Pose(position, rotation);
-                return AnchorManager.AttachAnchor(plane, anchorPose);
+                // Create an anchor attached to this plane
+                GameObject anchorObj = new GameObject("Plane Anchor");
+                anchorObj.transform.position = position;
+                anchorObj.transform.rotation = rotation;
+                anchorObj.transform.parent = plane.transform;
+                
+                return anchorObj.AddComponent<ARAnchor>();
             }
         }
         
         // If no plane found, create a free-floating anchor
-        return AnchorManager.AddAnchor(new Pose(position, rotation));
+        GameObject freeAnchorObj = new GameObject("Free Anchor");
+        freeAnchorObj.transform.position = position;
+        freeAnchorObj.transform.rotation = rotation;
+        
+        return freeAnchorObj.AddComponent<ARAnchor>();
     }
 
     /// <summary>

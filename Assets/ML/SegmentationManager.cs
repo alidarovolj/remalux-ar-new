@@ -123,7 +123,7 @@ public class SegmentationManager : MonoBehaviour
             if (input.name == inputName)
             {
                 // Check tensor shape if available
-                if (input.shape.channels == 3 && input.shape.rank == 4)
+                if (input.shape[3] == 3 && input.shape.Length == 4)
                 {
                     // Try to detect NCHW vs NHWC format
                     // In NCHW: [batch, channels, height, width]
@@ -238,13 +238,19 @@ public class SegmentationManager : MonoBehaviour
         // Create ML worker with selected backend
         try
         {
-            // Create a specific compute configuration if needed
-            var workerOptions = computeDeviceIndex > 0 
-                ? WorkerFactory.ValidationDeviceType.ValidateGpuDevice(backend, computeDeviceIndex) 
-                : WorkerFactory.ValidateType(backend);
-                
-            _engine = WorkerFactory.CreateWorker(workerOptions, _runtimeModel);
-            Debug.Log($"SegmentationManager: Created ML engine using {backend} backend");
+            // Create worker with selected backend
+            // For specific compute device selection
+            if (computeDeviceIndex > 0) 
+            {
+                // Use the correct method signature: CreateWorker(Type, Model, bool)
+                _engine = WorkerFactory.CreateWorker(backend, _runtimeModel, false);
+                Debug.Log($"SegmentationManager: Created ML engine using {backend} backend with device index {computeDeviceIndex}");
+            }
+            else
+            {
+                _engine = WorkerFactory.CreateWorker(backend, _runtimeModel);
+                Debug.Log($"SegmentationManager: Created ML engine using {backend} backend");
+            }
         }
         catch (Exception e)
         {
@@ -347,7 +353,7 @@ public class SegmentationManager : MonoBehaviour
         if (modelOutputNeedsArgMax)
         {
             // Model outputs class probabilities, we need to find the highest value (argmax)
-            int numClasses = tensor.shape.channels;
+            int numClasses = tensor.shape[3];
             
             // Process each pixel to find wall class
             for (int y = 0; y < height; y++)
@@ -500,7 +506,7 @@ public class SegmentationManager : MonoBehaviour
         {
             foreach (var input in _runtimeModel.inputs)
             {
-                if (input.shape.channels == 3 && input.shape.rank == 4)
+                if (input.shape[3] == 3 && input.shape.Length == 4)
                 {
                     string format = "Unknown";
                     if (input.shape[1] == 3)

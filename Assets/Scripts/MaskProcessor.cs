@@ -115,25 +115,36 @@ public class MaskProcessor : MonoBehaviour
     /// </summary>
     private void EnsureTexturesInitialized(int width, int height)
     {
-        // Helper to create/update a RenderTexture
-        Action<ref RenderTexture> createRT = (ref RenderTexture rt) => {
-            if (rt == null || rt.width != width || rt.height != height)
-            {
-                if (rt != null)
-                    rt.Release();
-                
-                rt = new RenderTexture(width, height, 0, RenderTextureFormat.R8);
-                rt.enableRandomWrite = true;
-                rt.Create();
-            }
-        };
+        // Create or update each render texture appropriately
+        _erodedMask = CreateOrResizeRenderTexture(_erodedMask, width, height);
+        _dilatedMask = CreateOrResizeRenderTexture(_dilatedMask, width, height);
+        _processedMask = CreateOrResizeRenderTexture(_processedMask, width, height);
+        _previousMask = CreateOrResizeRenderTexture(_previousMask, width, height);
+        _temporalMask = CreateOrResizeRenderTexture(_temporalMask, width, height);
+    }
+    
+    /// <summary>
+    /// Helper method to create or resize a render texture
+    /// </summary>
+    private RenderTexture CreateOrResizeRenderTexture(RenderTexture rt, int width, int height)
+    {
+        // Check if texture needs to be created or recreated
+        if (rt == null || rt.width != width || rt.height != height)
+        {
+            // Release existing texture if there is one
+            if (rt != null)
+                rt.Release();
+            
+            // Create a new texture
+            RenderTexture newTexture = new RenderTexture(width, height, 0, RenderTextureFormat.R8);
+            newTexture.enableRandomWrite = true;
+            newTexture.Create();
+            
+            return newTexture;
+        }
         
-        // Create all required textures
-        createRT(ref _erodedMask);
-        createRT(ref _dilatedMask);
-        createRT(ref _processedMask);
-        createRT(ref _previousMask);
-        createRT(ref _temporalMask);
+        // Return existing texture if dimensions match
+        return rt;
     }
     
     /// <summary>
