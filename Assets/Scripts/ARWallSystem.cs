@@ -1,6 +1,7 @@
 using UnityEngine;
 using UnityEngine.XR.ARFoundation;
 using UnityEngine.XR.ARSubsystems;
+using Unity.XR.CoreUtils;
 
 /// <summary>
 /// Manages AR components for wall painting application.
@@ -30,10 +31,7 @@ public class ARWallSystem : MonoBehaviour
         if (PlaneManager == null) PlaneManager = GetComponent<ARPlaneManager>();
         
         // Cache the camera reference
-        if (CameraManager != null)
-        {
-            ARCamera = CameraManager.GetComponent<Camera>();
-        }
+        UpdateCameraReference();
     }
 
     private void Start()
@@ -48,8 +46,51 @@ public class ARWallSystem : MonoBehaviour
             #endif
         }
         
+        // Ensure camera is set up before initialization
+        if (ARCamera == null)
+        {
+            // Try to find the camera in the scene
+            UpdateCameraReference();
+            
+            // If we still don't have a camera, warn about it
+            if (ARCamera == null)
+            {
+                Debug.LogWarning("ARWallSystem: No AR Camera found. Make sure an AR Camera exists in the scene.");
+            }
+        }
+        
         // Notify listeners that initialization is complete
         OnARInitialized?.Invoke();
+    }
+    
+    public void UpdateCameraReference()
+    {
+        // First try to get camera from CameraManager component
+        if (CameraManager != null)
+        {
+            ARCamera = CameraManager.GetComponent<Camera>();
+            if (ARCamera != null) return;
+        }
+        
+        // If that fails, try to find camera in XR Origin structure
+        XROrigin xrOrigin = GetComponentInParent<XROrigin>();
+        if (xrOrigin != null && xrOrigin.Camera != null)
+        {
+            ARCamera = xrOrigin.Camera;
+            // Also update the CameraManager reference
+            if (CameraManager == null)
+            {
+                CameraManager = ARCamera.GetComponent<ARCameraManager>();
+            }
+            return;
+        }
+        
+        // If all else fails, try to find any camera tagged as MainCamera
+        ARCamera = Camera.main;
+        if (ARCamera != null && CameraManager == null)
+        {
+            CameraManager = ARCamera.GetComponent<ARCameraManager>();
+        }
     }
 
     /// <summary>

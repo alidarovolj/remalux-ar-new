@@ -125,6 +125,65 @@ public static class ARBootstrapper
         
         Debug.Log("ARBootstrapper: Инициализация AR завершена");
 
+        // Add this section to automatically set up the AR Camera properly
+        Debug.Log("ARBootstrapper: Ensuring AR Camera is set up correctly");
+        ARCameraSetup.EnsureARCameraExists();
+        
+        // Try to add Tracked Pose Driver if possible
+        var xrOrigins = Object.FindObjectsByType<XROrigin>(FindObjectsSortMode.None);
+        foreach (var origin in xrOrigins)
+        {
+            if (origin.Camera != null)
+            {
+                var tpdComponents = origin.Camera.GetComponents<MonoBehaviour>();
+                bool hasTrackedPoseDriver = false;
+                
+                foreach (var component in tpdComponents)
+                {
+                    string typeName = component.GetType().Name;
+                    if (typeName == "TrackedPoseDriver" || typeName == "ARTrackedPoseDriver" || 
+                        typeName.Contains("TrackedPose"))
+                    {
+                        hasTrackedPoseDriver = true;
+                        break;
+                    }
+                }
+                
+                if (!hasTrackedPoseDriver)
+                {
+                    // Try to add TrackedPoseDriver through reflection
+                    try
+                    {
+                        // Try Input System TPD first
+                        System.Type trackedPoseDriverType = System.Type.GetType("UnityEngine.InputSystem.XR.TrackedPoseDriver, Unity.InputSystem");
+                        if (trackedPoseDriverType != null)
+                        {
+                            var driver = origin.Camera.gameObject.AddComponent(trackedPoseDriverType);
+                            Debug.Log("ARBootstrapper: Added TrackedPoseDriver (Input System) to AR Camera");
+                        }
+                        else
+                        {
+                            // Try Legacy TPD as fallback
+                            var legacyType = System.Type.GetType("UnityEngine.SpatialTracking.TrackedPoseDriver, UnityEngine.SpatialTracking");
+                            if (legacyType != null)
+                            {
+                                var legacyDriver = origin.Camera.gameObject.AddComponent(legacyType);
+                                Debug.Log("ARBootstrapper: Added Legacy TrackedPoseDriver to AR Camera");
+                            }
+                            else
+                            {
+                                Debug.LogWarning("ARBootstrapper: Could not find any TrackedPoseDriver type. Camera position will not be updated.");
+                            }
+                        }
+                    }
+                    catch (System.Exception ex)
+                    {
+                        Debug.LogWarning($"ARBootstrapper: Failed to add TrackedPoseDriver: {ex.Message}");
+                    }
+                }
+            }
+        }
+
         // Ensure ARMeshManager is configured and enabled
         var meshManager = Object.FindObjectOfType<ARMeshManager>();
         if (meshManager != null)
