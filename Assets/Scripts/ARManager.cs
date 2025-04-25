@@ -7,8 +7,11 @@ using System.Collections.Generic;
 /// Manages AR Foundation components and provides centralized access to them.
 /// Only handles AR setup and tracking, not visual representation or business logic.
 /// </summary>
-[RequireComponent(typeof(ARSession), typeof(ARSessionOrigin), typeof(ARPlaneManager), typeof(ARRaycastManager))]
-public class ARManager : MonoBehaviour
+[RequireComponent(typeof(ARSession))]
+[RequireComponent(typeof(ARSessionOrigin))]
+[RequireComponent(typeof(ARPlaneManager))]
+[RequireComponent(typeof(ARRaycastManager))]
+public class ARSystemManager : MonoBehaviour
 {
     [Header("AR Components")]
     public ARCameraManager CameraManager { get; private set; }
@@ -111,5 +114,33 @@ public class ARManager : MonoBehaviour
         detectionMode = mode;
         if (PlaneManager != null)
             PlaneManager.requestedDetectionMode = mode;
+    }
+    
+    /// <summary>
+    /// Check if AR session is ready
+    /// </summary>
+    public bool IsSessionReady()
+    {
+        // Basic check - can be expanded with more specific conditions
+        return ARCamera != null && PlaneManager != null;
+    }
+    
+    /// <summary>
+    /// Toggle plane detection on/off
+    /// </summary>
+    public void TogglePlaneDetection(bool enabled)
+    {
+        if (PlaneManager != null)
+        {
+            PlaneManager.enabled = enabled;
+            
+            // Also hide existing planes if disabled
+            foreach (var plane in PlaneManager.trackables)
+            {
+                plane.gameObject.SetActive(enabled);
+            }
+            
+            Debug.Log($"Plane detection {(enabled ? "enabled" : "disabled")}");
+        }
     }
 } 

@@ -11,7 +11,7 @@ using UnityEngine.XR.ARSubsystems;
 public class ARWallPainterController : MonoBehaviour
 {
     [Header("Component References")]
-    [SerializeField] private ARManager arManager;
+    [SerializeField] private ARSystemManager arManager;
     [SerializeField] private SegmentationManager segmentationManager;
     [SerializeField] private MaskProcessor maskProcessor;
     [SerializeField] private PaintRenderer paintRendererPrefab;
