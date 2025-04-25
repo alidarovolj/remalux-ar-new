@@ -27,10 +27,12 @@ public class SegmentationManager : MonoBehaviour
     [SerializeField] private int processingInterval = 5; // Process every N frames
     [SerializeField] private bool modelOutputNeedsArgMax = false; // Set true if model outputs logits/probabilities
     
-    [Header("Performance")]
+    [Header("Advanced Settings")]
     [SerializeField] private WorkerFactory.Type workerType = WorkerFactory.Type.ComputePrecompiled;
     [Tooltip("Set 0 for automatic device selection")]
     [SerializeField] private int computeDeviceIndex = 0;
+    [Tooltip("Set false if your model uses NCHW (channels first) format")]
+    [SerializeField] private bool isModelNHWCFormat = true; // Most TensorFlow/ONNX models use NHWC format
     
     // ML model and engine
     private Model _runtimeModel;
@@ -112,6 +114,33 @@ public class SegmentationManager : MonoBehaviour
                 inputName = _runtimeModel.inputs[0].name;
                 validInputs = true;
                 Debug.LogWarning($"Input layer '{inputName}' not found. Using first available input: {inputName}");
+            }
+        }
+        
+        // Check input shape to auto-detect tensor format
+        foreach (var input in _runtimeModel.inputs)
+        {
+            if (input.name == inputName)
+            {
+                // Check tensor shape if available
+                if (input.shape.channels == 3 && input.shape.rank == 4)
+                {
+                    // Try to detect NCHW vs NHWC format
+                    // In NCHW: [batch, channels, height, width]
+                    // In NHWC: [batch, height, width, channels]
+                    // Note: This is a heuristic and might not be 100% accurate
+                    if (input.shape[1] == 3)
+                    {
+                        isModelNHWCFormat = false; // Likely NCHW format (channels as dimension 1)
+                        Debug.Log("Detected NCHW tensor format based on input shape");
+                    }
+                    else if (input.shape[3] == 3)
+                    {
+                        isModelNHWCFormat = true; // Likely NHWC format (channels as dimension 3)
+                        Debug.Log("Detected NHWC tensor format based on input shape");
+                    }
+                }
+                break;
             }
         }
         
@@ -383,22 +412,50 @@ public class SegmentationManager : MonoBehaviour
     /// </summary>
     private int GetTensorIndex(int x, int y, int channel, int width, int height, int numChannels)
     {
-        // Different models might have different memory layouts (NHWC vs NCHW)
-        // This assumes NHWC layout (batch, height, width, channel) - most common in TensorFlow/ONNX
-        return (y * width * numChannels) + (x * numChannels) + channel;
+        // Different models might have different memory layouts
+        if (isModelNHWCFormat)
+        {
+            // NHWC layout (batch, height, width, channel) - most common in TensorFlow/ONNX
+            return (y * width * numChannels) + (x * numChannels) + channel;
+        }
+        else
+        {
+            // NCHW layout (batch, channel, height, width) - common in PyTorch/Caffe
+            return (channel * height * width) + (y * width) + x;
+        }
     }
     
     private void OnDestroy()
     {
-        // Clean up Barracuda resources
-        _engine?.Dispose();
-        
-        // Clean up textures
-        if (_resizedInput != null)
-            Destroy(_resizedInput);
+        try
+        {
+            // Clean up Barracuda resources
+            if (_engine != null)
+            {
+                _engine.Dispose();
+                _engine = null;
+                Debug.Log("SegmentationManager: Disposed ML engine");
+            }
             
-        if (_outputTexture != null)
-            Destroy(_outputTexture);
+            // Clean up textures
+            if (_resizedInput != null)
+            {
+                Destroy(_resizedInput);
+                _resizedInput = null;
+            }
+                
+            if (_outputTexture != null)
+            {
+                Destroy(_outputTexture);
+                _outputTexture = null;
+            }
+            
+            Debug.Log("SegmentationManager: Cleaned up all resources");
+        }
+        catch (Exception e)
+        {
+            Debug.LogError($"Error during SegmentationManager cleanup: {e.Message}");
+        }
     }
     
 #if UNITY_EDITOR
@@ -433,6 +490,27 @@ public class SegmentationManager : MonoBehaviour
         else
         {
             Debug.LogWarning("No model loaded yet.");
+        }
+    }
+    
+    [ContextMenu("Test Tensor Format")]
+    public void TestTensorFormat()
+    {
+        if (_runtimeModel != null)
+        {
+            foreach (var input in _runtimeModel.inputs)
+            {
+                if (input.shape.channels == 3 && input.shape.rank == 4)
+                {
+                    string format = "Unknown";
+                    if (input.shape[1] == 3)
+                        format = "NCHW (Channels first)";
+                    else if (input.shape[3] == 3)
+                        format = "NHWC (Channels last)";
+                    
+                    Debug.Log($"Input {input.name} with shape {input.shape} likely uses {format} format");
+                }
+            }
         }
     }
 #endif
