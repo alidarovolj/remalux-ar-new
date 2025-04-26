@@ -68,7 +68,7 @@ public class ARWallPainterController : MonoBehaviour
         
         if (maskProcessor != null)
         {
-            maskProcessor.OnMaskProcessed += OnMaskProcessed;
+            maskProcessor.OnRenderTextureMaskProcessed += OnMaskProcessed;
         }
     }
     
@@ -87,7 +87,7 @@ public class ARWallPainterController : MonoBehaviour
         
         if (maskProcessor != null)
         {
-            maskProcessor.OnMaskProcessed -= OnMaskProcessed;
+            maskProcessor.OnRenderTextureMaskProcessed -= OnMaskProcessed;
         }
     }
     

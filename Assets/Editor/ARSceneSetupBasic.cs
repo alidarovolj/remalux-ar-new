@@ -1703,7 +1703,7 @@ public class ARSceneSetupBasic : EditorWindow
         public static void FixSegmentationManagerModelConfiguration()
         {
             // Call the ModelFixerMenu's method directly
-            ModelFixerMenu.FixModelShapeIssues();
+            ModelFixerMenu.FixSegmentationManager();
         }
 }
 

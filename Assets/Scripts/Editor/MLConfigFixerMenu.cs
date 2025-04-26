@@ -232,7 +232,8 @@ public class MLConfigFixerMenu : EditorWindow
         Undo.RecordObject(deepLabPredictor, "Fix DeepLabPredictor");
         
         // Configure the predictor
-        deepLabPredictor.useStandardFormatInput = true;
+        // Comment out properties that don't exist in EnhancedDeepLabPredictor
+        // deepLabPredictor.useStandardFormatInput = true;
         deepLabPredictor.WallClassId = 9;
         deepLabPredictor.enableDownsampling = true;
         deepLabPredictor.downsamplingFactor = 2;

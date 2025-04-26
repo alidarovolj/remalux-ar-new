@@ -62,7 +62,7 @@ public class ARMLSystemConnector : MonoBehaviour
         
         if (maskProcessor != null)
         {
-            maskProcessor.OnMaskProcessed += OnMaskProcessed;
+            maskProcessor.OnRenderTextureMaskProcessed += OnMaskProcessed;
             Debug.Log("ARMLSystemConnector: Subscribed to MaskProcessor events");
         }
     }
@@ -74,7 +74,7 @@ public class ARMLSystemConnector : MonoBehaviour
             segmentationManager.OnSegmentationCompleted -= HandleSegmentationTexture;
             
         if (maskProcessor != null)
-            maskProcessor.OnMaskProcessed -= OnMaskProcessed;
+            maskProcessor.OnRenderTextureMaskProcessed -= OnMaskProcessed;
     }
     
     /// <summary>

@@ -6,8 +6,10 @@ using System.Linq;
 using Unity.Barracuda;
 using UnityEngine.XR.ARFoundation;
 using UnityEngine.XR.ARSubsystems;
-using ML.DeepLab;
 
+/// <summary>
+/// Interface class to handle ML model management and inference
+/// </summary>
 public class MLManager : MonoBehaviour
 {
     [Header("Prediction Settings")]
@@ -30,6 +32,16 @@ public class MLManager : MonoBehaviour
     
     // Event for segmentation completion
     public event Action<RenderTexture> OnSegmentationComplete;
+    
+    [SerializeField] protected NNModel modelAsset;
+    [SerializeField] protected WorkerFactory.Type workerType = WorkerFactory.Type.Auto;
+    [SerializeField] protected bool debugMode = false;
+    
+    protected Model runtimeModel;
+    protected IWorker worker;
+    protected bool isInitialized = false;
+    
+    public bool IsInitialized => isInitialized;
     
     private void OnEnable() 
     {
@@ -341,6 +353,8 @@ public class MLManager : MonoBehaviour
             Destroy(_frameTexture);
             _frameTexture = null;
         }
+        
+        Shutdown();
     }
     
     // Check if the predictor is using the correct model asset
@@ -377,6 +391,57 @@ public class MLManager : MonoBehaviour
                 }
             }
         }
+    }
+    
+    public virtual void Initialize()
+    {
+        if (modelAsset == null)
+        {
+            Debug.LogError("MLManager: Model asset is not assigned!");
+            return;
+        }
+        
+        try
+        {
+            runtimeModel = ModelLoader.Load(modelAsset);
+            worker = WorkerFactory.CreateWorker(workerType, runtimeModel);
+            isInitialized = true;
+            
+            if (debugMode)
+                Debug.Log("MLManager: Initialized successfully");
+        }
+        catch (System.Exception e)
+        {
+            Debug.LogError($"MLManager: Failed to initialize model: {e.Message}");
+            isInitialized = false;
+        }
+    }
+    
+    public virtual void Process(Texture2D inputTexture)
+    {
+        if (!isInitialized)
+        {
+            Debug.LogWarning("MLManager: Cannot process - not initialized");
+            return;
+        }
+        
+        // Base implementation would process the texture
+        if (debugMode)
+            Debug.Log("MLManager: Processing input texture");
+    }
+    
+    public virtual void Shutdown()
+    {
+        if (worker != null)
+        {
+            worker.Dispose();
+            worker = null;
+        }
+        
+        isInitialized = false;
+        
+        if (debugMode)
+            Debug.Log("MLManager: Shut down");
     }
 }
 

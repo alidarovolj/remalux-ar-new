@@ -91,8 +91,8 @@ public class ModelConfigFixer : MonoBehaviour
             if (inputTensor != null)
             {
                 // The dimensions are accessible through the shape property 
-                TensorShape shape = inputTensor.shape;
-                int[] dimensions = shape.dimensions;
+                var shapeValue = inputTensor.shape;
+                int[] dimensions = GetSafeDimensions(shapeValue);
                 
                 // Now we can safely check the length
                 if (dimensions != null && dimensions.Length >= 4)
@@ -405,7 +405,8 @@ public class ModelConfigFixer : MonoBehaviour
                     if (outputTensor != null)
                     {
                         // Fix: Access dimensions through shape property
-                        int[] outputDims = outputTensor.shape.dimensions;
+                        var outputShapeValue = outputTensor.shape;
+                        int[] outputDims = GetSafeDimensions(outputShapeValue);
                         Debug.Log($"Output tensor shape: {string.Join(" × ", outputDims)}");
                         
                         // Calculate expected size
@@ -533,7 +534,9 @@ public class ModelConfigFixer : MonoBehaviour
                     var output = worker.PeekOutput(outputName);
                     if (output != null)
                     {
-                        Debug.Log($"Output '{outputName}' shape: {string.Join(" × ", output.shape.dimensions)}");
+                        // Use GetSafeDimensions instead of directly accessing shape.dimensions
+                        int[] outputDims = GetSafeDimensions(output.shape);
+                        Debug.Log($"Output '{outputName}' shape: {string.Join(" × ", outputDims)}");
                         Debug.Log($"Total output elements: {output.shape.length}");
                     }
                 }
@@ -602,7 +605,9 @@ public class ModelConfigFixer : MonoBehaviour
                             var output = worker.PeekOutput(outputName);
                             if (output != null)
                             {
-                                Debug.Log($"Output '{outputName}' shape: {string.Join(" × ", output.shape.dimensions)}");
+                                // Use GetSafeDimensions instead of directly accessing shape.dimensions
+                                int[] outputDims = GetSafeDimensions(output.shape);
+                                Debug.Log($"Output '{outputName}' shape: {string.Join(" × ", outputDims)}");
                             }
                         }
                         catch { }
@@ -837,16 +842,12 @@ public class ModelConfigFixer : MonoBehaviour
             foreach (var input in runtimeModel.inputs)
             {
                 // Get input shape as int[]
-                int[] inputShapeArray = new int[input.shape.Length];
-                for (int i = 0; i < input.shape.Length; i++)
-                {
-                    inputShapeArray[i] = input.shape[i];
-                }
-                
-                Debug.Log($"[ModelConfigFixer] Input: {input.name}, Shape: [{string.Join(", ", inputShapeArray)}]");
+                var inputShapeValue = input.shape;
+                int[] inputShapeDims = GetSafeDimensions(inputShapeValue);
+                Debug.Log($"[ModelConfigFixer] Input: {input.name}, Shape: [{string.Join(", ", inputShapeDims)}]");
                 
                 // Additional information about the input if available
-                Debug.Log($"[ModelConfigFixer] - Input dimensions: {string.Join(" × ", inputShapeArray)}");
+                Debug.Log($"[ModelConfigFixer] - Input dimensions: {string.Join(" × ", inputShapeDims)}");
             }
             
             // Create dummy input to examine outputs
@@ -862,26 +863,20 @@ public class ModelConfigFixer : MonoBehaviour
                 bool isNHWC = true; // Default to NHWC
                 
                 // Get the shape as an array to work with safely
-                int[] inputShape = new int[4]; // Use fixed size array for model input shapes
-                if (firstInput.shape != null)
-                {
-                    for (int i = 0; i < firstInput.shape.Length && i < 4; i++)
-                    {
-                        inputShape[i] = firstInput.shape[i];
-                    }
-                }
+                var firstInputValue = firstInput.shape;
+                int[] inputShapeDims = GetSafeDimensions(firstInputValue);
                 
-                if (inputShape.Length >= 4)
+                if (inputShapeDims.Length >= 4)
                 {
-                    if (inputShape[3] == 3 || inputShape[3] == 1)
+                    if (inputShapeDims[3] == 3 || inputShapeDims[3] == 1)
                     {
                         // Likely NHWC format (B,H,W,C)
-                        dummyInput = new Tensor(inputShape[0], inputShape[1], inputShape[2], inputShape[3]);
+                        dummyInput = new Tensor(inputShapeDims[0], inputShapeDims[1], inputShapeDims[2], inputShapeDims[3]);
                     }
                     else
                     {
                         // Likely NCHW format (B,C,H,W)
-                        dummyInput = new Tensor(inputShape[0], inputShape[1], inputShape[2], inputShape[3]);
+                        dummyInput = new Tensor(inputShapeDims[0], inputShapeDims[1], inputShapeDims[2], inputShapeDims[3]);
                         isNHWC = false;
                     }
                 }
@@ -910,8 +905,8 @@ public class ModelConfigFixer : MonoBehaviour
                 Tensor outputTensor = worker.PeekOutput(outputName);
                 if (outputTensor != null)
                 {
-                    // Get the dimensions array explicitly
-                    int[] outputDims = outputTensor.shape.dimensions;
+                    // Use GetSafeDimensions instead of directly accessing shape.dimensions
+                    int[] outputDims = GetSafeDimensions(outputTensor.shape);
                     Debug.Log($"[ModelConfigFixer] Output: {outputName}, Shape: [{string.Join(", ", outputDims)}], Elements: {outputTensor.length}");
                     
                     // Additional information about the output
@@ -962,31 +957,21 @@ public class ModelConfigFixer : MonoBehaviour
                 if (runtimeModel.inputs.Count > 0)
                 {
                     // Get input shape as an array to prevent direct indexing issues
-                    int[] inputDims = new int[4]; // Initialize with default size 4 for model input shapes
-                    if (runtimeModel.inputs[0].shape != null)
-                    {
-                        for (int i = 0; i < runtimeModel.inputs[0].shape.Length; i++)
-                        {
-                            if (i < 4) // Stay within the bounds of our array
-                            {
-                                inputDims[i] = runtimeModel.inputs[0].shape[i];
-                            }
-                        }
-                    }
-                    
-                    // Use fixed array size since we initialized with length 4
+                    var shape = runtimeModel.inputs[0].shape;
+                    int[] inputDims = GetSafeDimensions(shape);
                     Debug.Log($"[ModelConfigFixer] Suggested input dimensions: {inputDims[2]}x{inputDims[1]}x{inputDims[3]} (if NHWC) or {inputDims[3]}x{inputDims[2]}x{inputDims[1]} (if NCHW)");
                 }
                 
                 // Suggest possible output format (NCHW vs NHWC)
-                int[] mainOutputDims = mainOutput.shape.dimensions;
-                if (mainOutputDims.Length == 4)
+                var mainOutputValue = mainOutput.shape;
+                int[] outputDimensions = GetSafeDimensions(mainOutputValue);
+                if (outputDimensions.Length == 4)
                 {
-                    if (mainOutputDims[1] > 32 && mainOutputDims[3] < 32)
+                    if (outputDimensions[1] > 32 && outputDimensions[3] < 32)
                     {
                         Debug.Log($"[ModelConfigFixer] Based on dimensions, model likely uses NCHW format (Channels after Batch)");
                     }
-                    else if (mainOutputDims[3] > 32 && mainOutputDims[1] < 32)
+                    else if (outputDimensions[3] > 32 && outputDimensions[1] < 32)
                     {
                         Debug.Log($"[ModelConfigFixer] Based on dimensions, model likely uses NHWC format (Channels after Width)");
                     }
@@ -1065,17 +1050,64 @@ public class ModelConfigFixer : MonoBehaviour
     /// <param name="classCount">The number of classes expected in the segmentation</param>
     public void AnalyzeTensorShapePossibilities(long tensorSize, int classCount)
     {
+        SegmentationManager segmentationManager = GetComponent<SegmentationManager>();
+        if (segmentationManager == null)
+        {
+            Debug.LogError("SegmentationManager not found on this GameObject!");
+            return;
+        }
+
+        // Determine class count from actual shape if possible
+        int[] actualShape = null;
+        int[] expectedShape = null;
+
+        try
+        {
+            // Get actual output tensor shape if available
+            actualShape = GetActualOutputTensorShape();
+            
+            // Get expected output tensor shape
+            expectedShape = GetExpectedOutputTensorShape();
+        }
+        catch (Exception ex)
+        {
+            Debug.LogError($"Error getting tensor shapes: {ex.Message}");
+        }
+
+        // Try to determine class count from shape information
+        if (actualShape != null && actualShape.Length >= 4)
+        {
+            int index = segmentationManager.isModelNHWCFormat ? 3 : 1;
+            if (index < actualShape.Length)
+            {
+                classCount = actualShape[index];
+            }
+        }
+        else if (expectedShape != null && expectedShape.Length >= 4)
+        {
+            int index = segmentationManager.isModelNHWCFormat ? 3 : 1;
+            if (index < expectedShape.Length)
+            {
+                classCount = expectedShape[index];
+            }
+        }
+
+        // Original tensor size information
+        Debug.Log($"Original tensor size: {tensorSize} elements");
+        Debug.Log($"Using class count: {classCount}");
+
+        // Find possible dimensions - direct implementation replacing FindPossibleDimensions call
         Debug.Log($"[TensorAnalysis] Analyzing possible tensor shapes for size {tensorSize} with {classCount} classes...");
-        
+         
         // Find factors of tensorSize/classCount to determine possible height/width pairs
         long pixelCount = tensorSize / classCount;
         bool isExactDivision = tensorSize % classCount == 0;
-        
+         
         Debug.Log($"[TensorAnalysis] Tensor has space for {pixelCount} pixels (tensorSize/classCount)");
         if (!isExactDivision) {
             Debug.LogWarning($"[TensorAnalysis] Warning: Tensor size {tensorSize} is not divisible by class count {classCount}. This suggests a format mismatch.");
         }
-        
+         
         // Find potential height/width pairs
         List<Vector2Int> possibleDimensions = new List<Vector2Int>();
         for (int i = 1; i <= Mathf.Sqrt(pixelCount); i++)
@@ -1087,7 +1119,7 @@ public class ModelConfigFixer : MonoBehaviour
                 possibleDimensions.Add(new Vector2Int(width, height));
             }
         }
-        
+         
         if (possibleDimensions.Count > 0)
         {
             Debug.Log("[TensorAnalysis] Possible dimensions (width x height):");
@@ -1095,12 +1127,12 @@ public class ModelConfigFixer : MonoBehaviour
             {
                 float ratio = (float)dim.x / dim.y;
                 Debug.Log($"[TensorAnalysis] - {dim.x} x {dim.y} (ratio: {ratio:F2})");
-                
+             
                 // Suggest possible tensor shapes
                 Debug.Log($"[TensorAnalysis]   NHWC format: [1, {dim.y}, {dim.x}, {classCount}]");
                 Debug.Log($"[TensorAnalysis]   NCHW format: [1, {classCount}, {dim.y}, {dim.x}]");
             }
-            
+
             // Try to find dimensions close to input dimensions from SegmentationManager
             if (segmentationManager != null)
             {
@@ -1119,7 +1151,7 @@ public class ModelConfigFixer : MonoBehaviour
                         closestRatioDiff = ratioDiff;
                     }
                 }
-                
+
                 Debug.Log($"[TensorAnalysis] Dimensions closest to input aspect ratio ({targetRatio:F2}): {closestDim.x} x {closestDim.y}");
                 
                 // Calculate the scaling factor from input dimensions
@@ -1127,9 +1159,6 @@ public class ModelConfigFixer : MonoBehaviour
                 float heightScale = (float)closestDim.y / segmentationManager.inputHeight;
                 Debug.Log($"[TensorAnalysis] Scale factor from input: width={widthScale:F3}x, height={heightScale:F3}x");
             }
-            
-            // Compare input size to output size
-            Debug.Log($"[TensorAnalysis] Reference input size: 224x224x3 = {224*224*3} elements");
         }
         else
         {
@@ -1155,5 +1184,223 @@ public class ModelConfigFixer : MonoBehaviour
         Debug.Log("- 576x256x3 (expecting 8:1 downsampling ratio)");
         Debug.Log("- 288x128x3 (expecting 4:1 downsampling ratio)");
         Debug.Log("- 144x64x3 (expecting 2:1 downsampling ratio)");
+    }
+
+    /// <summary>
+    /// Analyzes tensor shape possibilities and returns a formatted string of the analysis
+    /// </summary>
+    /// <param name="expectedShape">Expected shape of the tensor</param>
+    /// <param name="actualShape">Actual shape of the tensor</param>
+    /// <param name="totalElements">Total number of elements in the tensor</param>
+    /// <returns>A string containing the analysis result</returns>
+    public string AnalyzeTensorShapePossibilities(int[] expectedShape, int[] actualShape, int totalElements)
+    {
+        System.Text.StringBuilder sb = new System.Text.StringBuilder();
+        sb.AppendLine($"[ModelConfigFixer] Analyzing tensor shape possibilities for size {totalElements}...");
+        
+        if (actualShape != null && actualShape.Length > 0)
+        {
+            sb.AppendLine($"Actual shape: {FormatIntArray(actualShape)}");
+        }
+        
+        if (expectedShape != null && expectedShape.Length > 0)
+        {
+            sb.AppendLine($"Expected shape: {FormatIntArray(expectedShape)}");
+        }
+        
+        // Determine class count from the shapes
+        int classCount = 0;
+        string classCountSource = "";
+        
+        if (actualShape != null && actualShape.Length >= 4)
+        {
+            int index = segmentationManager.isModelNHWCFormat ? 3 : 1;
+            if (index < actualShape.Length)
+            {
+                classCount = actualShape[index];
+                classCountSource = "actualShape";
+            }
+        }
+        else if (expectedShape != null && expectedShape.Length >= 4)
+        {
+            int index = segmentationManager.isModelNHWCFormat ? 3 : 1;
+            if (index < expectedShape.Length)
+            {
+                classCount = expectedShape[index];
+                classCountSource = "expectedShape";
+            }
+        }
+        
+        if (classCount <= 0)
+        {
+            sb.AppendLine("Unable to determine class count from shapes. Using default segmentationClassCount.");
+            classCount = segmentationManager.segmentationClassCount;
+        }
+        
+        // Call the other implementation directly instead of using FindPossibleDimensions
+        sb.AppendLine($"Using class count: {classCount}");
+        
+        // Perform direct analysis
+        AnalyzeTensorShapePossibilities(totalElements, classCount);
+        
+        return sb.ToString();
+    }
+    
+    // Add these methods for getting tensor shapes
+    private int[] GetActualOutputTensorShape()
+    {
+        if (segmentationManager == null)
+            return new int[0];
+            
+        try
+        {
+            // Try to create a model worker
+            Model runtimeModel = ModelLoader.Load(segmentationManager.ModelAsset);
+            IWorker worker = WorkerFactory.CreateWorker(WorkerFactory.Type.Auto, runtimeModel);
+            
+            // Create a dummy input tensor for execution
+            Tensor inputTensor;
+            if (segmentationManager.isModelNHWCFormat)
+            {
+                inputTensor = new Tensor(1, segmentationManager.inputHeight, segmentationManager.inputWidth, segmentationManager.inputChannels);
+            }
+            else
+            {
+                inputTensor = new Tensor(1, segmentationManager.inputChannels, segmentationManager.inputHeight, segmentationManager.inputWidth);
+            }
+            
+            // Execute the model
+            worker.Execute(inputTensor);
+            
+            // Try to get the output tensor
+            string outputName = segmentationManager.outputName;
+            Tensor outputTensor = worker.PeekOutput(outputName);
+            
+            if (outputTensor != null)
+            {
+                var outputShape = GetSafeDimensions(outputTensor.shape);
+                
+                // Clean up
+                inputTensor.Dispose();
+                worker.Dispose();
+                
+                return outputShape;
+            }
+            
+            // Clean up
+            inputTensor.Dispose();
+            worker.Dispose();
+        }
+        catch (Exception ex)
+        {
+            Debug.LogWarning($"Failed to get actual output tensor shape: {ex.Message}");
+        }
+        
+        return new int[0];
+    }
+    
+    private int[] GetExpectedOutputTensorShape()
+    {
+        if (segmentationManager == null)
+            return new int[0];
+            
+        // Create expected shape based on SegmentationManager settings
+        if (segmentationManager.isModelNHWCFormat)
+        {
+            // NHWC format: batch, height, width, classes
+            return new int[] { 
+                1, 
+                segmentationManager.inputHeight, 
+                segmentationManager.inputWidth, 
+                segmentationManager.segmentationClassCount 
+            };
+        }
+        else
+        {
+            // NCHW format: batch, classes, height, width
+            return new int[] { 
+                1, 
+                segmentationManager.segmentationClassCount, 
+                segmentationManager.inputHeight, 
+                segmentationManager.inputWidth 
+            };
+        }
+    }
+
+    // Helper method to format int arrays as strings
+    private string FormatIntArray(int[] array)
+    {
+        if (array == null || array.Length == 0)
+            return "[]";
+            
+        System.Text.StringBuilder sb = new System.Text.StringBuilder();
+        sb.Append("[");
+        
+        for (int i = 0; i < array.Length; i++)
+        {
+            sb.Append(array[i]);
+            if (i < array.Length - 1)
+                sb.Append(", ");
+        }
+        
+        sb.Append("]");
+        return sb.ToString();
+    }
+
+    // Fix pattern matching by using standard type checking instead of pattern matching syntax
+    int[] GetSafeDimensions(object shapeObj)
+    {
+        if (shapeObj == null)
+        {
+            return new int[0];
+        }
+        
+        try
+        {
+            // Use type checking with is operator and explicit casting
+            if (shapeObj is TensorShape)
+            {
+                // Manually create the dimensions array
+                TensorShape tensorShape = (TensorShape)shapeObj;
+                int[] result = new int[tensorShape.length];
+                for (int i = 0; i < tensorShape.length; i++)
+                {
+                    result[i] = tensorShape[i];
+                }
+                return result;
+            }
+            else if (shapeObj is int)
+            {
+                return new int[] { (int)shapeObj };
+            }
+            else if (shapeObj is int[])
+            {
+                return (int[])shapeObj;
+            }
+            else if (shapeObj is Tensor)
+            {
+                Tensor tensor = (Tensor)shapeObj;
+                // Handle tensor shape - extract the shape property and convert to array
+                if (tensor != null)
+                {
+                    TensorShape tensorShape = tensor.shape;
+                    int[] result = new int[tensorShape.length];
+                    for (int i = 0; i < tensorShape.length; i++)
+                    {
+                        result[i] = tensorShape[i];
+                    }
+                    return result;
+                }
+                return new int[0];
+            }
+            
+            Debug.LogWarning($"Unsupported shape type: {shapeObj.GetType().Name}");
+        }
+        catch (Exception ex)
+        {
+            Debug.LogError($"Error in GetSafeDimensions: {ex.Message}");
+        }
+        
+        return new int[0];
     }
 } 
