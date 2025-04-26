@@ -16,6 +16,71 @@ public class ARPlaneDetectionController : MonoBehaviour
     [SerializeField]
     private bool enableHorizontalPlanes = true;
     
+    /// <summary>
+    /// Публичное свойство для установки ARPlaneManager
+    /// </summary>
+    public ARPlaneManager PlaneManager
+    {
+        get { return planeManager; }
+        set
+        {
+            if (value != planeManager)
+            {
+                planeManager = value;
+                if (isActiveAndEnabled)
+                {
+                    ConfigurePlaneDetection();
+                }
+            }
+        }
+    }
+    
+    /// <summary>
+    /// Установка горизонтального обнаружения плоскостей
+    /// </summary>
+    public bool EnableHorizontalPlanes
+    {
+        get { return enableHorizontalPlanes; }
+        set
+        {
+            if (value != enableHorizontalPlanes)
+            {
+                enableHorizontalPlanes = value;
+                if (isActiveAndEnabled && planeManager != null)
+                {
+                    ConfigurePlaneDetection();
+                }
+            }
+        }
+    }
+    
+    /// <summary>
+    /// Установка вертикального обнаружения плоскостей
+    /// </summary>
+    public bool EnableVerticalPlanes
+    {
+        get { return enableVerticalPlanes; }
+        set
+        {
+            if (value != enableVerticalPlanes)
+            {
+                enableVerticalPlanes = value;
+                if (isActiveAndEnabled && planeManager != null)
+                {
+                    ConfigurePlaneDetection();
+                }
+            }
+        }
+    }
+    
+    /// <summary>
+    /// Публичный метод для установки ARPlaneManager извне
+    /// </summary>
+    public void SetPlaneManager(ARPlaneManager manager)
+    {
+        PlaneManager = manager;
+    }
+    
     void Awake()
     {
         // Если planeManager не назначен в инспекторе, пытаемся найти его
@@ -62,10 +127,8 @@ public class ARPlaneDetectionController : MonoBehaviour
         if (enableVerticalPlanes)
             detectionMode |= PlaneDetectionMode.Vertical;
             
-        // Применяем режим обнаружения
-        #if UNITY_2022_1_OR_NEWER
-        planeManager.requestedDetectionMode = detectionMode;
-        #elif UNITY_2020_1_OR_NEWER
+        // Применяем режим обнаружения напрямую через публичное свойство
+        #if UNITY_2022_1_OR_NEWER || UNITY_2021_1_OR_NEWER || UNITY_2020_1_OR_NEWER
         planeManager.requestedDetectionMode = detectionMode;
         #else
         // Для более старых версий AR Foundation

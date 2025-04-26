@@ -33,6 +33,101 @@ public class RuntimeARPlaneEventsHandler : MonoBehaviour
     [SerializeField]
     private Transform customTrackablesParent;
     
+    // Флаг для отслеживания, подписаны ли мы на события
+    private bool isSubscribed = false;
+    
+    /// <summary>
+    /// Публичное свойство для установки ARPlaneManager
+    /// </summary>
+    public ARPlaneManager PlaneManager
+    {
+        get { return planeManager; }
+        set
+        {
+            if (value != planeManager)
+            {
+                // Если уже есть плеймаменджер и мы подписаны на события, отписываемся
+                UnsubscribeFromEvents();
+                
+                // Устанавливаем новый плейнменеджер
+                planeManager = value;
+                
+                // Если компонент активен, подписываемся на события
+                if (isActiveAndEnabled && planeManager != null)
+                {
+                    SubscribeToEvents();
+                }
+            }
+        }
+    }
+    
+    /// <summary>
+    /// Публичное свойство для установки родительского объекта trackables
+    /// </summary>
+    public Transform CustomTrackablesParent
+    {
+        get { return customTrackablesParent; }
+        set { customTrackablesParent = value; }
+    }
+    
+    /// <summary>
+    /// Публичный метод для установки ARPlaneManager
+    /// </summary>
+    public void SetPlaneManager(ARPlaneManager manager)
+    {
+        PlaneManager = manager;
+    }
+    
+    /// <summary>
+    /// Публичный метод для установки родительского объекта trackables
+    /// </summary>
+    public void SetTrackablesParent(Transform parent)
+    {
+        customTrackablesParent = parent;
+    }
+    
+    /// <summary>
+    /// Публичные свойства для настройки цветов
+    /// </summary>
+    public Color HorizontalPlaneColor
+    {
+        get { return horizontalPlaneColor; }
+        set { horizontalPlaneColor = value; }
+    }
+    
+    public Color VerticalPlaneColor
+    {
+        get { return verticalPlaneColor; }
+        set { verticalPlaneColor = value; }
+    }
+    
+    public Color OtherPlaneColor
+    {
+        get { return otherPlaneColor; }
+        set { otherPlaneColor = value; }
+    }
+    
+    /// <summary>
+    /// Публичные свойства для настройки прозрачности
+    /// </summary>
+    public float HorizontalPlaneOpacity
+    {
+        get { return horizontalPlaneOpacity; }
+        set { horizontalPlaneOpacity = Mathf.Clamp01(value); }
+    }
+    
+    public float VerticalPlaneOpacity
+    {
+        get { return verticalPlaneOpacity; }
+        set { verticalPlaneOpacity = Mathf.Clamp01(value); }
+    }
+    
+    public float OtherPlaneOpacity
+    {
+        get { return otherPlaneOpacity; }
+        set { otherPlaneOpacity = Mathf.Clamp01(value); }
+    }
+    
     private void Awake()
     {
         // Если planeManager не назначен, ищем его в сцене
@@ -67,10 +162,29 @@ public class RuntimeARPlaneEventsHandler : MonoBehaviour
     
     private void OnEnable()
     {
-        if (planeManager != null)
+        SubscribeToEvents();
+    }
+    
+    private void OnDisable()
+    {
+        UnsubscribeFromEvents();
+    }
+    
+    private void OnDestroy()
+    {
+        // Убедимся, что мы отписались при уничтожении объекта
+        UnsubscribeFromEvents();
+    }
+    
+    /// <summary>
+    /// Подписка на события ARPlaneManager
+    /// </summary>
+    private void SubscribeToEvents()
+    {
+        if (planeManager != null && !isSubscribed)
         {
             // Убедимся, что для обнаружения включены оба типа плоскостей
-            #if UNITY_2020_1_OR_NEWER
+            #if UNITY_2020_1_OR_NEWER || UNITY_2021_1_OR_NEWER || UNITY_2022_1_OR_NEWER
             planeManager.requestedDetectionMode = PlaneDetectionMode.Horizontal | PlaneDetectionMode.Vertical;
             #else
             planeManager.detectionMode = PlaneDetectionFlags.Horizontal | PlaneDetectionFlags.Vertical;
@@ -78,17 +192,24 @@ public class RuntimeARPlaneEventsHandler : MonoBehaviour
             
             // Подписываемся на события
             planeManager.planesChanged += OnPlanesChanged;
+            isSubscribed = true;
             
             Debug.Log("RuntimeARPlaneEventsHandler: Подписка на события обнаружения плоскостей");
         }
     }
     
-    private void OnDisable()
+    /// <summary>
+    /// Отписка от событий ARPlaneManager
+    /// </summary>
+    private void UnsubscribeFromEvents()
     {
-        if (planeManager != null)
+        if (planeManager != null && isSubscribed)
         {
             // Отписываемся от событий
             planeManager.planesChanged -= OnPlanesChanged;
+            isSubscribed = false;
+            
+            Debug.Log("RuntimeARPlaneEventsHandler: Отписка от событий обнаружения плоскостей");
         }
     }
     
@@ -112,6 +233,9 @@ public class RuntimeARPlaneEventsHandler : MonoBehaviour
                 ConfigurePlane(plane);
             }
         }
+        
+        // Также можно обрабатывать удаленные плоскости, если нужно
+        // if (args.removed != null && args.removed.Count > 0) { ... }
     }
     
     /// <summary>

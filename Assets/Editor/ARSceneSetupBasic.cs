@@ -201,21 +201,46 @@ public class ARSceneSetupBasic : EditorWindow
                         #endif
                     }
                     
-                    // Используем метод из System.Reflection для установки приватного поля planeManager 
-                    // Это гарантирует, что даже если имя поля изменится, мы сможем его найти
-                    var field = typeof(ARPlaneDetectionController).GetField("planeManager", 
-                                    System.Reflection.BindingFlags.Instance | 
-                                    System.Reflection.BindingFlags.NonPublic);
+                    // Напрямую назначаем ссылки через публичные свойства, если они есть
+                    var planeManagerProperty = typeof(ARPlaneDetectionController).GetProperty("PlaneManager", 
+                                    System.Reflection.BindingFlags.Public | 
+                                    System.Reflection.BindingFlags.Instance);
                     
-                    if (field != null)
+                    if (planeManagerProperty != null && planeManagerProperty.CanWrite)
                     {
-                        field.SetValue(planeDetectionController, planeManager);
-                        Debug.Log("ARPlaneManager reference set on ARPlaneDetectionController");
+                        // Используем публичный сеттер, если он есть
+                        planeManagerProperty.SetValue(planeDetectionController, planeManager);
+                        Debug.Log("ARPlaneManager reference set on ARPlaneDetectionController via public property");
                     }
                     else
                     {
-                        // Если рефлексия не сработала, выдаем предупреждение
-                        Debug.LogWarning("ARPlaneDetectionController не удалось автоматически установить planeManager через рефлексию. Пожалуйста, назначьте его вручную в инспекторе.");
+                        // Добавим публичный метод для установки менеджера плоскостей в ARPlaneDetectionController
+                        var setManagerMethod = typeof(ARPlaneDetectionController).GetMethod("SetPlaneManager", 
+                                              System.Reflection.BindingFlags.Public | 
+                                              System.Reflection.BindingFlags.Instance);
+                        
+                        if (setManagerMethod != null)
+                        {
+                            setManagerMethod.Invoke(planeDetectionController, new object[] { planeManager });
+                            Debug.Log("ARPlaneManager reference set on ARPlaneDetectionController via SetPlaneManager method");
+                        }
+                        else
+                        {
+                            // Последний вариант - через приватное поле
+                            var field = typeof(ARPlaneDetectionController).GetField("planeManager", 
+                                            System.Reflection.BindingFlags.Instance | 
+                                            System.Reflection.BindingFlags.NonPublic);
+                            
+                            if (field != null)
+                            {
+                                field.SetValue(planeDetectionController, planeManager);
+                                Debug.Log("ARPlaneManager reference set on ARPlaneDetectionController via private field");
+                            }
+                            else
+                            {
+                                Debug.LogWarning("ARPlaneDetectionController не удалось автоматически установить planeManager. Пожалуйста, назначьте его вручную в инспекторе.");
+                            }
+                        }
                     }
                     
                     // Создаем также обработчик событий для плоскостей во время выполнения
@@ -225,15 +250,45 @@ public class ARSceneSetupBasic : EditorWindow
                     {
                         var runtimeHandler = runtimeHandlerObj.AddComponent<RuntimeARPlaneEventsHandler>();
                         
-                        // Назначаем ссылку на ARPlaneManager
-                        var runtimeField = typeof(RuntimeARPlaneEventsHandler).GetField("planeManager", 
-                                        System.Reflection.BindingFlags.Instance | 
-                                        System.Reflection.BindingFlags.NonPublic);
+                        // Напрямую назначаем ссылки через публичные методы или свойства, если они есть
+                        var setPlaneManagerMethod = typeof(RuntimeARPlaneEventsHandler).GetMethod("SetPlaneManager", 
+                                              System.Reflection.BindingFlags.Public | 
+                                              System.Reflection.BindingFlags.Instance);
                         
-                        if (runtimeField != null)
+                        if (setPlaneManagerMethod != null)
                         {
-                            runtimeField.SetValue(runtimeHandler, planeManager);
-                            Debug.Log("Added RuntimeARPlaneEventsHandler with planeManager reference");
+                            setPlaneManagerMethod.Invoke(runtimeHandler, new object[] { planeManager });
+                            Debug.Log("ARPlaneManager reference set on RuntimeARPlaneEventsHandler via SetPlaneManager method");
+                        }
+                        else
+                        {
+                            // Пытаемся через публичное свойство
+                            var runtimePlaneManagerProperty = typeof(RuntimeARPlaneEventsHandler).GetProperty("PlaneManager", 
+                                            System.Reflection.BindingFlags.Public | 
+                                            System.Reflection.BindingFlags.Instance);
+                            
+                            if (runtimePlaneManagerProperty != null && runtimePlaneManagerProperty.CanWrite)
+                            {
+                                runtimePlaneManagerProperty.SetValue(runtimeHandler, planeManager);
+                                Debug.Log("ARPlaneManager reference set on RuntimeARPlaneEventsHandler via public property");
+                            }
+                            else
+                            {
+                                // Последний вариант - через приватное поле
+                                var runtimeField = typeof(RuntimeARPlaneEventsHandler).GetField("planeManager", 
+                                                System.Reflection.BindingFlags.Instance | 
+                                                System.Reflection.BindingFlags.NonPublic);
+                                
+                                if (runtimeField != null)
+                                {
+                                    runtimeField.SetValue(runtimeHandler, planeManager);
+                                    Debug.Log("ARPlaneManager reference set on RuntimeARPlaneEventsHandler via private field");
+                                }
+                                else
+                                {
+                                    Debug.LogWarning("RuntimeARPlaneEventsHandler не удалось автоматически установить planeManager. Пожалуйста, назначьте его вручную в инспекторе.");
+                                }
+                            }
                         }
                         
                         // Если в сцене есть AR Plane Visualizer, назначаем его Trackables
@@ -243,14 +298,41 @@ public class ARSceneSetupBasic : EditorWindow
                             Transform trackables = visualizer.transform.Find("Trackables");
                             if (trackables != null)
                             {
-                                var trackablesField = typeof(RuntimeARPlaneEventsHandler).GetField("customTrackablesParent", 
-                                                System.Reflection.BindingFlags.Instance | 
-                                                System.Reflection.BindingFlags.NonPublic);
+                                // Пытаемся через публичный метод
+                                var setTrackablesParentMethod = typeof(RuntimeARPlaneEventsHandler).GetMethod("SetTrackablesParent", 
+                                                      System.Reflection.BindingFlags.Public | 
+                                                      System.Reflection.BindingFlags.Instance);
                                 
-                                if (trackablesField != null)
+                                if (setTrackablesParentMethod != null)
                                 {
-                                    trackablesField.SetValue(runtimeHandler, trackables);
-                                    Debug.Log("Set Trackables parent on RuntimeARPlaneEventsHandler");
+                                    setTrackablesParentMethod.Invoke(runtimeHandler, new object[] { trackables });
+                                    Debug.Log("Set Trackables parent on RuntimeARPlaneEventsHandler via SetTrackablesParent method");
+                                }
+                                else
+                                {
+                                    // Пытаемся через публичное свойство
+                                    var trackablesProperty = typeof(RuntimeARPlaneEventsHandler).GetProperty("CustomTrackablesParent", 
+                                                    System.Reflection.BindingFlags.Public | 
+                                                    System.Reflection.BindingFlags.Instance);
+                                    
+                                    if (trackablesProperty != null && trackablesProperty.CanWrite)
+                                    {
+                                        trackablesProperty.SetValue(runtimeHandler, trackables);
+                                        Debug.Log("Set Trackables parent on RuntimeARPlaneEventsHandler via public property");
+                                    }
+                                    else
+                                    {
+                                        // Последний вариант - через приватное поле
+                                        var trackablesField = typeof(RuntimeARPlaneEventsHandler).GetField("customTrackablesParent", 
+                                                        System.Reflection.BindingFlags.Instance | 
+                                                        System.Reflection.BindingFlags.NonPublic);
+                                        
+                                        if (trackablesField != null)
+                                        {
+                                            trackablesField.SetValue(runtimeHandler, trackables);
+                                            Debug.Log("Set Trackables parent on RuntimeARPlaneEventsHandler via private field");
+                                        }
+                                    }
                                 }
                             }
                         }
