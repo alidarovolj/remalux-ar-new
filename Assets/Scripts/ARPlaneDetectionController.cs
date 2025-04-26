@@ -16,6 +16,10 @@ public class ARPlaneDetectionController : MonoBehaviour
     [SerializeField]
     private bool enableHorizontalPlanes = true;
     
+    [Tooltip("Включает детальное логирование в консоль, отключите для релизных билдов")]
+    [SerializeField]
+    private bool enableDetailedLogging = true;
+    
     /// <summary>
     /// Публичное свойство для установки ARPlaneManager
     /// </summary>
@@ -74,11 +78,51 @@ public class ARPlaneDetectionController : MonoBehaviour
     }
     
     /// <summary>
+    /// Публичное свойство для включения/отключения логирования
+    /// </summary>
+    public bool EnableDetailedLogging
+    {
+        get { return enableDetailedLogging; }
+        set { enableDetailedLogging = value; }
+    }
+    
+    /// <summary>
     /// Публичный метод для установки ARPlaneManager извне
     /// </summary>
     public void SetPlaneManager(ARPlaneManager manager)
     {
         PlaneManager = manager;
+    }
+    
+    /// <summary>
+    /// Логирование с возможностью отключения
+    /// </summary>
+    private void LogInfo(string message)
+    {
+        if (enableDetailedLogging)
+        {
+            Debug.Log(message);
+        }
+    }
+    
+    /// <summary>
+    /// Логирование предупреждений с возможностью отключения
+    /// </summary>
+    private void LogWarning(string message)
+    {
+        if (enableDetailedLogging)
+        {
+            Debug.LogWarning(message);
+        }
+    }
+    
+    /// <summary>
+    /// Логирование ошибок (всегда активно)
+    /// </summary>
+    private void LogError(string message)
+    {
+        // Ошибки логируем всегда, даже при отключенном детальном логировании
+        Debug.LogError(message);
     }
     
     void Awake()
@@ -91,10 +135,15 @@ public class ARPlaneDetectionController : MonoBehaviour
         
         if (planeManager == null)
         {
-            Debug.LogWarning("ARPlaneDetectionController: ARPlaneManager не найден в сцене");
+            LogWarning("ARPlaneDetectionController: ARPlaneManager не найден в сцене");
             enabled = false;
             return;
         }
+        
+        // Автоматически отключаем детальное логирование в билде
+        #if !UNITY_EDITOR && (UNITY_ANDROID || UNITY_IOS)
+        enableDetailedLogging = false;
+        #endif
     }
     
     void Start()
@@ -145,6 +194,6 @@ public class ARPlaneDetectionController : MonoBehaviour
         if (enableHorizontalPlanes) enabledPlanes += "горизонтальных ";
         if (enableVerticalPlanes) enabledPlanes += "вертикальных ";
         
-        Debug.Log($"ARPlaneDetectionController: Установлен режим обнаружения {enabledPlanes}плоскостей");
+        LogInfo($"ARPlaneDetectionController: Установлен режим обнаружения {enabledPlanes}плоскостей");
     }
 } 

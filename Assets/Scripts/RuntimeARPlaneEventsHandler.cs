@@ -33,6 +33,10 @@ public class RuntimeARPlaneEventsHandler : MonoBehaviour
     [SerializeField]
     private Transform customTrackablesParent;
     
+    [Tooltip("Включает детальное логирование в консоль, отключите для релизных билдов")]
+    [SerializeField]
+    private bool enableDetailedLogging = true;
+    
     // Флаг для отслеживания, подписаны ли мы на события
     private bool isSubscribed = false;
     
@@ -59,6 +63,15 @@ public class RuntimeARPlaneEventsHandler : MonoBehaviour
                 }
             }
         }
+    }
+    
+    /// <summary>
+    /// Публичное свойство для включения/отключения логирования
+    /// </summary>
+    public bool EnableDetailedLogging
+    {
+        get { return enableDetailedLogging; }
+        set { enableDetailedLogging = value; }
     }
     
     /// <summary>
@@ -128,6 +141,37 @@ public class RuntimeARPlaneEventsHandler : MonoBehaviour
         set { otherPlaneOpacity = Mathf.Clamp01(value); }
     }
     
+    /// <summary>
+    /// Логирование с возможностью отключения
+    /// </summary>
+    private void LogInfo(string message)
+    {
+        if (enableDetailedLogging)
+        {
+            Debug.Log(message);
+        }
+    }
+    
+    /// <summary>
+    /// Логирование предупреждений с возможностью отключения
+    /// </summary>
+    private void LogWarning(string message)
+    {
+        if (enableDetailedLogging)
+        {
+            Debug.LogWarning(message);
+        }
+    }
+    
+    /// <summary>
+    /// Логирование ошибок (всегда активно)
+    /// </summary>
+    private void LogError(string message)
+    {
+        // Ошибки логируем всегда, даже при отключенном детальном логировании
+        Debug.LogError(message);
+    }
+    
     private void Awake()
     {
         // Если planeManager не назначен, ищем его в сцене
@@ -137,7 +181,7 @@ public class RuntimeARPlaneEventsHandler : MonoBehaviour
             
             if (planeManager == null)
             {
-                Debug.LogError("RuntimeARPlaneEventsHandler: ARPlaneManager не найден. Компонент будет отключен.");
+                LogError("RuntimeARPlaneEventsHandler: ARPlaneManager не найден. Компонент будет отключен.");
                 enabled = false;
                 return;
             }
@@ -158,6 +202,11 @@ public class RuntimeARPlaneEventsHandler : MonoBehaviour
                 customTrackablesParent = newTrackables.transform;
             }
         }
+        
+        // Автоматически отключаем детальное логирование в билде
+        #if !UNITY_EDITOR && (UNITY_ANDROID || UNITY_IOS)
+        enableDetailedLogging = false;
+        #endif
     }
     
     private void OnEnable()
@@ -194,7 +243,7 @@ public class RuntimeARPlaneEventsHandler : MonoBehaviour
             planeManager.planesChanged += OnPlanesChanged;
             isSubscribed = true;
             
-            Debug.Log("RuntimeARPlaneEventsHandler: Подписка на события обнаружения плоскостей");
+            LogInfo("RuntimeARPlaneEventsHandler: Подписка на события обнаружения плоскостей");
         }
     }
     
@@ -209,7 +258,7 @@ public class RuntimeARPlaneEventsHandler : MonoBehaviour
             planeManager.planesChanged -= OnPlanesChanged;
             isSubscribed = false;
             
-            Debug.Log("RuntimeARPlaneEventsHandler: Отписка от событий обнаружения плоскостей");
+            LogInfo("RuntimeARPlaneEventsHandler: Отписка от событий обнаружения плоскостей");
         }
     }
     
