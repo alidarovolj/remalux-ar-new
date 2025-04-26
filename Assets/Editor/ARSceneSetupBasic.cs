@@ -181,7 +181,16 @@ public class ARSceneSetupBasic : EditorWindow
                 
                 // Создаем контроллер для обеспечения обнаружения вертикальных плоскостей при запуске
                 GameObject planeDetectionControllerObj = new GameObject("AR Plane Detection Controller");
-                planeDetectionControllerObj.AddComponent<ARPlaneDetectionController>();
+                var planeDetectionController = planeDetectionControllerObj.AddComponent<ARPlaneDetectionController>();
+                
+                // Теперь используем ссылку на ARPlaneManager из XROrigin
+                if (xrOrigin != null)
+                {
+                    ARPlaneManager planeManager = xrOrigin.GetComponent<ARPlaneManager>();
+                    // Оставляем возможность настройки ссылки через инспектор
+                    // Поле planeManager установится вручную через инспектор, если нужно
+                }
+                
                 Debug.Log("Added AR Plane Detection Controller to ensure vertical plane detection");
                 
                 Selection.activeGameObject = xrSessionOrigin;
@@ -870,55 +879,148 @@ public class ARSceneSetupBasic : EditorWindow
                         // Настраиваем ARPlaneManager, чтобы использовать этот объект для визуализации
                         if (planeManager != null)
                         {
-                            // Загружаем префаб для плоскостей (горизонтальных и вертикальных)
-                            GameObject defaultPlanePrefab = Resources.Load<GameObject>("Prefabs/DefaultARPlane");
-                            if (defaultPlanePrefab == null)
+                            // Проверяем наличие префаба
+                            bool prefabFound = false;
+                            
+                            // Проверяем существование папки Resources/Prefabs
+                            if (AssetDatabase.IsValidFolder("Assets/Resources/Prefabs"))
                             {
-                                // Если префаб не найден, создаем простой префаб
-                                defaultPlanePrefab = new GameObject("DefaultARPlane");
-                                defaultPlanePrefab.AddComponent<ARPlaneMeshVisualizer>();
-                                var meshRenderer = defaultPlanePrefab.AddComponent<MeshRenderer>();
-                                meshRenderer.sharedMaterial = new Material(Shader.Find("AR/PlaneWithTexture"));
-                                defaultPlanePrefab.AddComponent<MeshFilter>();
-                                defaultPlanePrefab.AddComponent<BoxCollider>();
+                                // Загружаем префаб для плоскостей (горизонтальных и вертикальных)
+                                GameObject defaultPlanePrefab = Resources.Load<GameObject>("Prefabs/DefaultARPlane");
+                                prefabFound = defaultPlanePrefab != null;
+                                
+                                if (prefabFound)
+                                {
+                                    planeManager.planePrefab = defaultPlanePrefab;
+                                    Debug.Log("Found and assigned DefaultARPlane prefab from Resources/Prefabs");
+                                }
+                            }
+                            else
+                            {
+                                Debug.LogWarning("Resources/Prefabs folder not found. Will create default plane prefab.");
                             }
                             
-                            planeManager.planePrefab = defaultPlanePrefab;
+                            // Если префаб не найден, создаем простой префаб
+                            if (!prefabFound)
+                            {
+                                // Создаем простой префаб для плоскостей
+                                GameObject newPlanePrefab = new GameObject("DefaultARPlane");
+                                newPlanePrefab.AddComponent<ARPlaneMeshVisualizer>();
+                                var meshFilter = newPlanePrefab.AddComponent<MeshFilter>();
+                                var meshRenderer = newPlanePrefab.AddComponent<MeshRenderer>();
+                                
+                                // Проверяем, существует ли шейдер
+                                Shader planeShader = Shader.Find("AR/PlaneWithTexture");
+                                if (planeShader != null)
+                                {
+                                    meshRenderer.sharedMaterial = new Material(planeShader);
+                                    Debug.Log("Found AR/PlaneWithTexture shader and assigned to plane material");
+                                }
+                                else
+                                {
+                                    // Используем стандартный шейдер, если специального нет
+                                    meshRenderer.sharedMaterial = new Material(Shader.Find("Standard"));
+                                    Debug.LogWarning("AR/PlaneWithTexture shader not found. Using Standard shader instead.");
+                                }
+                                
+                                newPlanePrefab.AddComponent<BoxCollider>();
+                                
+                                // Сохраняем новый префаб, если есть папка Resources
+                                if (AssetDatabase.IsValidFolder("Assets/Resources"))
+                                {
+                                    // Проверяем наличие папки Prefabs в Resources
+                                    if (!AssetDatabase.IsValidFolder("Assets/Resources/Prefabs"))
+                                    {
+                                        AssetDatabase.CreateFolder("Assets/Resources", "Prefabs");
+                                    }
+                                    
+                                    // Сохраняем префаб
+                                    string prefabPath = "Assets/Resources/Prefabs/DefaultARPlane.prefab";
+                                    
+                                    // Сначала делаем префаб временным объектом на сцене
+                                    GameObject tempPrefab = Object.Instantiate(newPlanePrefab);
+                                    
+                                    // Создаем или перезаписываем файл префаба
+                                    bool success = false;
+                                    try 
+                                    {
+                                        #if UNITY_2018_3_OR_NEWER
+                                        GameObject createdPrefab = PrefabUtility.SaveAsPrefabAsset(tempPrefab, prefabPath);
+                                        success = createdPrefab != null;
+                                        #else
+                                        success = PrefabUtility.CreatePrefab(prefabPath, tempPrefab);
+                                        #endif
+                                    }
+                                    catch (System.Exception e)
+                                    {
+                                        Debug.LogError($"Failed to save plane prefab: {e.Message}");
+                                    }
+                                    
+                                    // Удаляем временный объект
+                                    Object.DestroyImmediate(tempPrefab);
+                                    
+                                    if (success)
+                                    {
+                                        // Загружаем созданный префаб из ресурсов
+                                        GameObject savedPrefab = Resources.Load<GameObject>("Prefabs/DefaultARPlane");
+                                        if (savedPrefab != null)
+                                        {
+                                            planeManager.planePrefab = savedPrefab;
+                                            Debug.Log("Created and saved DefaultARPlane prefab to Resources/Prefabs");
+                                        }
+                                    }
+                                    else 
+                                    {
+                                        planeManager.planePrefab = newPlanePrefab;
+                                        Debug.LogWarning("Failed to save prefab. Using temporary prefab instead.");
+                                    }
+                                }
+                                else
+                                {
+                                    planeManager.planePrefab = newPlanePrefab;
+                                    Debug.LogWarning("Resources folder not found. Using temporary prefab.");
+                                }
+                            }
                             
-                            // Trackables уже создаются автоматически ARPlaneManager
-                            // Создаем новый подход для связывания визуализатора с плоскостями
+                            Debug.Log("Configured AR Plane Manager with plane prefab");
                             
                             // Добавим обработчик события добавления плоскости
                             EditorApplication.delayCall += () => {
                                 try {
-                                    // Находим ARPlaneManager снова, на случай если он был пересоздан
-                                    var pm = FindFirstObjectByType<ARPlaneManager>();
+                                    // Находим ARPlaneManager снова
+                                    var pm = FindObjectOfType<ARPlaneManager>();
                                     if (pm != null)
                                     {
                                         // Добавляем компонент, обрабатывающий события добавления плоскостей
                                         GameObject planeEventsHandler = new GameObject("PlaneEventsHandler");
                                         planeEventsHandler.transform.SetParent(visualizerObj.transform, false);
                                         
-                                        // Используем SafeAddComponent для добавления обработчика событий
-                                        Type handlerType = Type.GetType("ARPlaneEventsHandler, Assembly-CSharp");
-                                        if (handlerType != null)
+                                        // Проверяем доступность типа ARPlaneEventsHandler
+                                        try
                                         {
-                                            planeEventsHandler.AddComponent(handlerType);
+                                            var handlerType = System.Type.GetType("ARPlaneEventsHandler, Assembly-CSharp");
+                                            if (handlerType != null)
+                                            {
+                                                planeEventsHandler.AddComponent(handlerType);
+                                                Debug.Log("Added ARPlaneEventsHandler component from Assembly-CSharp");
+                                            }
+                                            else
+                                            {
+                                                // Пробуем добавить напрямую по имени класса
+                                                try 
+                                                {
+                                                    planeEventsHandler.AddComponent<ARPlaneEventsHandler>();
+                                                    Debug.Log("Added ARPlaneEventsHandler component directly");
+                                                }
+                                                catch (System.Exception)
+                                                {
+                                                    Debug.LogWarning("ARPlaneEventsHandler type not available, plane events handling might not work properly");
+                                                }
+                                            }
                                         }
-                                        else
+                                        catch (System.Exception e)
                                         {
-                                            Debug.Log("ARPlaneEventsHandler type not found, setup will continue without it");
-                                            
-                                            // Если не нашли тип, пробуем добавить напрямую
-                                            try 
-                                            {
-                                                var eventsHandler = planeEventsHandler.AddComponent<ARPlaneEventsHandler>();
-                                                Debug.Log("Successfully added ARPlaneEventsHandler component directly");
-                                            }
-                                            catch (System.Exception ex)
-                                            {
-                                                Debug.LogWarning($"Could not add ARPlaneEventsHandler component directly: {ex.Message}");
-                                            }
+                                            Debug.LogError($"Error adding plane events handler: {e.Message}");
                                         }
                                     }
                                 }
@@ -927,8 +1029,6 @@ public class ARSceneSetupBasic : EditorWindow
                                     Debug.LogError($"Failed to setup plane events handler: {e.Message}");
                                 }
                             };
-                            
-                            Debug.Log("Configured AR Plane Manager to use AR Plane Visualizer");
                         }
                     }
                 }
@@ -964,36 +1064,4 @@ public class BasicARMeshManagerCheckerStarter : MonoBehaviour
         // но будет использован для создания ARMeshManagerChecker при запуске игры
         }
     }
-
-/// <summary>
-/// Компонент, обеспечивающий правильную настройку обнаружения плоскостей при запуске игры
-/// </summary>
-public class ARPlaneDetectionController : MonoBehaviour
-{
-    private ARPlaneManager planeManager;
-    
-    void Start()
-    {
-        // Находим ARPlaneManager в сцене
-        planeManager = FindFirstObjectByType<ARPlaneManager>();
-        
-        if (planeManager != null)
-        {
-            // Устанавливаем режим обнаружения на горизонтальные и вертикальные плоскости
-            #if UNITY_2020_1_OR_NEWER
-            planeManager.requestedDetectionMode = UnityEngine.XR.ARSubsystems.PlaneDetectionMode.Horizontal | 
-                                                 UnityEngine.XR.ARSubsystems.PlaneDetectionMode.Vertical;
-            #else
-            planeManager.detectionMode = UnityEngine.XR.ARSubsystems.PlaneDetectionFlags.Horizontal | 
-                                       UnityEngine.XR.ARSubsystems.PlaneDetectionFlags.Vertical;
-            #endif
-            
-            Debug.Log("ARPlaneDetectionController: Установлен режим обнаружения горизонтальных и вертикальных плоскостей");
-        }
-        else
-        {
-            Debug.LogWarning("ARPlaneDetectionController: ARPlaneManager не найден в сцене");
-        }
-    }
-}
 } // namespace ARSceneSetupUtils 
