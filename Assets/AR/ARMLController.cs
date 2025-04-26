@@ -60,6 +60,16 @@ public class ARMLController : MonoBehaviour
     private EnhancedDeepLabPredictor enhancedPredictor;
     
     /// <summary>
+    /// The segmentation manager
+    /// </summary>
+    private SegmentationManager segmentationManager;
+    
+    /// <summary>
+    /// The mask processor
+    /// </summary>
+    private MaskProcessor maskProcessor;
+    
+    /// <summary>
     /// Indicates if AR has been started
     /// </summary>
     private bool arStarted = false;
@@ -74,6 +84,12 @@ public class ARMLController : MonoBehaviour
     /// </summary>
     private bool waitingForSession = false;
 
+    private void Awake()
+    {
+        // Try to find all required references at startup
+        FindMissingReferences();
+    }
+
     private void Start()
     {
         // Validate references when component starts
@@ -86,6 +102,81 @@ public class ARMLController : MonoBehaviour
         if (isRunning)
         {
             UpdateML();
+        }
+    }
+
+    /// <summary>
+    /// Finds any missing references automatically
+    /// </summary>
+    private void FindMissingReferences()
+    {
+        // Find MLManager
+        if (mlManager == null)
+        {
+            mlManager = FindObjectOfType<MLManager>();
+            if (mlManager != null && debugMode)
+                Debug.Log("ARMLController: Found MLManager automatically");
+        }
+
+        // Find ARCameraManager
+        if (cameraManager == null)
+        {
+            // First try to find it through XROrigin's camera
+            var xrOrigin = FindObjectOfType<Unity.XR.CoreUtils.XROrigin>();
+            if (xrOrigin != null && xrOrigin.Camera != null)
+            {
+                cameraManager = xrOrigin.Camera.GetComponent<ARCameraManager>();
+                if (cameraManager != null && debugMode)
+                    Debug.Log("ARMLController: Found ARCameraManager on XROrigin camera");
+            }
+            
+            // Fallback to generic search
+            if (cameraManager == null)
+            {
+                cameraManager = FindObjectOfType<ARCameraManager>();
+                if (cameraManager != null && debugMode)
+                    Debug.Log("ARMLController: Found ARCameraManager in scene");
+            }
+        }
+        
+        // Find ARSession
+        if (arSession == null)
+        {
+            arSession = FindObjectOfType<ARSession>();
+            if (arSession != null && debugMode)
+                Debug.Log("ARMLController: Found ARSession in scene");
+        }
+        
+        // Find ARPlaneManager
+        if (arPlaneManager == null)
+        {
+            arPlaneManager = FindObjectOfType<ARPlaneManager>();
+            if (arPlaneManager != null && debugMode)
+                Debug.Log("ARMLController: Found ARPlaneManager in scene");
+        }
+        
+        // Find SegmentationManager
+        if (segmentationManager == null)
+        {
+            segmentationManager = FindObjectOfType<SegmentationManager>();
+            if (segmentationManager != null && debugMode)
+                Debug.Log("ARMLController: Found SegmentationManager in scene");
+        }
+        
+        // Find MaskProcessor
+        if (maskProcessor == null)
+        {
+            maskProcessor = FindObjectOfType<MaskProcessor>();
+            if (maskProcessor != null && debugMode)
+                Debug.Log("ARMLController: Found MaskProcessor in scene");
+        }
+        
+        // Find EnhancedDeepLabPredictor if we're using it
+        if (useEnhancedPredictor && enhancedPredictor == null)
+        {
+            enhancedPredictor = FindObjectOfType<EnhancedDeepLabPredictor>();
+            if (enhancedPredictor != null && debugMode)
+                Debug.Log("ARMLController: Found EnhancedDeepLabPredictor in scene");
         }
     }
 
@@ -332,32 +423,65 @@ public class ARMLController : MonoBehaviour
     /// <returns>True if all references are valid, false otherwise</returns>
     private bool ValidateReferences()
     {
+        bool allReferencesValid = true;
+        
         // Try to find references if they're missing
         if (mlManager == null)
         {
             mlManager = FindObjectOfType<MLManager>();
-            if (mlManager == null && debugMode)
+            if (mlManager == null)
             {
-                Debug.LogWarning("ARMLController: MLManager reference is missing");
-                return false;
+                if (Time.frameCount % 300 == 0 || debugMode) // Log less frequently
+                    Debug.LogWarning("ARMLController: MLManager reference is missing");
+                allReferencesValid = false;
             }
         }
 
         if (cameraManager == null)
         {
             cameraManager = FindObjectOfType<ARCameraManager>();
-            if (cameraManager == null && debugMode)
+            if (cameraManager == null)
             {
-                Debug.LogWarning("ARMLController: ARCameraManager reference is missing");
-                return false;
+                if (Time.frameCount % 300 == 0 || debugMode)
+                    Debug.LogWarning("ARMLController: ARCameraManager reference is missing");
+                allReferencesValid = false;
             }
         }
         
         if (arSession == null)
         {
             arSession = FindObjectOfType<ARSession>();
+            if (arSession == null)
+            {
+                if (Time.frameCount % 300 == 0 || debugMode)
+                    Debug.LogWarning("ARMLController: ARSession reference is missing");
+                allReferencesValid = false;
+            }
         }
         
+        if (segmentationManager == null)
+        {
+            segmentationManager = FindObjectOfType<SegmentationManager>();
+            if (segmentationManager == null)
+            {
+                if (Time.frameCount % 300 == 0 || debugMode)
+                    Debug.LogWarning("ARMLController: SegmentationManager reference is missing");
+                allReferencesValid = false;
+            }
+        }
+        
+        if (maskProcessor == null)
+        {
+            maskProcessor = FindObjectOfType<MaskProcessor>();
+            if (maskProcessor == null && debugMode)
+            {
+                if (Time.frameCount % 300 == 0 || debugMode)
+                    Debug.LogWarning("ARMLController: MaskProcessor reference is missing");
+                // Optional - don't fail validation for this
+            }
+        }
+        
+        // For ARPlaneManager, just try to find it but don't fail validation
         if (arPlaneManager == null)
         {
             arPlaneManager = FindObjectOfType<ARPlaneManager>();
@@ -366,20 +490,23 @@ public class ARMLController : MonoBehaviour
         // If we depend on the enhanced predictor, ensure it exists
         if (useEnhancedPredictor && enhancedPredictor == null)
         {
-            // Try to get it from the MLManager
-            if (mlManager != null)
-            {
-                enhancedPredictor = mlManager.GetComponent<EnhancedDeepLabPredictor>();
-            }
+            // Try to get it from scene
+            enhancedPredictor = FindObjectOfType<EnhancedDeepLabPredictor>();
             
             // If still null, log warning
-            if (enhancedPredictor == null && debugMode)
+            if (enhancedPredictor == null)
             {
-                Debug.LogWarning("ARMLController: EnhancedDeepLabPredictor reference is missing");
-                // Don't return false here as we can still work with the standard predictor
+                if (Time.frameCount % 300 == 0 || debugMode)
+                    Debug.LogWarning("ARMLController: EnhancedDeepLabPredictor reference is missing");
+                
+                // Only fail validation if we're explicitly using enhanced predictor
+                if (useEnhancedPredictor)
+                {
+                    allReferencesValid = false;
+                }
             }
         }
 
-        return mlManager != null && cameraManager != null;
+        return allReferencesValid;
     }
 } 

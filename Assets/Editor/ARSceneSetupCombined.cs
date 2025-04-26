@@ -498,6 +498,25 @@ public class ARSceneSetupAllInOne : EditorWindow
                 }
             }
             
+            // Ensure it has the correct model.onnx assigned
+            // Look for model asset reference and set it if available
+            NNModel modelAsset = FindModelAsset();
+            if (modelAsset != null)
+            {
+                FieldInfo modelField = enhancedType.GetField("modelAsset", 
+                    BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
+                    
+                if (modelField != null)
+                {
+                    NNModel currentModel = modelField.GetValue(existingPredictor) as NNModel;
+                    if (currentModel == null || !currentModel.name.Contains("model"))
+                    {
+                        modelField.SetValue(existingPredictor, modelAsset);
+                        Debug.Log($"Updated model asset on existing EnhancedDeepLabPredictor to: {modelAsset.name}");
+                    }
+                }
+            }
+            
             return true;
         }
         
@@ -533,7 +552,32 @@ public class ARSceneSetupAllInOne : EditorWindow
                 {
                     modelField.SetValue(predictor, modelAsset);
                     Debug.Log($"Set model asset on EnhancedDeepLabPredictor: {modelAsset.name}");
+                    
+                    // If model is not named "model.onnx", provide a warning
+                    if (!modelAsset.name.Contains("model"))
+                    {
+                        Debug.LogWarning($"The model '{modelAsset.name}' is being used, but 'model.onnx' is the only fully supported model for this project. This may cause issues with wall detection.");
+                    }
                 }
+            }
+            else
+            {
+                Debug.LogError("No model.onnx found in the project. AR wall detection will not work properly.");
+            }
+            
+            // Set additional properties
+            PropertyInfo classIDProp = enhancedType.GetProperty("WallClassId");
+            if (classIDProp != null && classIDProp.CanWrite)
+            {
+                classIDProp.SetValue(predictor, (byte)9); // ADE20K wall class ID
+                Debug.Log("Set WallClassId to 9 (ADE20K wall class)");
+            }
+            
+            PropertyInfo thresholdProp = enhancedType.GetProperty("ClassificationThreshold");
+            if (thresholdProp != null && thresholdProp.CanWrite)
+            {
+                thresholdProp.SetValue(predictor, 0.5f); // Default threshold
+                Debug.Log("Set ClassificationThreshold to 0.5");
             }
             
             Debug.Log("Successfully created EnhancedDeepLabPredictor");
@@ -648,6 +692,18 @@ public class ARSceneSetupAllInOne : EditorWindow
             }
         }
         
+        // Check also in specific ML folder path
+        string specificPath = "Assets/ML/Models/model.onnx";
+        if (System.IO.File.Exists(specificPath))
+        {
+            modelAsset = UnityEditor.AssetDatabase.LoadAssetAtPath<NNModel>(specificPath);
+            if (modelAsset != null)
+            {
+                Debug.Log($"Found model.onnx at specific path: {specificPath}");
+                return modelAsset;
+            }
+        }
+        
         // If we couldn't find the exact "model.onnx", look for any ONNX model as fallback
         if (modelAsset == null)
         {
@@ -666,9 +722,26 @@ public class ARSceneSetupAllInOne : EditorWindow
             }
         }
         
+        // Last resort - look for ANY onnx model
         if (modelAsset == null)
         {
-            Debug.LogError("Could not find model.onnx asset in the project. Please ensure you have a model.onnx file imported.");
+            string[] anyOnnxAssets = UnityEditor.AssetDatabase.FindAssets("t:NNModel");
+            if (anyOnnxAssets.Length > 0)
+            {
+                string path = UnityEditor.AssetDatabase.GUIDToAssetPath(anyOnnxAssets[0]);
+                modelAsset = UnityEditor.AssetDatabase.LoadAssetAtPath<NNModel>(path);
+                if (modelAsset != null)
+                {
+                    Debug.LogWarning($"Could not find model.onnx - using first available ONNX model: {path}");
+                    Debug.LogWarning("This may cause issues with wall detection. Consider renaming this model to 'model.onnx'");
+                    return modelAsset;
+                }
+            }
+        }
+        
+        if (modelAsset == null)
+        {
+            Debug.LogError("Could not find any ONNX model asset in the project. Please ensure you have a model.onnx file imported.");
         }
         return modelAsset;
         #else
