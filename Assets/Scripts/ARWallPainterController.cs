@@ -63,7 +63,7 @@ public class ARWallPainterController : MonoBehaviour
         
         if (segmentationManager != null)
         {
-            segmentationManager.OnSegmentationCompleted += OnSegmentationCompleted;
+            segmentationManager.OnSegmentationCompleted += HandleSegmentationTexture;
         }
         
         if (maskProcessor != null)
@@ -82,7 +82,7 @@ public class ARWallPainterController : MonoBehaviour
         
         if (segmentationManager != null)
         {
-            segmentationManager.OnSegmentationCompleted -= OnSegmentationCompleted;
+            segmentationManager.OnSegmentationCompleted -= HandleSegmentationTexture;
         }
         
         if (maskProcessor != null)
@@ -129,8 +129,9 @@ public class ARWallPainterController : MonoBehaviour
         // Restore previous render texture
         RenderTexture.active = currentRT;
         
-        // Send to segmentation
-        segmentationManager.ProcessCameraFrame(_cameraTexture);
+        // Send to segmentation with target resolution parameter
+        Vector2Int targetResolution = new Vector2Int(captureWidth, captureHeight);
+        segmentationManager.ProcessCameraFrame(_cameraTexture, targetResolution);
         
         // Clean up
         cameraRT.Release();
@@ -154,10 +155,12 @@ public class ARWallPainterController : MonoBehaviour
     }
     
     /// <summary>
-    /// Called when segmentation is completed
+    /// Called when segmentation is completed (using the new Texture2D signature)
     /// </summary>
-    private void OnSegmentationCompleted(byte wallClassId, Texture2D segmentationResult)
+    private void HandleSegmentationTexture(Texture2D segmentationResult)
     {
+        if (segmentationResult == null) return;
+        
         // Send to mask processor
         // First convert to RenderTexture for compute shader processing
         RenderTexture rt = new RenderTexture(
@@ -173,6 +176,14 @@ public class ARWallPainterController : MonoBehaviour
         
         // Process the mask
         maskProcessor.ProcessMask(rt);
+    }
+    
+    /// <summary>
+    /// Called when segmentation is completed (old method kept for compatibility)
+    /// </summary>
+    private void OnSegmentationCompleted(byte wallClassId, Texture2D segmentationResult)
+    {
+        HandleSegmentationTexture(segmentationResult);
     }
     
     /// <summary>

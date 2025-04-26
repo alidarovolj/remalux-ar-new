@@ -2,6 +2,7 @@ using UnityEngine;
 using UnityEngine.XR.ARFoundation;
 using ML.DeepLab;
 using System.Collections;
+using UnityEngine.XR.ARSubsystems;
 
 /// <summary>
 /// Адаптер для совместимости между ARMLController и SegmentationManager
@@ -205,7 +206,8 @@ public class MLManagerAdapter : MonoBehaviour
     {
         if (segmentationManager != null)
         {
-            segmentationManager.ProcessCameraFrame(frame);
+            Vector2Int targetResolution = new Vector2Int(frame.width, frame.height);
+            segmentationManager.ProcessCameraFrame(frame, targetResolution);
         }
         else if (deepLabPredictor != null)
         {
@@ -231,6 +233,37 @@ public class MLManagerAdapter : MonoBehaviour
         {
             Debug.LogWarning("MLManagerAdapter: Failed to create MLManager wrapper, returning null");
             return null;
+        }
+    }
+
+    /// <summary>
+    /// Process the current camera frame using the ML model
+    /// </summary>
+    /// <param name="cameraFrame">The AR camera frame to process</param>
+    /// <returns>True if processing started successfully</returns>
+    public bool ProcessCameraFrame(XRCameraFrame cameraFrame)
+    {
+        if (segmentationManager == null)
+        {
+            Debug.LogWarning("MLManagerAdapter: SegmentationManager reference is missing");
+            return false;
+        }
+        
+        try
+        {
+            // Pass a default resolution for XRCameraFrame processing
+            Vector2Int targetResolution = new Vector2Int(512, 512);
+            
+            // We can't directly access dimensions from XRCameraFrame in this version
+            // so we'll use a fixed size that matches our model's expected input
+            
+            // Process the frame in the segmentation manager
+            return segmentationManager.ProcessCameraFrame(cameraFrame, targetResolution);
+        }
+        catch (System.Exception ex)
+        {
+            Debug.LogError($"MLManagerAdapter: Error processing camera frame: {ex.Message}");
+            return false;
         }
     }
 } 

@@ -42,17 +42,28 @@ public class ARSceneSetupAllInOne : EditorWindow
 
     private void OnEnable()
     {
-        // Инициализация стилей
-        centeredTextStyle = new GUIStyle(EditorStyles.largeLabel)
+        // Don't initialize styles here, as EditorStyles might not be ready yet
+    }
+    
+    // Add a method to ensure styles are initialized when needed
+    private void EnsureStylesInitialized()
+    {
+        if (centeredTextStyle == null)
         {
-            alignment = TextAnchor.MiddleCenter,
-            fontSize = 16,
-            fontStyle = FontStyle.Bold
-        };
+            centeredTextStyle = new GUIStyle(EditorStyles.largeLabel)
+            {
+                alignment = TextAnchor.MiddleCenter,
+                fontSize = 16,
+                fontStyle = FontStyle.Bold
+            };
+        }
     }
 
     private void OnGUI()
     {
+        // Initialize styles when actually needed
+        EnsureStylesInitialized();
+        
         EditorGUILayout.Space(10);
         EditorGUILayout.LabelField("AR Scene Setup (All-in-one)", centeredTextStyle);
         EditorGUILayout.Space(10);
@@ -463,129 +474,194 @@ public class ARSceneSetupAllInOne : EditorWindow
         }
     }
     
-    private bool TryCreateEnhancedDeepLabPredictor(GameObject mlSystemObj, SegmentationManager segmentationManager)
+    /// <summary>
+    /// Находит модель model.onnx в проекте
+    /// </summary>
+    private NNModel FindModelAsset()
     {
-        // Check if EnhancedDeepLabPredictor already exists
-        Type enhancedType = System.Type.GetType("ML.DeepLab.EnhancedDeepLabPredictor, Assembly-CSharp");
-        
-        if (enhancedType == null)
-        {
-            Debug.LogWarning("EnhancedDeepLabPredictor type not found in assembly");
-            return false;
-        }
-        
-        // Look for existing instance
-        Component existingPredictor = (Component)UnityEngine.Object.FindFirstObjectByType(enhancedType);
-        if (existingPredictor != null)
-        {
-            Debug.Log("Found existing EnhancedDeepLabPredictor");
-            
-            // Connect to SegmentationManager if needed
-            if (segmentationManager != null)
-            {
-                // Try to set segmentationManager field using reflection
-                FieldInfo segManagerField = enhancedType.GetField("segmentationManager", 
-                    BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
-                    
-                if (segManagerField != null)
-                {
-                    object currentValue = segManagerField.GetValue(existingPredictor);
-                    if (currentValue == null)
-                    {
-                        segManagerField.SetValue(existingPredictor, segmentationManager);
-                        Debug.Log("Set SegmentationManager reference in existing EnhancedDeepLabPredictor");
-                    }
-                }
-            }
-            
-            // Ensure it has the correct model.onnx assigned
-            // Look for model asset reference and set it if available
-            NNModel modelAsset = FindModelAsset();
-            if (modelAsset != null)
-            {
-                FieldInfo modelField = enhancedType.GetField("modelAsset", 
-                    BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
-                    
-                if (modelField != null)
-                {
-                    NNModel currentModel = modelField.GetValue(existingPredictor) as NNModel;
-                    if (currentModel == null || !currentModel.name.Contains("model"))
-                    {
-                        modelField.SetValue(existingPredictor, modelAsset);
-                        Debug.Log($"Updated model asset on existing EnhancedDeepLabPredictor to: {modelAsset.name}");
-                    }
-                }
-            }
-            
-            return true;
-        }
-        
-        // Create new EnhancedDeepLabPredictor
         try
         {
-            GameObject predictorObj = new GameObject("EnhancedDeepLabPredictor");
-            predictorObj.transform.SetParent(mlSystemObj.transform, false);
+            // Первым делом ищем конкретно model.onnx в известной локации
+            string specificPath = "Assets/ML/Models/model.onnx";
+            var modelAsset = UnityEditor.AssetDatabase.LoadAssetAtPath<NNModel>(specificPath);
             
-            Component predictor = predictorObj.AddComponent(enhancedType);
-            
-            // Set SegmentationManager reference using reflection
-            if (segmentationManager != null)
-            {
-                FieldInfo segManagerField = enhancedType.GetField("segmentationManager", 
-                    BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
-                    
-                if (segManagerField != null)
-                {
-                    segManagerField.SetValue(predictor, segmentationManager);
-                    Debug.Log("Set SegmentationManager reference in new EnhancedDeepLabPredictor");
-                }
-            }
-            
-            // Look for model asset reference and set it if available
-            NNModel modelAsset = FindModelAsset();
             if (modelAsset != null)
             {
-                FieldInfo modelField = enhancedType.GetField("modelAsset", 
-                    BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
-                    
-                if (modelField != null)
+                Debug.Log($"Found model.onnx at specific path: {specificPath}");
+                return modelAsset;
+            }
+            
+            // Если не нашли в конкретной папке, ищем глобально по имени
+            string[] guids = UnityEditor.AssetDatabase.FindAssets("t:NNModel model");
+            
+            foreach (string guid in guids)
+            {
+                string path = UnityEditor.AssetDatabase.GUIDToAssetPath(guid);
+                if (path.EndsWith("model.onnx"))
                 {
-                    modelField.SetValue(predictor, modelAsset);
-                    Debug.Log($"Set model asset on EnhancedDeepLabPredictor: {modelAsset.name}");
-                    
-                    // If model is not named "model.onnx", provide a warning
-                    if (!modelAsset.name.Contains("model"))
-                    {
-                        Debug.LogWarning($"The model '{modelAsset.name}' is being used, but 'model.onnx' is the only fully supported model for this project. This may cause issues with wall detection.");
-                    }
+                    modelAsset = UnityEditor.AssetDatabase.LoadAssetAtPath<NNModel>(path);
+                    Debug.Log($"Found model.onnx at path: {path}");
+                    return modelAsset;
                 }
             }
-            else
+            
+            // Если не нашли точное совпадение, ищем любую .onnx модель
+            if (modelAsset == null)
             {
-                Debug.LogError("No model.onnx found in the project. AR wall detection will not work properly.");
+                guids = UnityEditor.AssetDatabase.FindAssets("t:NNModel");
+                
+                if (guids.Length > 0)
+                {
+                    string path = UnityEditor.AssetDatabase.GUIDToAssetPath(guids[0]);
+                    modelAsset = UnityEditor.AssetDatabase.LoadAssetAtPath<NNModel>(path);
+                    Debug.LogWarning($"Could not find model.onnx. Using alternative model: {path}");
+                    return modelAsset;
+                }
             }
             
-            // Set additional properties
-            PropertyInfo classIDProp = enhancedType.GetProperty("WallClassId");
-            if (classIDProp != null && classIDProp.CanWrite)
+            Debug.LogError("Could not find any ONNX model in the project. Please ensure model.onnx is imported.");
+            return null;
+        }
+        catch (System.Exception e)
+        {
+            Debug.LogError($"Error finding model asset: {e.Message}");
+            return null;
+        }
+    }
+    
+    /// <summary>
+    /// Настраивает SegmentationManager, устанавливая правильную модель и параметры
+    /// </summary>
+    private void SetModelOnSegmentationManager(SegmentationManager segmentationManager, NNModel modelAsset)
+    {
+        if (segmentationManager == null || modelAsset == null)
+            return;
+            
+        // Получаем доступ к полям компонента через SerializedObject
+        var serializedObject = new UnityEditor.SerializedObject(segmentationManager);
+        
+        // Устанавливаем модель
+        var modelProperty = serializedObject.FindProperty("modelAsset");
+        if (modelProperty != null)
+        {
+            modelProperty.objectReferenceValue = modelAsset;
+        }
+        
+        // Устанавливаем ID класса стен (по умолчанию 9 для ADE20K)
+        // Для dataset ADE20K класс стен имеет ID = 9
+        var wallClassIdProperty = serializedObject.FindProperty("wallClassId");
+        if (wallClassIdProperty != null)
+        {
+            // Проверяем, используется ли ADE20K набор данных по имени модели
+            bool isAde20k = modelAsset.name.ToLower().Contains("ade") || 
+                            modelAsset.name.ToLower().Contains("deeplab");
+                            
+            // Устанавливаем соответствующий ID класса стен:
+            // - ADE20K: 9
+            // - COCO: 11
+            // - Cityscapes: 2
+            // По умолчанию используем ADE20K (9)
+            byte wallId = isAde20k ? (byte)9 : (byte)9;
+            wallClassIdProperty.intValue = wallId;
+            
+            Debug.Log($"Setting wall class ID to {wallId} based on model {modelAsset.name}");
+        }
+        
+        // Устанавливаем порог для классификации
+        var thresholdProperty = serializedObject.FindProperty("classificationThreshold");
+        if (thresholdProperty != null)
+        {
+            thresholdProperty.floatValue = 0.5f;
+        }
+        
+        // Применяем изменения
+        serializedObject.ApplyModifiedProperties();
+    }
+    
+    /// <summary>
+    /// Создает и настраивает EnhancedDeepLabPredictor
+    /// </summary>
+    private bool TryCreateEnhancedDeepLabPredictor(GameObject mlSystemObj, SegmentationManager segmentationManager)
+    {
+        try
+        {
+            // Ищем существующий EnhancedDeepLabPredictor
+            var existingPredictor = UnityEngine.Object.FindFirstObjectByType<EnhancedDeepLabPredictor>();
+            if (existingPredictor != null)
             {
-                classIDProp.SetValue(predictor, (byte)9); // ADE20K wall class ID
-                Debug.Log("Set WallClassId to 9 (ADE20K wall class)");
+                // Если уже есть, просто устанавливаем ссылку на SegmentationManager
+                if (segmentationManager != null)
+                {
+                    var serializedObject = new UnityEditor.SerializedObject(existingPredictor);
+                    var segmentationManagerProp = serializedObject.FindProperty("segmentationManager");
+                    
+                    if (segmentationManagerProp != null)
+                    {
+                        segmentationManagerProp.objectReferenceValue = segmentationManager;
+                        serializedObject.ApplyModifiedProperties();
+                        Debug.Log("Set SegmentationManager reference on existing EnhancedDeepLabPredictor");
+                    }
+                }
+                
+                return true;
             }
             
-            PropertyInfo thresholdProp = enhancedType.GetProperty("ClassificationThreshold");
-            if (thresholdProp != null && thresholdProp.CanWrite)
+            // Создаем объект для EnhancedDeepLabPredictor
+            GameObject predictorObj = new GameObject("Enhanced DeepLab Predictor");
+            predictorObj.transform.SetParent(mlSystemObj.transform, false);
+            
+            // Добавляем компонент EnhancedDeepLabPredictor
+            var enhancedPredictor = predictorObj.AddComponent<EnhancedDeepLabPredictor>();
+            
+            // Настраиваем EnhancedDeepLabPredictor
+            UnityEditor.SerializedObject predictorSO = new UnityEditor.SerializedObject(enhancedPredictor);
+            
+            // Устанавливаем ссылку на SegmentationManager
+            var predictorSegManagerProp = predictorSO.FindProperty("segmentationManager");
+            if (predictorSegManagerProp != null && segmentationManager != null)
             {
-                thresholdProp.SetValue(predictor, 0.5f); // Default threshold
-                Debug.Log("Set ClassificationThreshold to 0.5");
+                predictorSegManagerProp.objectReferenceValue = segmentationManager;
             }
             
-            Debug.Log("Successfully created EnhancedDeepLabPredictor");
+            // Находим модель ONNX
+            NNModel modelAsset = FindModelAsset();
+            
+            // Устанавливаем ссылку на модель
+            var modelProperty = predictorSO.FindProperty("modelAsset");
+            if (modelProperty != null && modelAsset != null)
+            {
+                modelProperty.objectReferenceValue = modelAsset;
+            }
+            
+            // Устанавливаем ID класса стен
+            var wallClassIdProperty = predictorSO.FindProperty("WallClassId");
+            if (wallClassIdProperty != null)
+            {
+                // Если модель основана на ADE20K, используем ID 9, иначе настраиваем в зависимости от модели
+                bool isAde20k = modelAsset != null && (modelAsset.name.ToLower().Contains("ade") || 
+                                                       modelAsset.name.ToLower().Contains("deeplab"));
+                int wallId = isAde20k ? 9 : 9; // По умолчанию используем ADE20K (9)
+                wallClassIdProperty.intValue = wallId;
+                
+                Debug.Log($"Setting EnhancedDeepLabPredictor wall class ID to {wallId}");
+            }
+            
+            // Устанавливаем порог для классификации
+            var thresholdProperty = predictorSO.FindProperty("ClassificationThreshold");
+            if (thresholdProperty != null)
+            {
+                thresholdProperty.floatValue = 0.5f;
+                Debug.Log("Setting ClassificationThreshold to 0.5");
+            }
+            
+            // Применяем все изменения
+            predictorSO.ApplyModifiedProperties();
+            
             return true;
         }
-        catch (Exception ex)
+        catch (System.Exception e)
         {
-            Debug.LogError($"Error creating EnhancedDeepLabPredictor: {ex.Message}\n{ex.StackTrace}");
+            Debug.LogError($"Error creating EnhancedDeepLabPredictor: {e.Message}");
             return false;
         }
     }
@@ -666,101 +742,6 @@ public class ARSceneSetupAllInOne : EditorWindow
         {
             Debug.LogError($"Error creating DeepLabPredictor: {ex.Message}\n{ex.StackTrace}");
             return false;
-        }
-    }
-    
-    private NNModel FindModelAsset()
-    {
-        // Try to find model.onnx in the project
-        #if UNITY_EDITOR
-        NNModel modelAsset = null;
-        
-        // First, specifically look for "model.onnx"
-        string[] modelOnnxAssets = UnityEditor.AssetDatabase.FindAssets("model t:NNModel");
-        foreach (string guid in modelOnnxAssets)
-        {
-            string path = UnityEditor.AssetDatabase.GUIDToAssetPath(guid);
-            // Prioritize exact match for "model.onnx"
-            if (path.EndsWith("/model.onnx") || path.EndsWith("/model.onnx.meta"))
-            {
-                modelAsset = UnityEditor.AssetDatabase.LoadAssetAtPath<NNModel>(path);
-                if (modelAsset != null)
-                {
-                    Debug.Log($"Found model.onnx asset at: {path}");
-                    return modelAsset;
-                }
-            }
-        }
-        
-        // Check also in specific ML folder path
-        string specificPath = "Assets/ML/Models/model.onnx";
-        if (System.IO.File.Exists(specificPath))
-        {
-            modelAsset = UnityEditor.AssetDatabase.LoadAssetAtPath<NNModel>(specificPath);
-            if (modelAsset != null)
-            {
-                Debug.Log($"Found model.onnx at specific path: {specificPath}");
-                return modelAsset;
-            }
-        }
-        
-        // If we couldn't find the exact "model.onnx", look for any ONNX model as fallback
-        if (modelAsset == null)
-        {
-            foreach (string guid in modelOnnxAssets)
-            {
-                string path = UnityEditor.AssetDatabase.GUIDToAssetPath(guid);
-                if (path.Contains("model") && (path.EndsWith(".onnx") || path.EndsWith(".onnx.meta")))
-                {
-                    modelAsset = UnityEditor.AssetDatabase.LoadAssetAtPath<NNModel>(path);
-                    if (modelAsset != null)
-                    {
-                        Debug.LogWarning($"Using fallback model asset at: {path} - consider renaming to 'model.onnx' or updating references");
-                        return modelAsset;
-                    }
-                }
-            }
-        }
-        
-        // Last resort - look for ANY onnx model
-        if (modelAsset == null)
-        {
-            string[] anyOnnxAssets = UnityEditor.AssetDatabase.FindAssets("t:NNModel");
-            if (anyOnnxAssets.Length > 0)
-            {
-                string path = UnityEditor.AssetDatabase.GUIDToAssetPath(anyOnnxAssets[0]);
-                modelAsset = UnityEditor.AssetDatabase.LoadAssetAtPath<NNModel>(path);
-                if (modelAsset != null)
-                {
-                    Debug.LogWarning($"Could not find model.onnx - using first available ONNX model: {path}");
-                    Debug.LogWarning("This may cause issues with wall detection. Consider renaming this model to 'model.onnx'");
-                    return modelAsset;
-                }
-            }
-        }
-        
-        if (modelAsset == null)
-        {
-            Debug.LogError("Could not find any ONNX model asset in the project. Please ensure you have a model.onnx file imported.");
-        }
-        return modelAsset;
-        #else
-        return null;
-        #endif
-    }
-    
-    private void SetModelOnSegmentationManager(SegmentationManager segmentationManager, NNModel modelAsset)
-    {
-        if (segmentationManager == null || modelAsset == null)
-            return;
-            
-        // Set the model asset via reflection
-        var modelField = segmentationManager.GetType().GetField("modelAsset", 
-            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public);
-        if (modelField != null)
-        {
-            modelField.SetValue(segmentationManager, modelAsset);
-            Debug.Log($"Set model asset on SegmentationManager to: {modelAsset.name}");
         }
     }
     
@@ -1470,130 +1451,172 @@ public class ARSceneSetupAllInOne : EditorWindow
     }
 
     /// <summary>
-    /// Создает и настраивает компонент ARPlaneVisualizer для визуализации AR плоскостей
+    /// Создает визуализатор AR-плоскостей
     /// </summary>
     private void CreateARPlaneVisualizer()
     {
-        // Сначала убедимся, что у нас есть ARPlaneManager
-        EnsureARPlaneManagerExists();
-
-        // Получаем ARPlaneManager
-        ARPlaneManager planeManager = UnityEngine.Object.FindFirstObjectByType<ARPlaneManager>();
-        
-        if (planeManager == null)
+        try
         {
-            EditorUtility.DisplayDialog("ARPlane Visualizer", "Не удалось найти ARPlaneManager. Пожалуйста, сначала настройте AR сцену.", "OK");
-            return;
-        }
-        
-        Debug.Log("Настраиваем визуализатор AR-плоскостей...");
-        
-        // Создаем префаб для визуализации плоскостей, если он еще не задан
-        if (planeManager.planePrefab == null)
-        {
-            // Создаем простой GameObject с материалом
-            GameObject planeVisualizer = new GameObject("AR Plane Visualizer");
-            
-            // Добавляем MeshFilter и MeshRenderer
-            MeshFilter meshFilter = planeVisualizer.AddComponent<MeshFilter>();
-            MeshRenderer meshRenderer = planeVisualizer.AddComponent<MeshRenderer>();
-            
-            // Создаем простую сетку (плоский quad)
-            Mesh mesh = new Mesh();
-            mesh.name = "AR Plane Mesh";
-            
-            // Вершины для квадрата размером 1x1
-            Vector3[] vertices = new Vector3[4]
+            // Проверяем, есть ли в сцене AR Plane Manager
+            if (!EnsureARPlaneManagerExists())
             {
-                new Vector3(-0.5f, 0, -0.5f),
-                new Vector3(0.5f, 0, -0.5f),
-                new Vector3(-0.5f, 0, 0.5f),
-                new Vector3(0.5f, 0, 0.5f)
-            };
-            
-            // Треугольники
-            int[] triangles = new int[6]
-            {
-                0, 2, 1,
-                1, 2, 3
-            };
-            
-            // UV координаты
-            Vector2[] uv = new Vector2[4]
-            {
-                new Vector2(0, 0),
-                new Vector2(1, 0),
-                new Vector2(0, 1),
-                new Vector2(1, 1)
-            };
-            
-            mesh.vertices = vertices;
-            mesh.triangles = triangles;
-            mesh.uv = uv;
-            mesh.RecalculateNormals();
-            
-            meshFilter.sharedMesh = mesh;
-            
-            // Создаем полупрозрачный материал для плоскостей
-            Material material = new Material(Shader.Find("Transparent/Diffuse"));
-            material.name = "AR Plane Material";
-            material.color = new Color(0.0f, 0.8f, 1.0f, 0.5f); // Полупрозрачный голубой
-            
-            meshRenderer.sharedMaterial = material;
-            
-            // Добавляем компонент ARPlaneMeshVisualizer
-            ARPlaneMeshVisualizer visualizer = planeVisualizer.AddComponent<ARPlaneMeshVisualizer>();
-
-            // Устанавливаем режим видимости All вместо Limited
-            var trackingStateVisibilityProperty = visualizer.GetType().GetProperty("trackingStateVisibility");
-            if (trackingStateVisibilityProperty != null)
-            {
-                trackingStateVisibilityProperty.SetValue(visualizer, 0); // 0 = All
-                Debug.Log("Установлен режим отображения ВСЕХ плоскостей (All)");
+                configStatus = "Не удалось найти или создать ARPlaneManager";
+                statusType = MessageType.Error;
+                Debug.LogError("Невозможно добавить визуализатор плоскостей без ARPlaneManager");
+                return;
             }
             
-            // Создаем префаб из этого GameObject
-            string prefabPath = "Assets/Prefabs";
-            if (!AssetDatabase.IsValidFolder(prefabPath))
+            // Проверка, существует ли уже компонент ARPlaneVisualizer
+            Component[] planeVisualizers = UnityEngine.Object.FindObjectsByType<Component>(FindObjectsSortMode.None);
+            foreach (Component comp in planeVisualizers)
             {
-                AssetDatabase.CreateFolder("Assets", "Prefabs");
+                if (comp.GetType().Name.Contains("ARPlaneVisualizer") || 
+                    comp.GetType().Name.Contains("PlaneVisualizer"))
+                {
+                    // Выводим сообщение в лог вместо диалога
+                    Debug.Log("Визуализатор AR-плоскостей уже существует в сцене");
+                    configStatus = "Визуализатор AR-плоскостей уже существует";
+                    statusType = MessageType.Info;
+                    return;
+                }
             }
             
-            string planeVisualizerPath = prefabPath + "/ARPlaneVisualizer.prefab";
+            // Ищем ARPlaneManager
+            ARPlaneManager arPlaneManager = UnityEngine.Object.FindFirstObjectByType<ARPlaneManager>();
+            if (arPlaneManager == null)
+            {
+                configStatus = "ARPlaneManager не найден в сцене";
+                statusType = MessageType.Error;
+                Debug.LogError("ARPlaneManager не найден. Невозможно добавить визуализатор плоскостей.");
+                return;
+            }
             
-            // Сохраняем как префаб
-            PrefabUtility.SaveAsPrefabAsset(planeVisualizer, planeVisualizerPath);
-            Debug.Log("Создан новый префаб визуализатора AR-плоскостей: " + planeVisualizerPath);
+            // Создаем объект для визуализатора
+            GameObject visualizerObj = new GameObject("AR Plane Visualizer");
             
-            // Удаляем временный GameObject
-            GameObject.DestroyImmediate(planeVisualizer);
+            // Можно использовать разные типы визуализаторов, проверяем по наличию типов
+            Type visualizerType = 
+                Type.GetType("ARPlaneVisualizer, Assembly-CSharp") ?? 
+                Type.GetType("PlaneVisualizer, Assembly-CSharp") ?? 
+                Type.GetType("SurfaceVisualizer, Assembly-CSharp");
             
-            // Загружаем созданный префаб
-            GameObject planePrefab = AssetDatabase.LoadAssetAtPath<GameObject>(planeVisualizerPath);
+            if (visualizerType != null)
+            {
+                // Добавляем компонент визуализатора
+                Component visualizer = visualizerObj.AddComponent(visualizerType);
+                
+                // Пытаемся установить ссылку на ARPlaneManager
+                FieldInfo planeManagerField = visualizerType.GetField("planeManager", 
+                    BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                if (planeManagerField != null)
+                {
+                    planeManagerField.SetValue(visualizer, arPlaneManager);
+                }
+                
+                Debug.Log("Визуализатор AR-плоскостей успешно создан");
+                configStatus = "Визуализатор AR-плоскостей добавлен";
+                statusType = MessageType.Info;
+            }
+            else
+            {
+                // Создаем простой визуализатор, который добавляет MeshRenderer к AR плоскостям
+                visualizerObj.AddComponent<ARPlaneMeshVisualizer>();
+                
+                Debug.Log("Создан базовый визуализатор AR-плоскостей");
+                
+                // Предупреждаем в лог вместо диалога
+                Debug.LogWarning("Не удалось найти полнофункциональный ARPlaneVisualizer. " +
+                    "Создан базовый визуализатор, который отображает только меши плоскостей.");
+                
+                configStatus = "Создан базовый визуализатор AR-плоскостей";
+                statusType = MessageType.Warning;
+            }
             
-            // Устанавливаем префаб в ARPlaneManager
-            planeManager.planePrefab = planePrefab;
+            // Включаем ARPlaneManager, если он выключен
+            if (!arPlaneManager.enabled)
+            {
+                arPlaneManager.enabled = true;
+                Debug.Log("ARPlaneManager был включен");
+            }
             
-            // Сохраняем изменения
-            EditorUtility.SetDirty(planeManager);
+            // Добавляем исправитель проблем AR-плоскостей
+            AddARPlaneVisualizerFixer();
         }
-        else
+        catch (System.Exception e)
         {
-            Debug.Log("Префаб для визуализации AR-плоскостей уже настроен");
+            Debug.LogError($"Ошибка при создании визуализатора AR-плоскостей: {e.Message}\n{e.StackTrace}");
+            configStatus = "Ошибка создания визуализатора AR-плоскостей";
+            statusType = MessageType.Error;
         }
-        
-        // Включаем ARPlaneManager, если он был выключен
-        if (!planeManager.enabled)
-        {
-            planeManager.enabled = true;
-            Debug.Log("ARPlaneManager был выключен. Теперь включен.");
-        }
+    }
 
-        // Добавляем компонент ARPlaneVisualizerFixer для исправления визуализации плоскостей
-        AddARPlaneVisualizerFixer();
+    /// <summary>
+    /// Простой визуализатор AR-плоскостей использующий меши
+    /// </summary>
+    public class ARPlaneMeshVisualizer : MonoBehaviour
+    {
+        private ARPlaneManager planeManager;
+        private Material planeMaterial;
+        private Color planeColor = new Color(0.3f, 0.4f, 0.6f, 0.5f);
         
-        Debug.Log("Настройка визуализатора AR-плоскостей завершена успешно!");
-        EditorUtility.DisplayDialog("Успех", "Визуализатор AR-плоскостей успешно настроен.", "OK");
+        private void Start()
+        {
+            // Находим ARPlaneManager
+            planeManager = FindObjectOfType<ARPlaneManager>();
+            if (planeManager != null)
+            {
+                // Подписываемся на событие обновления плоскостей
+                planeManager.planesChanged += OnPlanesChanged;
+                
+                // Создаем материал для плоскостей
+                planeMaterial = new Material(Shader.Find("Unlit/Transparent"));
+                planeMaterial.color = planeColor;
+            }
+            else
+            {
+                Debug.LogError("ARPlaneManager не найден");
+                enabled = false;
+            }
+        }
+        
+        private void OnDestroy()
+        {
+            if (planeManager != null)
+            {
+                planeManager.planesChanged -= OnPlanesChanged;
+            }
+        }
+        
+        private void OnPlanesChanged(ARPlanesChangedEventArgs args)
+        {
+            // Добавляем материалы к новым плоскостям
+            foreach (ARPlane plane in args.added)
+            {
+                SetPlaneMaterial(plane);
+            }
+            
+            // Обновляем материалы у измененных плоскостей
+            foreach (ARPlane plane in args.updated)
+            {
+                SetPlaneMaterial(plane);
+            }
+        }
+        
+        private void SetPlaneMaterial(ARPlane plane)
+        {
+            // Проверяем наличие MeshRenderer и устанавливаем материал
+            MeshRenderer renderer = plane.GetComponent<MeshRenderer>();
+            if (renderer != null)
+            {
+                renderer.material = planeMaterial;
+            }
+            else
+            {
+                // Если рендерера нет, добавляем его
+                renderer = plane.gameObject.AddComponent<MeshRenderer>();
+                renderer.material = planeMaterial;
+            }
+        }
     }
 
     /// <summary>
@@ -1644,7 +1667,9 @@ public class ARSceneSetupAllInOne : EditorWindow
         XROrigin xrOrigin = UnityEngine.Object.FindFirstObjectByType<XROrigin>();
         if (xrOrigin == null)
         {
-            EditorUtility.DisplayDialog("ARPlane Visualizer", "Не найден XROrigin. Пожалуйста, сначала настройте AR сцену.", "OK");
+            Debug.LogError("Не найден XROrigin. Пожалуйста, сначала настройте AR сцену.");
+            configStatus = "Не найден XROrigin для ARPlaneManager";
+            statusType = MessageType.Error;
             return false;
         }
         
@@ -1666,6 +1691,8 @@ public class ARSceneSetupAllInOne : EditorWindow
         // Отмечаем объект как "грязный" для сохранения изменений
         EditorUtility.SetDirty(xrOrigin.gameObject);
         
+        configStatus = "Создан ARPlaneManager";
+        statusType = MessageType.Info;
         return true;
     }
 
@@ -1680,7 +1707,9 @@ public class ARSceneSetupAllInOne : EditorWindow
             GameObject existingManager = GameObject.Find("AR System Manager");
             if (existingManager != null)
             {
-                EditorUtility.DisplayDialog("AR System Manager", "AR System Manager уже существует в сцене.", "OK");
+                Debug.Log("AR System Manager уже существует в сцене.");
+                configStatus = "AR System Manager уже существует";
+                statusType = MessageType.Info;
                 return;
             }
             
@@ -1709,12 +1738,14 @@ public class ARSceneSetupAllInOne : EditorWindow
                     }
                 }
                 
-                EditorUtility.DisplayDialog("AR System Manager", "AR System Manager успешно добавлен в сцену.", "OK");
+                configStatus = "AR System Manager успешно добавлен";
+                statusType = MessageType.Info;
             }
             else
             {
                 Debug.LogWarning("Тип ARSystemManager не найден. Возможно, он был удален или переименован.");
-                EditorUtility.DisplayDialog("AR System Manager", "Не удалось найти тип ARSystemManager. Компонент не будет добавлен.", "OK");
+                configStatus = "Не удалось найти тип ARSystemManager";
+                statusType = MessageType.Warning;
                 GameObject.DestroyImmediate(managerObj);
             }
         }
@@ -1787,6 +1818,8 @@ public class ARSceneSetupAllInOne : EditorWindow
         if (xrOrigin == null)
         {
             Debug.LogError("XROrigin не найден после создания AR компонентов. Проверьте настройки проекта.");
+            configStatus = "Ошибка: XROrigin не найден";
+            statusType = MessageType.Error;
             return;
         }
 
@@ -1822,6 +1855,7 @@ public class ARSceneSetupAllInOne : EditorWindow
         // Отмечаем сцену как измененную, чтобы пользователь мог сохранить изменения
         UnityEditor.SceneManagement.EditorSceneManager.MarkSceneDirty(UnityEditor.SceneManagement.EditorSceneManager.GetActiveScene());
         
-        EditorUtility.DisplayDialog("Успех", "Настройка AR сцены завершена успешно!", "OK");
+        configStatus = "Настройка AR сцены завершена успешно!";
+        statusType = MessageType.Info;
     }
 } 

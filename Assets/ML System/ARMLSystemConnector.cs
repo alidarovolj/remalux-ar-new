@@ -56,7 +56,7 @@ public class ARMLSystemConnector : MonoBehaviour
         // Subscribe to events when enabled
         if (segmentationManager != null)
         {
-            segmentationManager.OnSegmentationCompleted += HandleSegmentationCompleted;
+            segmentationManager.OnSegmentationCompleted += HandleSegmentationTexture;
             Debug.Log("ARMLSystemConnector: Subscribed to SegmentationManager events");
         }
         
@@ -71,17 +71,19 @@ public class ARMLSystemConnector : MonoBehaviour
     {
         // Unsubscribe from events when disabled
         if (segmentationManager != null)
-            segmentationManager.OnSegmentationCompleted -= HandleSegmentationCompleted;
+            segmentationManager.OnSegmentationCompleted -= HandleSegmentationTexture;
             
         if (maskProcessor != null)
             maskProcessor.OnMaskProcessed -= OnMaskProcessed;
     }
     
     /// <summary>
-    /// Handler for segmentation completion with byte and Texture2D signature
+    /// Handler for segmentation completion with Texture2D
     /// </summary>
-    private void HandleSegmentationCompleted(byte wallClassId, Texture2D segmentationTexture)
+    private void HandleSegmentationTexture(Texture2D segmentationTexture)
     {
+        if (segmentationTexture == null) return;
+        
         // Convert to RenderTexture for processing
         RenderTexture rt = new RenderTexture(
             segmentationTexture.width,
@@ -96,6 +98,14 @@ public class ARMLSystemConnector : MonoBehaviour
         
         // Call our standard handler
         OnSegmentationCompleted(rt);
+    }
+    
+    /// <summary>
+    /// Handler for segmentation completion with byte and Texture2D signature
+    /// </summary>
+    private void HandleSegmentationCompleted(byte wallClassId, Texture2D segmentationTexture)
+    {
+        HandleSegmentationTexture(segmentationTexture);
     }
     
     /// <summary>
@@ -181,8 +191,9 @@ public class ARMLSystemConnector : MonoBehaviour
             
             if (cameraTexture != null)
             {
-                // Process the frame through segmentation
-                segmentationManager.ProcessCameraFrame(cameraTexture);
+                // Process the frame through segmentation with target resolution
+                Vector2Int targetResolution = new Vector2Int(cameraTexture.width, cameraTexture.height);
+                segmentationManager.ProcessCameraFrame(cameraTexture, targetResolution);
                 
                 if (debugMode)
                     Debug.Log("ARMLSystemConnector: Camera frame captured and sent for processing");

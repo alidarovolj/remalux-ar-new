@@ -3,6 +3,25 @@ using UnityEngine.XR.ARFoundation;
 using System.Collections;
 using System.Collections.Generic;
 using ML.DeepLab;
+using UnityEngine.XR.ARSubsystems;
+using Unity.Collections;
+using Unity.Collections.LowLevel.Unsafe;
+
+// Адаптер для управления ML-системой
+public class ARMLManagerAdapter : MonoBehaviour 
+{
+    public SegmentationManager segmentationManager;
+    
+    // Метод для обработки текущего кадра
+    public bool CaptureCurrentFrame()
+    {
+        if (segmentationManager == null)
+            return false;
+            
+        // Заглушка для совместимости - фактическая обработка происходит через ARCameraManager.frameReceived
+        return true;
+    }
+}
 
 /// <summary>
 /// Controls the ML processing
@@ -37,37 +56,37 @@ public class ARMLController : MonoBehaviour
     /// <summary>
     /// The ML manager
     /// </summary>
-    private MLManager mlManager;
+    [SerializeField] private ARMLManagerAdapter mlManager;
 
     /// <summary>
     /// The camera manager
     /// </summary>
-    private ARCameraManager cameraManager;
+    [SerializeField] private ARCameraManager cameraManager;
 
     /// <summary>
     /// Reference to the AR session
     /// </summary>
-    private ARSession arSession;
+    [SerializeField] private ARSession arSession;
 
     /// <summary>
     /// Reference to AR Plane Manager for plane detection
     /// </summary>
-    private ARPlaneManager arPlaneManager;
+    [SerializeField] private ARPlaneManager arPlaneManager;
 
     /// <summary>
     /// The enhanced predictor
     /// </summary>
-    private EnhancedDeepLabPredictor enhancedPredictor;
+    [SerializeField] private EnhancedDeepLabPredictor enhancedPredictor;
     
     /// <summary>
     /// The segmentation manager
     /// </summary>
-    private SegmentationManager segmentationManager;
+    [SerializeField] private SegmentationManager segmentationManager;
     
     /// <summary>
     /// The mask processor
     /// </summary>
-    private MaskProcessor maskProcessor;
+    [SerializeField] private MaskProcessor maskProcessor;
     
     /// <summary>
     /// Indicates if AR has been started
@@ -88,6 +107,23 @@ public class ARMLController : MonoBehaviour
     {
         // Try to find all required references at startup
         FindMissingReferences();
+        
+        // Подписываемся на событие получения кадра, если есть ARCameraManager
+        if (cameraManager != null)
+        {
+            cameraManager.frameReceived += OnCameraFrameReceived;
+            if (debugMode)
+                Debug.Log("ARMLController: Subscribed to camera frame events");
+        }
+    }
+    
+    private void OnDisable()
+    {
+        // Отписываемся от события при выключении компонента
+        if (cameraManager != null)
+        {
+            cameraManager.frameReceived -= OnCameraFrameReceived;
+        }
     }
 
     private void Start()
@@ -98,10 +134,80 @@ public class ARMLController : MonoBehaviour
 
     private void Update()
     {
-        // Update ML processing if enabled
-        if (isRunning)
+        // Update ML processing if enabled and we're not using the direct frame subscription
+        if (isRunning && cameraManager == null)
         {
             UpdateML();
+        }
+    }
+    
+    // Обработчик события получения кадра от ARCameraManager
+    private void OnCameraFrameReceived(ARCameraFrameEventArgs args)
+    {
+        if (!isRunning) return;
+        
+        // Проверяем интервал между обработками для производительности
+        if (Time.time - lastCaptureTime < predictionInterval) return;
+        
+        // Пытаемся получить последний CPU-кадр
+        if (cameraManager.TryAcquireLatestCpuImage(out XRCpuImage image))
+        {
+            try
+            {
+                // Создаем текстуру для обработки кадра
+                var conversionParams = new XRCpuImage.ConversionParams
+                {
+                    inputRect = new RectInt(0, 0, image.width, image.height),
+                    outputDimensions = new Vector2Int(image.width, image.height),
+                    outputFormat = TextureFormat.RGBA32,
+                    transformation = XRCpuImage.Transformation.MirrorY
+                };
+                
+                // Создаем текстуру для обработки
+                var texture = new Texture2D(
+                    conversionParams.outputDimensions.x,
+                    conversionParams.outputDimensions.y,
+                    conversionParams.outputFormat,
+                    false);
+                
+                // Выделяем буфер для конвертации
+                var rawTextureData = texture.GetRawTextureData<byte>();
+                
+                // Преобразование с использованием альтернативного подхода
+                unsafe 
+                {
+                    image.Convert(conversionParams, 
+                        new System.IntPtr(NativeArrayUnsafeUtility.GetUnsafeBufferPointerWithoutChecks(rawTextureData)),
+                        rawTextureData.Length);
+                }
+                
+                // Применяем изменения к текстуре
+                texture.Apply();
+                
+                // Отправляем текстуру на обработку в SegmentationManager
+                if (segmentationManager != null)
+                {
+                    // Pass texture dimensions as targetResolution
+                    Vector2Int targetResolution = new Vector2Int(texture.width, texture.height);
+                    segmentationManager.ProcessCameraFrame(texture, targetResolution);
+                    lastCaptureTime = Time.time;
+                    
+                    if (debugMode && Time.frameCount % 100 == 0)
+                        Debug.Log("ARMLController: Frame processed via direct camera subscription");
+                }
+                
+                // Удаляем временную текстуру
+                Destroy(texture);
+            }
+            catch (System.Exception e)
+            {
+                Debug.LogError($"ARMLController: Error processing camera frame: {e.Message}");
+            }
+            finally
+            {
+                // Обязательно освобождаем ресурсы
+                image.Dispose();
+            }
         }
     }
 
@@ -113,9 +219,19 @@ public class ARMLController : MonoBehaviour
         // Find MLManager
         if (mlManager == null)
         {
-            mlManager = FindObjectOfType<MLManager>();
-            if (mlManager != null && debugMode)
-                Debug.Log("ARMLController: Found MLManager automatically");
+            mlManager = FindObjectOfType<ARMLManagerAdapter>();
+            if (mlManager == null)
+            {
+                // Если MLManager не найден, создаем его
+                GameObject mlManagerObj = new GameObject("AR ML Manager Adapter");
+                mlManager = mlManagerObj.AddComponent<ARMLManagerAdapter>();
+                if (debugMode)
+                    Debug.Log("ARMLController: Created ARMLManagerAdapter component");
+            }
+            else if (debugMode)
+            {
+                Debug.Log("ARMLController: Found ARMLManagerAdapter automatically");
+            }
         }
 
         // Find ARCameraManager
@@ -159,8 +275,22 @@ public class ARMLController : MonoBehaviour
         if (segmentationManager == null)
         {
             segmentationManager = FindObjectOfType<SegmentationManager>();
-            if (segmentationManager != null && debugMode)
-                Debug.Log("ARMLController: Found SegmentationManager in scene");
+            if (segmentationManager != null)
+            {
+                // Устанавливаем связь с MLManager
+                if (mlManager != null && mlManager.segmentationManager == null)
+                {
+                    mlManager.segmentationManager = segmentationManager;
+                }
+                
+                if (debugMode)
+                    Debug.Log("ARMLController: Found SegmentationManager in scene");
+            }
+        }
+        else if (mlManager != null && mlManager.segmentationManager == null)
+        {
+            // Устанавливаем связь с MLManager, если она еще не установлена
+            mlManager.segmentationManager = segmentationManager;
         }
         
         // Find MaskProcessor
@@ -241,7 +371,21 @@ public class ARMLController : MonoBehaviour
 
         try
         {
-            // Call methods via reflection to handle incompatible APIs
+            // Пробуем прямую передачу кадра в SegmentationManager
+            if (segmentationManager != null && cameraManager != null)
+            {
+                // Эта часть будет выполняться через OnCameraFrameReceived,
+                // но здесь мы оставляем совместимость со старым кодом
+                return true;
+            }
+            
+            // Используем MLManager в качестве адаптера
+            if (mlManager.CaptureCurrentFrame())
+            {
+                return true;
+            }
+            
+            // Запасной вариант через рефлексию для обратной совместимости
             System.Reflection.MethodInfo captureMethod = mlManager.GetType().GetMethod("CaptureCurrentFrame", 
                 System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
             
@@ -428,12 +572,15 @@ public class ARMLController : MonoBehaviour
         // Try to find references if they're missing
         if (mlManager == null)
         {
-            mlManager = FindObjectOfType<MLManager>();
+            mlManager = FindObjectOfType<ARMLManagerAdapter>();
             if (mlManager == null)
             {
-                if (Time.frameCount % 300 == 0 || debugMode) // Log less frequently
-                    Debug.LogWarning("ARMLController: MLManager reference is missing");
-                allReferencesValid = false;
+                // Создаем MLManager если его нет
+                GameObject mlManagerObj = new GameObject("AR ML Manager Adapter");
+                mlManager = mlManagerObj.AddComponent<ARMLManagerAdapter>();
+                
+                if (debugMode)
+                    Debug.Log("ARMLController: Created ARMLManagerAdapter component");
             }
         }
 
@@ -468,6 +615,16 @@ public class ARMLController : MonoBehaviour
                     Debug.LogWarning("ARMLController: SegmentationManager reference is missing");
                 allReferencesValid = false;
             }
+            else if (mlManager != null)
+            {
+                // Связываем MLManager с SegmentationManager
+                mlManager.segmentationManager = segmentationManager;
+            }
+        }
+        else if (mlManager != null && mlManager.segmentationManager == null)
+        {
+            // Связываем MLManager с SegmentationManager
+            mlManager.segmentationManager = segmentationManager;
         }
         
         if (maskProcessor == null)

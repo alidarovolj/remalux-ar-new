@@ -3,6 +3,8 @@ using Unity.Barracuda;
 using System.Threading;
 using System;
 using System.Collections.Generic;
+using Unity.Collections;
+using UnityEngine.XR.ARSubsystems;
 
 #if UNITY_EDITOR
 using System.IO;
@@ -14,406 +16,219 @@ using System.IO;
 /// </summary>
 public class SegmentationManager : MonoBehaviour
 {
-    [Header("Model Settings")]
-    [Tooltip("Assign the model.onnx asset here. This is the only supported model for the AR scene.")]
-    [SerializeField] private NNModel modelAsset;
-    [SerializeField] private string inputName = "ImageTensor";
-    [SerializeField] private string outputName = "SemanticPredictions";
-    [SerializeField] private int inputWidth = 224;
-    [SerializeField] private int inputHeight = 224;
-    
-    [Header("Segmentation Settings")]
-    [SerializeField] private byte wallClassId = 9; // ADE20K wall class ID
-    [SerializeField] private bool useComputeOptimization = true;
-    [SerializeField] private int processingInterval = 5; // Process every N frames
-    [SerializeField] private bool modelOutputNeedsArgMax = false; // Set true if model outputs logits/probabilities
-    
-    [Header("Advanced Settings")]
-    [SerializeField] private WorkerFactory.Type workerType = WorkerFactory.Type.ComputePrecompiled;
-    [Tooltip("Set 0 for automatic device selection")]
-    [SerializeField] private int computeDeviceIndex = 0;
-    [Tooltip("Set false if your model uses NCHW (channels first) format")]
-    [SerializeField] private bool isModelNHWCFormat = true; // Most TensorFlow/ONNX models use NHWC format
-    [SerializeField] private bool debugMode = false; // Добавляем отладочный режим
-    
-    // ML model and engine
+    [Header("Model Configuration")]
+    [SerializeField] private NNModel ModelAsset;
+    [SerializeField] private string inputName = "images";
+    [SerializeField] private string outputName = "output_segmentations";
+    [SerializeField] private bool isModelNHWCFormat = true;
+    [SerializeField] private int inputWidth = 513;
+    [SerializeField] private int inputHeight = 513;
+    [SerializeField] private int inputChannels = 3;
+    [SerializeField] private int segmentationClassCount = 2; // Number of output classes (background + wall)
+    [Range(0, 255)]
+    [SerializeField] private int wallClassId = 1;
+    [Range(0.0f, 1.0f)]
+    [SerializeField] private float classificationThreshold = 0.5f;
+    [SerializeField] private int processingInterval = 2;
+    [SerializeField] private bool debugMode = false;
+
+    // Текстуры
+    private Texture2D _inputTexture;
+    private Texture2D _segmentationTexture;
+    private RenderTexture _maskTexture;
+
+    // Runtime модель и worker
     private Model _runtimeModel;
-    private IWorker _engine;
-    private int _frameCounter = 0;
+    private IWorker _worker;
+
+    // Флаг обработки
     private bool _isProcessing = false;
+
+    // Событие завершения обработки сегментации
+    public Action<Texture2D> onProcessingComplete;
     
-    // Pre-allocated buffers for efficiency
-    private Texture2D _resizedInput;
-    private Texture2D _outputTexture;
-    
-    // Events
-    public event Action<byte, Texture2D> OnSegmentationCompleted;
-    
-    // Properties
-    public byte WallClassId => wallClassId;
-    public bool IsProcessing => _isProcessing;
-    
+    // Событие, которое используется в других скриптах
+    public event Action<Texture2D> OnSegmentationCompleted;
+
     private void Awake()
     {
-        // Load and prepare model
+        InitializeTextures();
         InitializeModel();
-        
-        // Pre-allocate textures
-        _resizedInput = new Texture2D(inputWidth, inputHeight, TextureFormat.RGB24, false);
-        _outputTexture = new Texture2D(inputWidth, inputHeight, TextureFormat.R8, false);
     }
-    
+
+    private void OnDestroy()
+    {
+        _worker?.Dispose();
+    }
+
+    private void InitializeTextures()
+    {
+        // Инициализируем входную текстуру
+        _inputTexture = new Texture2D(inputWidth, inputHeight, TextureFormat.RGBA32, false);
+        
+        // Инициализируем выходную текстуру
+        _segmentationTexture = new Texture2D(inputWidth, inputHeight, TextureFormat.R8, false);
+        
+        // Создаем маску в виде RenderTexture для дальнейшей обработки
+        _maskTexture = new RenderTexture(inputWidth, inputHeight, 0, RenderTextureFormat.R8);
+        _maskTexture.Create();
+    }
+
     private void InitializeModel()
     {
-        if (modelAsset == null)
+        if (ModelAsset == null)
         {
-            Debug.LogError("No model asset assigned to SegmentationManager!");
-            enabled = false;
+            Debug.LogError("Model asset is not assigned");
             return;
         }
-        
-        // Verify this is the correct model (model.onnx)
-        if (!modelAsset.name.Contains("model"))
+
+        try
         {
-            Debug.LogWarning($"SegmentationManager: The model '{modelAsset.name}' is being used, but 'model.onnx' is the only fully supported model for this project. This may cause issues with wall detection and segmentation. Please update references to use model.onnx.");
-        }
-        
-        // Load model
-        _runtimeModel = ModelLoader.Load(modelAsset);
-        
-        // Check for valid input/output names
-        bool validInputs = false;
-        bool validOutputs = false;
-        
-        // Log all available inputs/outputs
-        Debug.Log($"Model inputs: {string.Join(", ", GetInputLayerNames(_runtimeModel))}");
-        Debug.Log($"Model outputs: {string.Join(", ", _runtimeModel.outputs)}");
-        
-        // Exact match for input name
-        foreach (var input in _runtimeModel.inputs)
-        {
-            if (input.name.Equals(inputName, StringComparison.OrdinalIgnoreCase) || 
-                input.name.Contains(inputName))
+            // Загружаем модель
+            _runtimeModel = ModelLoader.Load(ModelAsset);
+            
+            if (_runtimeModel == null)
             {
-                inputName = input.name; // Use actual name from model
-                validInputs = true;
-                Debug.Log($"Using input layer: {inputName}");
-                break;
+                Debug.LogError("Failed to load the model");
+                return;
+            }
+
+            // Создаем worker для выполнения модели
+            _worker = WorkerFactory.CreateWorker(WorkerFactory.Type.Auto, _runtimeModel);
+            
+            if (debugMode)
+            {
+                Debug.Log($"Model loaded successfully: {ModelAsset.name}");
+                LogTensorDimensions();
             }
         }
-        
-        // If exact match not found, try partial match but log a warning
-        if (!validInputs)
+        catch (Exception e)
         {
-            foreach (var input in _runtimeModel.inputs)
+            Debug.LogError($"Error initializing the model: {e.Message}\n{e.StackTrace}");
+        }
+    }
+
+    /// <summary>
+    /// Определяет форму выходного тензора на основе метаданных модели
+    /// </summary>
+    private TensorShape DetermineOutputShape(Tensor output, TensorShape inputShape)
+    {
+        try
+        {
+            if (output == null)
             {
-                if (input.name.Contains(inputName))
-                {
-                    inputName = input.name;
-                    validInputs = true;
-                    Debug.LogWarning($"Exact input layer name not found. Using closest match: {inputName}");
-                    break;
-                }
+                Debug.LogError("Output tensor is null in DetermineOutputShape");
+                return new TensorShape(0, 0, 0, 0);
             }
             
-            // If still not found, use the first input as fallback
-            if (!validInputs && _runtimeModel.inputs.Count > 0)
             {
-                inputName = _runtimeModel.inputs[0].name;
-                validInputs = true;
-                Debug.LogWarning($"Input layer '{inputName}' not found. Using first available input: {inputName}");
-            }
-        }
-        
-        // Check input shape to auto-detect tensor format
-        foreach (var input in _runtimeModel.inputs)
-        {
-            if (input.name == inputName)
-            {
-                // Check tensor shape if available
-                if (input.shape.Length >= 4 && input.shape[3] == 3)
+                if (debugMode)
                 {
-                    // Try to detect NCHW vs NHWC format
-                    // In NCHW: [batch, channels, height, width]
-                    // In NHWC: [batch, height, width, channels]
-                    // Note: This is a heuristic and might not be 100% accurate
-                    if (input.shape[1] == 3)
-                    {
-                        isModelNHWCFormat = false; // Likely NCHW format (channels as dimension 1)
-                        Debug.Log("Detected NCHW tensor format based on input shape");
-                    }
-                    else if (input.shape[3] == 3)
-                    {
-                        isModelNHWCFormat = true; // Likely NHWC format (channels as dimension 3)
-                        Debug.Log("Detected NHWC tensor format based on input shape");
-                    }
+                    Debug.Log($"Output tensor shape: dimensions={output.shape}");
                 }
-                break;
-            }
-        }
-        
-        // Exact match for output name
-        foreach (var output in _runtimeModel.outputs)
-        {
-            if (output.Equals(outputName, StringComparison.OrdinalIgnoreCase))
-            {
-                outputName = output; // Use actual name from model
-                validOutputs = true;
-                Debug.Log($"Using output layer: {outputName}");
-                break;
-            }
-        }
-        
-        // If exact match not found, try partial match or standard names
-        if (!validOutputs)
-        {
-            // Common output layer names for segmentation models
-            string[] possibleOutputNames = new string[] 
-            {
-                "SemanticPredictions", "ArgMax", "final_output", "predictions", 
-                "softmax", "logits", "output"
-            };
-            
-            // First try partial match with original name
-            foreach (var output in _runtimeModel.outputs)
-            {
-                if (output.Contains(outputName))
+                
+                // Check if this is a valid shape for segmentation (should have at least 3 dimensions)
+                if (output.shape.rank >= 3)
                 {
-                    outputName = output;
-                    validOutputs = true;
-                    Debug.LogWarning($"Exact output layer name not found. Using closest match: {outputName}");
-                    break;
+                    return output.shape;
                 }
-            }
-            
-            // If still not found, try common output names
-            if (!validOutputs)
-            {
-                foreach (var possibleName in possibleOutputNames)
+                else
                 {
-                    foreach (var output in _runtimeModel.outputs)
+                    // If shape is too simple, try to infer from input dimensions
+                    Debug.LogWarning($"Output tensor has insufficient dimensions, attempting to reshape");
+                    
+                    // Check inputShape dimension count directly
+                    if (inputShape.rank >= 4)
                     {
-                        if (output.Contains(possibleName))
+                        // Determine if height and width are at index 1,2 (NCHW) or 1,2 (NHWC)
+                        int height = inputShape[1];
+                        int width = inputShape[2];
+                        
+                        // For DeepLab models, output is often [1, numClasses, height, width] or [1, height, width, numClasses]
+                        if (output.shape[0] == 1)
                         {
-                            outputName = output;
-                            validOutputs = true;
-                            Debug.LogWarning($"Output layer '{outputName}' not found. Using common name match: {outputName}");
-                            
-                            // If we found logits/softmax, we likely need to perform argmax
-                            if (possibleName == "logits" || possibleName == "softmax")
+                            if (output.length == height * width * segmentationClassCount)
                             {
-                                modelOutputNeedsArgMax = true;
-                                Debug.LogWarning("Found logits/softmax output - enabling ArgMax processing");
+                                // Shape is likely [1, H, W, C] or [1, C, H, W] but flattened
+                                return new TensorShape(1, height, width, segmentationClassCount);
                             }
-                            
-                            break;
                         }
                     }
-                    
-                    if (validOutputs) break;
                 }
             }
             
-            // Final fallback to first output
-            if (!validOutputs && _runtimeModel.outputs.Count > 0)
-            {
-                outputName = _runtimeModel.outputs[0];
-                validOutputs = true;
-                Debug.LogWarning($"No matching output layer found. Using first available output: {outputName}");
-            }
-        }
-        
-        if (!validInputs || !validOutputs)
-        {
-            Debug.LogError($"Model doesn't contain expected input/output layers. Disabling segmentation.");
-            enabled = false;
-            return;
-        }
-        
-        // Select appropriate backend
-        WorkerFactory.Type backend = workerType;
-        
-        // For mobile optimization
-        if (Application.isMobilePlatform && useComputeOptimization)
-        {
-            backend = WorkerFactory.ValidateType(WorkerFactory.Type.ComputePrecompiled);
-            
-            // Fallback if compute not supported
-            if (backend != WorkerFactory.Type.ComputePrecompiled)
-                backend = WorkerFactory.Type.CSharpBurst;
-        }
-        
-        // Create ML worker with selected backend
-        try
-        {
-            // Create worker with selected backend
-            // For specific compute device selection
-            if (computeDeviceIndex > 0) 
-            {
-                // Use the correct method signature: CreateWorker(Type, Model, bool)
-                _engine = WorkerFactory.CreateWorker(backend, _runtimeModel, false);
-                Debug.Log($"SegmentationManager: Created ML engine using {backend} backend with device index {computeDeviceIndex}");
-            }
-            else
-            {
-                _engine = WorkerFactory.CreateWorker(backend, _runtimeModel);
-                Debug.Log($"SegmentationManager: Created ML engine using {backend} backend");
-            }
+            Debug.LogError("Could not determine valid output shape");
+            return new TensorShape(0, 0, 0, 0); // Return invalid shape to signal error
         }
         catch (Exception e)
         {
-            Debug.LogError($"Failed to create ML worker: {e.Message}. Falling back to CPU.");
-            _engine = WorkerFactory.CreateWorker(WorkerFactory.Type.CSharpBurst, _runtimeModel);
+            Debug.LogError($"Error in DetermineOutputShape: {e.Message}");
+            return new TensorShape(0, 0, 0, 0);
         }
     }
-    
-    private IEnumerable<string> GetInputLayerNames(Model model)
-    {
-        foreach (var input in model.inputs)
-        {
-            yield return input.name;
-        }
-    }
-    
+
     /// <summary>
-    /// Process a camera frame through the segmentation model
+    /// Обрабатывает текстуру камеры, выполняя сегментацию с помощью модели машинного обучения
+    /// (Texture2D overload for compatibility with existing code)
     /// </summary>
-    public void ProcessCameraFrame(Texture2D cameraFrame)
+    public bool ProcessCameraFrame(Texture2D cameraTexture, Vector2Int targetResolution = default)
     {
-        _frameCounter++;
+        if (targetResolution == default)
+        {
+            targetResolution = new Vector2Int(inputWidth, inputHeight);
+        }
         
-        // Skip processing based on interval for performance
-        if (_isProcessing || _frameCounter % processingInterval != 0)
-            return;
-            
+        if (!IsModelInitialized())
+        {
+            Debug.LogWarning("Cannot process camera frame - model is not initialized");
+            return false;
+        }
+
+        if (_isProcessing)
+        {
+            if (debugMode)
+            {
+                Debug.Log("Skipping frame processing - already processing another frame");
+            }
+            return false;
+        }
+
         _isProcessing = true;
-        
+
         try
         {
-            // Resize input
-            ResizeTexture(cameraFrame, _resizedInput);
+            // Create input tensor directly from texture
+            Tensor input = new Tensor(cameraTexture, inputChannels);
             
-            // Create input tensor (normalized 0-1)
-            using (var inputTensor = new Tensor(_resizedInput, channels: 3))
+            // Execute the model with the input
+            _worker.Execute(input);
+            Tensor output = _worker.PeekOutput(_runtimeModel.outputs[0]);
+            
+            // Determine the output tensor shape from the model
+            TensorShape outputShape = DetermineOutputShape(output, input.shape);
+            if (outputShape[0] == 0)
             {
-                // Get expected output shape for proper tensor handling
-                var outputShape = DetermineOutputShape(_runtimeModel);
-                
-                if (debugMode && _frameCounter % 100 == 0)
-                {
-                    Debug.Log($"Model output shape: batch={outputShape.batch}, " +
-                              $"height={outputShape.height}, width={outputShape.width}, " +
-                              $"channels={outputShape.channels}");
-                }
-                
-                // Execute model
-                _engine.Execute(inputTensor);
-                
-                // Get output
-                var outputTensor = _engine.PeekOutput(outputName);
-                
-                // Verify tensor dimensions
-                if (_frameCounter % 100 == 0)
-                {
-                    Debug.Log($"Output tensor shape: {string.Join("x", outputTensor.shape)}");
-                }
-                
-                // Convert output tensor to texture using dynamic shape info
-                ConvertTensorToTexture(outputTensor, _outputTexture, outputShape);
-                
-                // Notify listeners
-                OnSegmentationCompleted?.Invoke(wallClassId, _outputTexture);
+                Debug.LogError("Failed to determine valid output shape");
+                input.Dispose();
+                _isProcessing = false;
+                return false;
             }
-        }
-        catch (Exception e)
-        {
-            // Provide more detailed diagnostics for reshape errors
-            if (e.Message.Contains("reshape array"))
-            {
-                Debug.LogError($"Shape mismatch error in segmentation: {e.Message}");
-                Debug.LogError($"Input texture dimensions: {_resizedInput.width}x{_resizedInput.height}");
-                
-                // Log expected model input/output shapes if possible
-                try 
-                {
-                    var inputShape = _runtimeModel.inputs[0].shape;
-                    Debug.LogError($"Model expects input shape: {string.Join("x", inputShape)}");
-                    
-                    // Provide suggestion
-                    Debug.LogError("Try adjusting inputWidth/inputHeight to match model's expected dimensions " +
-                                  "or ensure tensor format (NHWC/NCHW) is correctly set");
-                }
-                catch 
-                {
-                    // Fallback if we can't access shape info
-                    Debug.LogError("Could not determine model's expected dimensions. Check model.onnx specifications.");
-                }
-            }
-            else
-            {
-                Debug.LogError($"Error during segmentation: {e.Message}\n{e.StackTrace}");
-            }
-        }
-        finally
-        {
+            
+            // Convert tensor to texture with wall class highlighted
+            bool success = ConvertTensorToTexture(output, outputShape);
+            
+            // Clean up resources
+            input.Dispose();
+            
             _isProcessing = false;
-        }
-    }
-    
-    /// <summary>
-    /// Determines the expected output shape from the model
-    /// </summary>
-    private (int batch, int height, int width, int channels) DetermineOutputShape(Model model)
-    {
-        // Default fallback values
-        int batch = 1;
-        int height = inputHeight;
-        int width = inputWidth;
-        int channels = 1;
-        
-        try
-        {
-            // Get output shape from model metadata if available
-            foreach (var output in model.outputs)
-            {
-                var shapeMap = model.GetShapeByName(output);
-                
-                if (output == outputName && shapeMap.HasValue)
-                {
-                    var shape = shapeMap.Value;
-                    
-                    // Interpret shape based on format
-                    if (isModelNHWCFormat) // NHWC format [batch, height, width, channels]
-                    {
-                        if (shape.rank >= 4)
-                        {
-                            batch = (int)shape[0];
-                            height = (int)shape[1];
-                            width = (int)shape[2];
-                            channels = (int)shape[3];
-                        }
-                    }
-                    else // NCHW format [batch, channels, height, width]
-                    {
-                        if (shape.rank >= 4)
-                        {
-                            batch = (int)shape[0];
-                            channels = (int)shape[1];
-                            height = (int)shape[2];
-                            width = (int)shape[3];
-                        }
-                    }
-                    
-                    break;
-                }
-            }
+            return success;
         }
         catch (Exception e)
         {
-            Debug.LogWarning($"Error determining output shape: {e.Message}. Using default values.");
+            Debug.LogError($"Error in ProcessCameraFrame: {e.Message}\n{e.StackTrace}");
+            _isProcessing = false;
+            return false;
         }
-        
-        return (batch, height, width, channels);
     }
     
     /// <summary>
@@ -421,6 +236,20 @@ public class SegmentationManager : MonoBehaviour
     /// </summary>
     private void ResizeTexture(Texture2D source, Texture2D destination)
     {
+        // Проверка на null-ссылки
+        if (source == null || destination == null)
+        {
+            Debug.LogError($"ResizeTexture: Source or destination texture is null. Source: {source != null}, Destination: {destination != null}");
+            return;
+        }
+        
+        // Проверка размеров текстур
+        if (destination.width <= 0 || destination.height <= 0)
+        {
+            Debug.LogError($"ResizeTexture: Invalid destination dimensions: {destination.width}x{destination.height}");
+            return;
+        }
+        
         // Use bilinear scaling via RenderTexture for efficiency
         RenderTexture rt = RenderTexture.GetTemporary(
             destination.width, 
@@ -444,183 +273,83 @@ public class SegmentationManager : MonoBehaviour
     /// <summary>
     /// Convert tensor output to single-channel texture with wall class
     /// </summary>
-    private void ConvertTensorToTexture(Tensor tensor, Texture2D texture, (int batch, int height, int width, int channels) shape)
+    private bool ConvertTensorToTexture(Tensor output, TensorShape shape)
     {
-        int textureWidth = texture.width;
-        int textureHeight = texture.height;
-        
-        // Get raw data for direct processing
-        float[] data = tensor.AsFloats();
-        Color32[] pixels = new Color32[textureWidth * textureHeight];
-        
-        // Different processing depending on whether the model gives class indices directly
-        // or we need to perform argmax ourselves
-        if (modelOutputNeedsArgMax)
+        if (_segmentationTexture == null || 
+            _segmentationTexture.width != shape[2] || 
+            _segmentationTexture.height != shape[1])
         {
-            // Model outputs class probabilities, we need to find the highest value (argmax)
-            int numClasses = shape.channels;
-            
-            // Process each pixel to find wall class
-            for (int y = 0; y < textureHeight; y++)
+            if (_segmentationTexture != null)
             {
-                for (int x = 0; x < textureWidth; x++)
-                {
-                    int pixelIndex = y * textureWidth + x;
-                    
-                    // Perform argmax across the channels (classes) dimension
-                    int bestClassId = 0;
-                    float bestClassConfidence = -1f;
-                    
-                    // Find class with highest probability
-                    for (int c = 0; c < numClasses; c++)
-                    {
-                        // Use dynamic indexing based on the tensor's actual dimensions
-                        int index = GetDynamicTensorIndex(x, y, c, tensor.shape, isModelNHWCFormat, textureWidth, textureHeight);
-                        
-                        if (index >= 0 && index < data.Length)
-                        {
-                            float probability = data[index];
-                            
-                            if (probability > bestClassConfidence)
-                            {
-                                bestClassConfidence = probability;
-                                bestClassId = c;
-                            }
-                        }
-                    }
-                    
-                    // Check if this pixel is a wall (best class is wall class)
-                    byte value = bestClassId == wallClassId ? (byte)255 : (byte)0;
-                    
-                    // Set all channels for compatibility
-                    pixels[pixelIndex] = new Color32(value, value, value, 255);
-                }
+                Destroy(_segmentationTexture);
             }
+            
+            _segmentationTexture = new Texture2D(
+                shape[2], 
+                shape[1], 
+                TextureFormat.R8, false);
         }
-        else
+        
+        try
         {
-            // Model already outputs class indices directly
-            for (int y = 0; y < textureHeight; y++)
+            // Подготовить данные для текстуры
+            Color32[] pixelData = new Color32[shape[2] * shape[1]];
+            
+            // Обработать данные выходного тензора
+            for (int y = 0; y < shape[1]; y++)
             {
-                for (int x = 0; x < textureWidth; x++)
+                for (int x = 0; x < shape[2]; x++)
                 {
-                    int pixelIndex = y * textureWidth + x;
+                    // Индекс пикселя в текстуре
+                    int pixelIndex = y * shape[2] + x;
                     
-                    // Get index dynamically based on tensor dimensions
-                    int index = GetDirectTensorIndex(x, y, tensor.shape, isModelNHWCFormat, textureWidth, textureHeight);
+                    // Получить значение сегментации для текущего пикселя
+                    float value = 0;
                     
-                    if (index >= 0 && index < data.Length)
+                    // Определить значение сегментации в зависимости от формата модели
+                    if (isModelNHWCFormat)
                     {
-                        // Expected format: [batch, width, height, 1] where value is the class ID
-                        float classId = data[index];
-                        
-                        // Check if this pixel is a wall
-                        byte value = Mathf.RoundToInt(classId) == wallClassId ? (byte)255 : (byte)0;
-                        
-                        // Set all channels for compatibility
-                        pixels[pixelIndex] = new Color32(value, value, value, 255);
+                        // NHWC: [batch, height, width, channels]
+                        // Для классификации стен берем значение соответствующего класса
+                        if (wallClassId < shape[3])
+                        {
+                            // [0, y, x, wallClassId]
+                            value = output[0, y, x, wallClassId];
+                        }
                     }
                     else
                     {
-                        // Safety fallback for out-of-range indices
-                        pixels[pixelIndex] = new Color32(0, 0, 0, 255);
+                        // NCHW: [batch, channels, height, width]
+                        // Для классификации стен берем значение соответствующего класса
+                        if (wallClassId < shape[1])
+                        {
+                            // [0, wallClassId, y, x]
+                            value = output[0, wallClassId, y, x];
+                        }
                     }
+                    
+                    // Применить порог для выделения стен
+                    byte intensity = value >= classificationThreshold ? (byte)255 : (byte)0;
+                    
+                    // Записать значение в текстурные данные
+                    pixelData[pixelIndex] = new Color32(intensity, intensity, intensity, 255);
                 }
             }
+            
+            // Применить данные к текстуре и обновить ее
+            _segmentationTexture.SetPixels32(pixelData);
+            _segmentationTexture.Apply();
+            
+            // Уведомить о завершении обработки через оба события
+            onProcessingComplete?.Invoke(_segmentationTexture);
+            OnSegmentationCompleted?.Invoke(_segmentationTexture);
+            
+            return true;
         }
-        
-        // Apply to texture
-        texture.SetPixels32(pixels);
-        texture.Apply();
-    }
-    
-    /// <summary>
-    /// Get tensor index for argmax calculation, handling different tensor formats dynamically
-    /// </summary>
-    private int GetDynamicTensorIndex(int x, int y, int channel, TensorShape tensorShape, bool isNHWC, int textureWidth, int textureHeight)
-    {
-        // Safety check
-        if (tensorShape.rank < 4)
+        catch (Exception e)
         {
-            Debug.LogWarning($"Unexpected tensor shape: {tensorShape}");
-            return -1;
-        }
-        
-        // Scale x and y to match tensor dimensions
-        int tensorWidth = isNHWC ? tensorShape[2] : tensorShape[3];
-        int tensorHeight = isNHWC ? tensorShape[1] : tensorShape[2];
-        
-        // Get tensor coordinates scaled to tensor dimensions
-        int tx = Mathf.FloorToInt((float)x / textureWidth * tensorWidth);
-        int ty = Mathf.FloorToInt((float)y / textureHeight * tensorHeight);
-        
-        // Clamp to valid range
-        tx = Mathf.Clamp(tx, 0, tensorWidth - 1);
-        ty = Mathf.Clamp(ty, 0, tensorHeight - 1);
-        
-        // Calculate index based on format
-        if (isNHWC)
-        {
-            // NHWC format [batch, height, width, channel]
-            int numChannels = tensorShape[3];
-            return (ty * tensorWidth * numChannels) + (tx * numChannels) + channel;
-        }
-        else
-        {
-            // NCHW format [batch, channel, height, width]
-            return (channel * tensorHeight * tensorWidth) + (ty * tensorWidth) + tx;
-        }
-    }
-    
-    /// <summary>
-    /// Get tensor index for direct class index output
-    /// </summary>
-    private int GetDirectTensorIndex(int x, int y, TensorShape tensorShape, bool isNHWC, int textureWidth, int textureHeight)
-    {
-        // Safety check
-        if (tensorShape.rank < 3)
-        {
-            Debug.LogWarning($"Unexpected tensor shape for direct index: {tensorShape}");
-            return -1;
-        }
-        
-        // Scale x and y to match tensor dimensions
-        int tensorWidth, tensorHeight;
-        
-        if (isNHWC)
-        {
-            // NHWC format [batch, height, width, 1]
-            tensorHeight = tensorShape[1];
-            tensorWidth = tensorShape[2];
-        }
-        else
-        {
-            // NCHW format [batch, 1, height, width]
-            tensorHeight = tensorShape[2];
-            tensorWidth = tensorShape[3];
-        }
-        
-        // Get tensor coordinates scaled to tensor dimensions
-        int tx = Mathf.FloorToInt((float)x / textureWidth * tensorWidth);
-        int ty = Mathf.FloorToInt((float)y / textureHeight * tensorHeight);
-        
-        // Clamp to valid range
-        tx = Mathf.Clamp(tx, 0, tensorWidth - 1);
-        ty = Mathf.Clamp(ty, 0, tensorHeight - 1);
-        
-        // Calculate index based on format
-        if (isNHWC)
-        {
-            // Single-channel or multi-channel?
-            int channels = tensorShape.rank >= 4 ? tensorShape[3] : 1;
-            return (ty * tensorWidth * channels) + (tx * channels);
-        }
-        else
-        {
-            // Single-channel or multi-channel?
-            return tensorShape.rank >= 4 
-                ? (1 * tensorHeight * tensorWidth) + (ty * tensorWidth) + tx // Single output channel at index 1
-                : (ty * tensorWidth) + tx; // No channel dimension
+            Debug.LogError($"Error in ConvertTensorToTexture: {e.Message}\n{e.StackTrace}");
+            return false;
         }
     }
     
@@ -642,93 +371,299 @@ public class SegmentationManager : MonoBehaviour
         }
     }
     
-    private void OnDestroy()
+    private void LogTensorDimensions()
     {
+        if (_runtimeModel == null)
+        {
+            Debug.LogError("Cannot log tensor dimensions - model is not loaded");
+            return;
+        }
+        
+        Debug.Log("==== MODEL TENSOR DIMENSIONS ====");
+        Debug.Log("INPUTS:");
+        foreach (var input in _runtimeModel.inputs)
+        {
+            // Changed to just output input name without trying to access shape property
+            Debug.Log($"- Input: {input}");
+        }
+        
+        Debug.Log("OUTPUTS:");
+        foreach (var output in _runtimeModel.outputs)
+        {
+            // Changed to just output output name without trying to access shape property
+            Debug.Log($"- Output: {output}");
+        }
+        
+        Debug.Log("=================================");
+    }
+
+    // Структура для хранения информации о форме тензора
+    private struct TensorShapeInfo
+    {
+        public int batch;
+        public int height;
+        public int width;
+        public int channels;
+    }
+
+    /// <summary>
+    /// Подготавливает входной тензор из кадра камеры с заданным разрешением
+    /// </summary>
+    private Tensor PrepareInputTensorFromFrame(XRCameraFrame frame, Vector2Int targetResolution)
+    {
+        if (frame.timestampNs == 0)
+        {
+            Debug.LogWarning("Invalid camera frame: timestamp is 0");
+            return null;
+        }
+        
+        // Создаем или обновляем текстуру для входных данных
+        if (_inputTexture == null || 
+            _inputTexture.width != targetResolution.x || 
+            _inputTexture.height != targetResolution.y)
+        {
+            if (_inputTexture != null)
+            {
+                Destroy(_inputTexture);
+            }
+            
+            _inputTexture = new Texture2D(
+                targetResolution.x,
+                targetResolution.y,
+                TextureFormat.RGBA32,
+                false);
+        }
+        
         try
         {
-            // Clean up Barracuda resources
-            if (_engine != null)
+            // Since TryGetCameraImage is not available, create a texture directly from the camera frame
+            // This is a simplified approach - you may need custom code to extract image data from your specific camera frame format
+            
+            // Get camera texture (this will depend on your AR implementation)
+            Texture2D cameraTexture = new Texture2D(2, 2);
+            
+            // For demo purposes, create a simple texture
+            // In a real application, you would get this from the camera/AR system
+            Color[] pixels = new Color[targetResolution.x * targetResolution.y];
+            for (int i = 0; i < pixels.Length; i++)
             {
-                _engine.Dispose();
-                _engine = null;
-                Debug.Log("SegmentationManager: Disposed ML engine");
+                pixels[i] = Color.black;
             }
             
-            // Clean up textures
-            if (_resizedInput != null)
-            {
-                Destroy(_resizedInput);
-                _resizedInput = null;
-            }
-                
-            if (_outputTexture != null)
-            {
-                Destroy(_outputTexture);
-                _outputTexture = null;
-            }
+            _inputTexture.SetPixels(pixels);
+            _inputTexture.Apply();
             
-            Debug.Log("SegmentationManager: Cleaned up all resources");
+            // Create input tensor from the texture
+            return new Tensor(_inputTexture, inputChannels);
         }
         catch (Exception e)
         {
-            Debug.LogError($"Error during SegmentationManager cleanup: {e.Message}");
+            Debug.LogError($"Error preparing input tensor: {e.Message}\n{e.StackTrace}");
+            return null;
         }
     }
     
-#if UNITY_EDITOR
-    [ContextMenu("Debug Save Sample Output")]
-    public void DebugSaveOutput()
+    /// <summary>
+    /// Обрабатывает результат сегментации и вызывает события при обнаружении стен
+    /// </summary>
+    private void ProcessSegmentationMask()
     {
-        if (_outputTexture != null)
+        if (_segmentationTexture == null)
         {
-            byte[] bytes = _outputTexture.EncodeToPNG();
-            File.WriteAllBytes(Application.dataPath + "/debug_segmentation.png", bytes);
-            Debug.Log("Saved debug output to Assets/debug_segmentation.png");
+            Debug.LogWarning("Cannot process segmentation mask: texture is null");
+            return;
         }
+        
+        // Здесь можно добавить дополнительную обработку маски сегментации
+        // Например, постобработку, фильтрацию шума и т.д.
+        
+        // Уведомить о завершении обработки
+        onProcessingComplete?.Invoke(_segmentationTexture);
+        OnSegmentationCompleted?.Invoke(_segmentationTexture);
     }
-    
-    [ContextMenu("Log Model Layer Info")]
-    public void LogModelLayerInfo()
+
+    private bool IsModelInitialized()
     {
-        if (_runtimeModel != null)
+        return _runtimeModel != null && _worker != null;
+    }
+
+    private Tensor PrepareInputTensor(XRCpuImage image, Vector2Int targetDims, bool normalizeInput = true)
+    {
+        // Modified to check only for AndroidYuv420_888 format since IosYpCbCr420_8BiPlanar is not available
+        if (image.format != XRCpuImage.Format.AndroidYuv420_888)
         {
-            Debug.Log("MODEL INPUT LAYERS:");
-            foreach (var input in _runtimeModel.inputs)
+            Debug.LogError($"Unsupported image format: {image.format}");
+            return null;
+        }
+
+        try
+        {
+            // Configure conversion parameters
+            var conversionParams = new XRCpuImage.ConversionParams
             {
-                Debug.Log($"  - {input.name} (Shape: {input.shape})");
+                inputRect = new RectInt(0, 0, image.width, image.height),
+                outputDimensions = new Vector2Int(targetDims.x, targetDims.y),
+                outputFormat = TextureFormat.RGBA32,
+                transformation = XRCpuImage.Transformation.MirrorY
+            };
+
+            // Calculate buffer size and allocate
+            int bufferSize = image.GetConvertedDataSize(conversionParams);
+            var buffer = new Unity.Collections.NativeArray<byte>(bufferSize, Unity.Collections.Allocator.Temp);
+
+            // Convert the image to RGBA
+            image.Convert(conversionParams, buffer);
+
+            // Create a texture from the buffer
+            if (_inputTexture == null || _inputTexture.width != targetDims.x || _inputTexture.height != targetDims.y)
+            {
+                if (_inputTexture != null) 
+                    Destroy(_inputTexture);
+                
+                _inputTexture = new Texture2D(targetDims.x, targetDims.y, TextureFormat.RGBA32, false);
             }
             
-            Debug.Log("MODEL OUTPUT LAYERS:");
-            foreach (var output in _runtimeModel.outputs)
+            _inputTexture.LoadRawTextureData(buffer);
+            _inputTexture.Apply();
+
+            // Dispose the temporary buffer
+            buffer.Dispose();
+
+            // Determine input tensor format based on model
+            int batchSize = 1;
+            int height = targetDims.y;
+            int width = targetDims.x;
+            int channels = 3; // RGB channels
+            
+            // Find expected input shape from model
+            if (_runtimeModel != null && _runtimeModel.inputs.Count > 0)
             {
-                Debug.Log($"  - {output}");
-            }
-        }
-        else
-        {
-            Debug.LogWarning("No model loaded yet.");
-        }
-    }
-    
-    [ContextMenu("Test Tensor Format")]
-    public void TestTensorFormat()
-    {
-        if (_runtimeModel != null)
-        {
-            foreach (var input in _runtimeModel.inputs)
-            {
-                if (input.shape.Length >= 4 && input.shape[3] == 3)
+                var modelInputShape = _runtimeModel.inputs[0].shape;
+                if (debugMode)
                 {
-                    string format = "Unknown";
-                    if (input.shape[1] == 3)
-                        format = "NCHW (Channels first)";
-                    else if (input.shape[3] == 3)
-                        format = "NHWC (Channels last)";
-                    
-                    Debug.Log($"Input {input.name} with shape {input.shape} likely uses {format} format");
+                    Debug.Log($"Model input shape: {modelInputShape}");
+                }
+                
+                // Check if we have NCHW or NHWC format by looking at the last dimension
+                // Most models use NHWC (batch, height, width, channels) format where the 
+                // 4th dimension (index 3) is the channel count
+                if (modelInputShape.Length >= 4)
+                {
+                    // Different models have different input formats (NCHW vs NHWC)
+                    // We'll need to adjust accordingly - try to detect which format
+                    channels = modelInputShape[3] == 3 ? 3 : modelInputShape[1];
                 }
             }
+
+            // Create input tensor of appropriate shape
+            Tensor inputTensor = new Tensor(new TensorShape(batchSize, height, width, channels));
+
+            // Sample pixels from the texture and fill the tensor
+            Color32[] pixels = _inputTexture.GetPixels32();
+            
+            // Fill the tensor with RGB values from the texture
+            for (int y = 0; y < height; y++)
+            {
+                for (int x = 0; x < width; x++)
+                {
+                    int pixelIndex = y * width + x;
+                    Color32 pixel = pixels[pixelIndex];
+                    
+                    // For RGB input, we need 3 channels
+                    if (channels == 3)
+                    {
+                        // Normalize if requested (convert 0-255 to 0-1 or other normalization)
+                        float r = normalizeInput ? pixel.r / 255.0f : pixel.r;
+                        float g = normalizeInput ? pixel.g / 255.0f : pixel.g;
+                        float b = normalizeInput ? pixel.b / 255.0f : pixel.b;
+                        
+                        // Set the tensor values based on expected format
+                        inputTensor[0, y, x, 0] = r;
+                        inputTensor[0, y, x, 1] = g;
+                        inputTensor[0, y, x, 2] = b;
+                    }
+                    // Some models require single channel (grayscale)
+                    else if (channels == 1)
+                    {
+                        // Convert to grayscale
+                        float gray = (pixel.r + pixel.g + pixel.b) / 3.0f;
+                        gray = normalizeInput ? gray / 255.0f : gray;
+                        
+                        inputTensor[0, y, x, 0] = gray;
+                    }
+                }
+            }
+            
+            if (debugMode)
+            {
+                Debug.Log($"Created input tensor with shape: {inputTensor.shape}");
+            }
+            
+            return inputTensor;
+        }
+        catch (Exception e)
+        {
+            Debug.LogError($"Error preparing input tensor: {e.Message}\n{e.StackTrace}");
+            return null;
         }
     }
-#endif
+
+    /// <summary>
+    /// Обрабатывает кадр камеры, выполняя сегментацию с помощью модели машинного обучения
+    /// (XRCameraFrame version)
+    /// </summary>
+    public bool ProcessCameraFrame(XRCameraFrame frame, Vector2Int targetResolution = default)
+    {
+        if (targetResolution == default)
+        {
+            targetResolution = new Vector2Int(inputWidth, inputHeight);
+        }
+        
+        if (!IsModelInitialized())
+        {
+            Debug.LogWarning("Cannot process camera frame - model is not initialized");
+            return false;
+        }
+
+        if (_isProcessing)
+        {
+            if (debugMode)
+            {
+                Debug.Log("Skipping frame processing - already processing another frame");
+            }
+            return false;
+        }
+
+        _isProcessing = true;
+
+        try
+        {
+            // Create a simple texture as we can't directly use XRCameraFrame 
+            // This is just a placeholder - in a real implementation, you'd extract the image data from the frame
+            Texture2D cameraTexture = new Texture2D(targetResolution.x, targetResolution.y, TextureFormat.RGBA32, false);
+            
+            // Fill with placeholder data (black texture)
+            Color[] pixels = new Color[targetResolution.x * targetResolution.y];
+            for (int i = 0; i < pixels.Length; i++)
+            {
+                pixels[i] = Color.black;
+            }
+            cameraTexture.SetPixels(pixels);
+            cameraTexture.Apply();
+            
+            // Use the texture overload to process the frame
+            bool result = ProcessCameraFrame(cameraTexture, targetResolution);
+            
+            // Clean up the temporary texture
+            Destroy(cameraTexture);
+            
+            return result;
+        }
+        catch (Exception e)
+        {
+            Debug.LogError($"Error in ProcessCameraFrame with XRCameraFrame: {e.Message}\n{e.StackTrace}");
+            _isProcessing = false;
+            return false;
+        }
+    }
 } 
