@@ -183,12 +183,83 @@ public class ARSceneSetupBasic : EditorWindow
                 GameObject planeDetectionControllerObj = new GameObject("AR Plane Detection Controller");
                 var planeDetectionController = planeDetectionControllerObj.AddComponent<ARPlaneDetectionController>();
                 
-                // Теперь используем ссылку на ARPlaneManager из XROrigin
+                // Теперь находим и назначаем ARPlaneManager на компонент, чтобы не требовалось ручное назначение
                 if (xrOrigin != null)
                 {
                     ARPlaneManager planeManager = xrOrigin.GetComponent<ARPlaneManager>();
-                    // Оставляем возможность настройки ссылки через инспектор
-                    // Поле planeManager установится вручную через инспектор, если нужно
+                    if (planeManager == null)
+                    {
+                        // Если нет на XR Origin, создаем и добавляем
+                        planeManager = xrOrigin.gameObject.AddComponent<ARPlaneManager>();
+                        Debug.Log("Added ARPlaneManager to XR Origin");
+                        
+                        // Настраиваем для обнаружения обоих типов плоскостей
+                        #if UNITY_2020_1_OR_NEWER
+                        planeManager.requestedDetectionMode = PlaneDetectionMode.Horizontal | PlaneDetectionMode.Vertical;
+                        #else
+                        planeManager.detectionMode = PlaneDetectionFlags.Horizontal | PlaneDetectionFlags.Vertical;
+                        #endif
+                    }
+                    
+                    // Используем метод из System.Reflection для установки приватного поля planeManager 
+                    // Это гарантирует, что даже если имя поля изменится, мы сможем его найти
+                    var field = typeof(ARPlaneDetectionController).GetField("planeManager", 
+                                    System.Reflection.BindingFlags.Instance | 
+                                    System.Reflection.BindingFlags.NonPublic);
+                    
+                    if (field != null)
+                    {
+                        field.SetValue(planeDetectionController, planeManager);
+                        Debug.Log("ARPlaneManager reference set on ARPlaneDetectionController");
+                    }
+                    else
+                    {
+                        // Если рефлексия не сработала, выдаем предупреждение
+                        Debug.LogWarning("ARPlaneDetectionController не удалось автоматически установить planeManager через рефлексию. Пожалуйста, назначьте его вручную в инспекторе.");
+                    }
+                    
+                    // Создаем также обработчик событий для плоскостей во время выполнения
+                    // Это обеспечит корректную обработку и визуализацию вертикальных плоскостей в рантайме
+                    GameObject runtimeHandlerObj = new GameObject("Runtime AR Plane Events Handler");
+                    try
+                    {
+                        var runtimeHandler = runtimeHandlerObj.AddComponent<RuntimeARPlaneEventsHandler>();
+                        
+                        // Назначаем ссылку на ARPlaneManager
+                        var runtimeField = typeof(RuntimeARPlaneEventsHandler).GetField("planeManager", 
+                                        System.Reflection.BindingFlags.Instance | 
+                                        System.Reflection.BindingFlags.NonPublic);
+                        
+                        if (runtimeField != null)
+                        {
+                            runtimeField.SetValue(runtimeHandler, planeManager);
+                            Debug.Log("Added RuntimeARPlaneEventsHandler with planeManager reference");
+                        }
+                        
+                        // Если в сцене есть AR Plane Visualizer, назначаем его Trackables
+                        GameObject visualizer = GameObject.Find("AR Plane Visualizer");
+                        if (visualizer != null)
+                        {
+                            Transform trackables = visualizer.transform.Find("Trackables");
+                            if (trackables != null)
+                            {
+                                var trackablesField = typeof(RuntimeARPlaneEventsHandler).GetField("customTrackablesParent", 
+                                                System.Reflection.BindingFlags.Instance | 
+                                                System.Reflection.BindingFlags.NonPublic);
+                                
+                                if (trackablesField != null)
+                                {
+                                    trackablesField.SetValue(runtimeHandler, trackables);
+                                    Debug.Log("Set Trackables parent on RuntimeARPlaneEventsHandler");
+                                }
+                            }
+                        }
+                    }
+                    catch (System.Exception ex)
+                    {
+                        Debug.LogWarning($"Не удалось добавить RuntimeARPlaneEventsHandler: {ex.Message}. Добавьте его вручную в сцену для корректной работы с вертикальными плоскостями.");
+                        GameObject.DestroyImmediate(runtimeHandlerObj);
+                    }
                 }
                 
                 Debug.Log("Added AR Plane Detection Controller to ensure vertical plane detection");
