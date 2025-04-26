@@ -39,7 +39,11 @@ public class MLManagerAdapter : MonoBehaviour
     private void Awake()
     {
         cameraManager = GetComponent<ARCameraManager>();
+        #if UNITY_2022_1_OR_NEWER
+        _cameraTexture = new Texture2D(captureWidth, captureHeight, TextureFormat.RGBA32, false, false);
+        #else
         _cameraTexture = new Texture2D(captureWidth, captureHeight, TextureFormat.RGBA32, false);
+        #endif
         lastProcessingTime = 0f;
         FindMissingReferences();
     }
@@ -262,17 +266,42 @@ public class MLManagerAdapter : MonoBehaviour
     {
         while (_isPredicting)
         {
-            // Ждем конец кадра перед захватом изображения
-            yield return new WaitForEndOfFrame();
+            if (segmentationManager != null)
+            {
+                try
+                {
+                    // Создаем текстуру подходящего размера если надо
+                    if (_currentFrameTexture == null || 
+                        _currentFrameTexture.width != segmentationManager.inputWidth || 
+                        _currentFrameTexture.height != segmentationManager.inputHeight)
+                    {
+                        int width = segmentationManager.inputWidth;
+                        int height = segmentationManager.inputHeight;
+                        
+                        if (_currentFrameTexture != null)
+                            Destroy(_currentFrameTexture);
+                        
+                        #if UNITY_2022_1_OR_NEWER
+                        _currentFrameTexture = new Texture2D(width, height, TextureFormat.RGBA32, false, false);
+                        #else
+                        _currentFrameTexture = new Texture2D(width, height, TextureFormat.RGBA32, false);
+                        #endif
+                    }
+                    
+                    // Получаем текстуру текущего кадра
+                    Texture2D cameraFrame = CaptureCurrentFrame();
+                    if (cameraFrame != null)
+                    {
+                        ProcessFrame(cameraFrame);
+                    }
+                }
+                catch (Exception e)
+                {
+                    Debug.LogError($"MLManagerAdapter: Error during prediction: {e.Message}");
+                }
+            }
             
-            // Захватываем текущий кадр с камеры
-            CaptureCurrentFrame();
-            
-            #if UNITY_EDITOR
-            Debug.Log("MLManagerAdapter: Captured and processed frame");
-            #endif
-            
-            // Ждем указанный интервал
+            // Ждем следующего шага предсказания
             yield return new WaitForSeconds(predictionInterval);
         }
     }
@@ -409,16 +438,61 @@ public class MLManagerAdapter : MonoBehaviour
     // This would replace the placeholder implementation above
     private bool TryConvertCpuImageToTexture(XRCpuImage cpuImage, ref Texture2D texture)
     {
-        if (texture == null)
+        if (cpuImage.format != XRCpuImage.Format.AndroidYuv420_888)
         {
-            texture = new Texture2D(captureWidth, captureHeight, TextureFormat.RGBA32, false);
+            Debug.LogError($"MLManagerAdapter: Unsupported image format: {cpuImage.format}");
+            return false;
         }
-        
-        // Your conversion code would go here
-        
-        // For a complete implementation, look at the ARFoundation samples from Unity:
-        // https://github.com/Unity-Technologies/arfoundation-samples/blob/main/Assets/Scripts/CpuImageSample.cs
-        
-        return true;
+
+        try
+        {
+            // Check if we need to create a new texture
+            if (texture == null || texture.width != captureWidth || texture.height != captureHeight)
+            {
+                if (texture != null)
+                {
+                    Destroy(texture);
+                }
+                
+                #if UNITY_2022_1_OR_NEWER
+                texture = new Texture2D(captureWidth, captureHeight, TextureFormat.RGBA32, false, false);
+                #else
+                texture = new Texture2D(captureWidth, captureHeight, TextureFormat.RGBA32, false);
+                #endif
+            }
+            
+            // Configure conversion parameters
+            var conversionParams = new XRCpuImage.ConversionParams
+            {
+                inputRect = new RectInt(0, 0, cpuImage.width, cpuImage.height),
+                outputDimensions = new Vector2Int(captureWidth, captureHeight),
+                outputFormat = TextureFormat.RGBA32,
+                transformation = XRCpuImage.Transformation.MirrorY
+            };
+            
+            // Calculate buffer size and allocate memory
+            int bufferSize = cpuImage.GetConvertedDataSize(conversionParams);
+            byte[] buffer = new byte[bufferSize];
+            
+            // Pin the buffer in memory so it can't be moved
+            var handle = GCHandle.Alloc(buffer, GCHandleType.Pinned);
+            
+            // Convert the image to RGBA format
+            cpuImage.Convert(conversionParams, handle.AddrOfPinnedObject(), buffer.Length);
+            
+            // Unpin the buffer
+            handle.Free();
+            
+            // Load the data into the texture
+            texture.LoadRawTextureData(buffer);
+            texture.Apply();
+            
+            return true;
+        }
+        catch (Exception e)
+        {
+            Debug.LogError($"MLManagerAdapter: Error converting CPU image to texture: {e.Message}");
+            return false;
+        }
     }
 } 

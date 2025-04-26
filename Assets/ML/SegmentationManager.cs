@@ -66,10 +66,18 @@ public class SegmentationManager : MonoBehaviour
     private void InitializeTextures()
     {
         // Инициализируем входную текстуру
+        #if UNITY_2022_1_OR_NEWER
+        _inputTexture = new Texture2D(inputWidth, inputHeight, TextureFormat.RGBA32, false, false);
+        #else
         _inputTexture = new Texture2D(inputWidth, inputHeight, TextureFormat.RGBA32, false);
+        #endif
         
         // Инициализируем выходную текстуру
+        #if UNITY_2022_1_OR_NEWER
+        _segmentationTexture = new Texture2D(inputWidth, inputHeight, TextureFormat.R8, false, false);
+        #else
         _segmentationTexture = new Texture2D(inputWidth, inputHeight, TextureFormat.R8, false);
+        #endif
         
         // Создаем маску в виде RenderTexture для дальнейшей обработки
         _maskTexture = new RenderTexture(inputWidth, inputHeight, 0, RenderTextureFormat.R8);
@@ -255,7 +263,11 @@ public class SegmentationManager : MonoBehaviour
         }
 
         // Create a new texture with target dimensions
+        #if UNITY_2022_1_OR_NEWER
+        Texture2D result = new Texture2D(targetWidth, targetHeight, TextureFormat.RGBA32, false, false);
+        #else
         Texture2D result = new Texture2D(targetWidth, targetHeight, TextureFormat.RGBA32, false);
+        #endif
         
         // Use bilinear scaling via RenderTexture for efficiency
         RenderTexture rt = RenderTexture.GetTemporary(
@@ -286,44 +298,50 @@ public class SegmentationManager : MonoBehaviour
     {
         try
         {
+            // Extract shape dimensions to local variables for clarity and safety
+            int batchSize = shape.dimensions[0];
+            int height = shape.dimensions[1];
+            int width = shape.dimensions[2];
+            int channels = shape.dimensions.Length >= 4 ? shape.dimensions[3] : segmentationClassCount;
+            
             // Check if we need to create or resize the output texture
             if (_segmentationTexture == null || 
-                _segmentationTexture.width != shape.dimensions[2] || 
-                _segmentationTexture.height != shape.dimensions[1])
+                _segmentationTexture.width != width || 
+                _segmentationTexture.height != height)
             {
                 if (_segmentationTexture != null)
                 {
                     Destroy(_segmentationTexture);
                 }
                 
-                #if UNITY_2019_1_OR_NEWER
-                // For newer Unity versions (2019.1+)
+                #if UNITY_2022_1_OR_NEWER
+                // For newer Unity versions (2022.1+)
                 _segmentationTexture = new Texture2D(
-                    shape.dimensions[2], 
-                    shape.dimensions[1], 
+                    width, 
+                    height, 
                     TextureFormat.R8, 
+                    false,
                     false);
                 #else
                 // For older Unity versions
                 _segmentationTexture = new Texture2D(
-                    shape.dimensions[2], 
-                    shape.dimensions[1], 
+                    width, 
+                    height, 
                     TextureFormat.R8, 
-                    false,
                     false);
                 #endif
             }
             
             // Prepare data for texture
-            Color32[] pixelData = new Color32[shape.dimensions[2] * shape.dimensions[1]];
+            Color32[] pixelData = new Color32[width * height];
             
             // Process output tensor data
-            for (int y = 0; y < shape.dimensions[1]; y++)
+            for (int y = 0; y < height; y++)
             {
-                for (int x = 0; x < shape.dimensions[2]; x++)
+                for (int x = 0; x < width; x++)
                 {
                     // Pixel index in texture
-                    int pixelIndex = y * shape.dimensions[2] + x;
+                    int pixelIndex = y * width + x;
                     
                     // Get segmentation value for current pixel
                     float value = 0;
@@ -333,7 +351,7 @@ public class SegmentationManager : MonoBehaviour
                     {
                         // NHWC: [batch, height, width, channels]
                         // For wall classification, get the value of the corresponding class
-                        if (wallClassId < shape.dimensions[3])
+                        if (wallClassId < channels)
                         {
                             // [0, y, x, wallClassId]
                             value = output[0, y, x, wallClassId];
@@ -681,7 +699,7 @@ public class SegmentationManager : MonoBehaviour
                 var modelInputShape = _runtimeModel.inputs[0].shape;
                 if (debugMode)
                 {
-                    Debug.Log($"Model input shape: {modelInputShape}");
+                    Debug.Log($"Model input shape: {string.Join("x", modelInputShape)}");
                 }
                 
                 // Check if we have NCHW or NHWC format by looking at the last dimension
@@ -689,9 +707,16 @@ public class SegmentationManager : MonoBehaviour
                 // 4th dimension (index 3) is the channel count
                 if (modelInputShape.Length >= 4)
                 {
+                    // Get shape as array for safe indexing
+                    int[] shapeArray = new int[modelInputShape.Length];
+                    for (int i = 0; i < modelInputShape.Length; i++)
+                    {
+                        shapeArray[i] = modelInputShape[i];
+                    }
+                    
                     // Different models have different input formats (NCHW vs NHWC)
                     // We'll need to adjust accordingly - try to detect which format
-                    channels = modelInputShape[3] == 3 ? 3 : modelInputShape[1];
+                    channels = shapeArray[3] == 3 ? 3 : shapeArray[1];
                 }
             }
 
@@ -854,7 +879,7 @@ public class SegmentationManager : MonoBehaviour
             }
             catch (Exception e)
             {
-                HandleTensorReshapeError(outputTensor, e, $"[{inputHeight}, {inputWidth}, {inputChannels}]");
+                HandleTensorReshapeError(outputTensor, e, new int[] { inputHeight, inputWidth, inputChannels });
             }
             
             // Clean up
@@ -862,7 +887,15 @@ public class SegmentationManager : MonoBehaviour
         }
         catch (Exception e)
         {
-            Debug.LogError($"Error processing camera frame: {e.Message}\n{e.StackTrace}");
+            Debug.LogError($"Error processing camera frame: {e.Message}");
+            
+            // If it's a reshape error, provide more detailed diagnostics
+            if (e.Message.Contains("shape") || e.Message.Contains("reshape"))
+            {
+                HandleTensorReshapeError(outputTensor, e, new int[] { inputHeight, inputWidth, segmentationClassCount });
+            }
+            
+            return;
         }
     }
 
@@ -1133,7 +1166,7 @@ public class SegmentationManager : MonoBehaviour
     private void HandleTensorReshapeError(Tensor outputTensor, Exception ex, int[] expectedShape)
     {
         Debug.LogError($"Error during tensor reshaping: {ex.Message}");
-        Debug.LogError($"Output tensor shape: [{string.Join(", ", outputTensor.shape)}], Expected: [{string.Join(", ", expectedShape)}]");
+        Debug.LogError($"Output tensor shape: [{string.Join(", ", outputTensor.shape.dimensions)}], Expected: [{string.Join(", ", expectedShape)}]");
         Debug.LogError($"Output tensor element count: {outputTensor.length}, ClassCount: {segmentationClassCount}");
         
         // Find ModelConfigFixer to analyze tensor shape possibilities
@@ -1627,7 +1660,7 @@ public class SegmentationManager : MonoBehaviour
                 }
                 catch (Exception e)
                 {
-                    // Prepare expected shape for error handler
+                    // Determine expected output shape for error handler
                     int[] expectedOutputShape;
                     if (isModelNHWCFormat)
                     {
@@ -1638,6 +1671,7 @@ public class SegmentationManager : MonoBehaviour
                         expectedOutputShape = new int[] { 1, segmentationClassCount, inputHeight, inputWidth };
                     }
                     
+                    // Handle tensor reshape error
                     HandleTensorReshapeError(outputTensor, e, expectedOutputShape);
                     outputTensor?.Dispose();
                     _isProcessing = false;
@@ -1669,33 +1703,38 @@ public class SegmentationManager : MonoBehaviour
             return null;
         }
 
+        // Extract dimensions for clarity
+        int width = outputShape.dimensions[2];
+        int height = outputShape.dimensions[1];
+        int outChannels = outputShape.dimensions.Length >= 4 ? outputShape.dimensions[3] : segmentationClassCount;
+
         // Create texture with correct dimensions
-        #if UNITY_2019_1_OR_NEWER
-        // For newer Unity versions (2019.1+)
+        #if UNITY_2022_1_OR_NEWER
+        // For newer Unity versions (2022.1+)
         Texture2D segmentationTexture = new Texture2D(
-            outputShape.dimensions[2], 
-            outputShape.dimensions[1], 
+            width, 
+            height, 
             TextureFormat.R8, 
+            false,
             false);
         #else
         // For older Unity versions
         Texture2D segmentationTexture = new Texture2D(
-            outputShape.dimensions[2], 
-            outputShape.dimensions[1], 
+            width, 
+            height, 
             TextureFormat.R8, 
-            false,
             false);
         #endif
             
         // Prepare pixel data array
-        Color32[] pixelData = new Color32[outputShape.dimensions[2] * outputShape.dimensions[1]];
+        Color32[] pixelData = new Color32[width * height];
 
         // Process tensor data into pixels
-        for (int y = 0; y < outputShape.dimensions[1]; y++)
+        for (int y = 0; y < height; y++)
         {
-            for (int x = 0; x < outputShape.dimensions[2]; x++)
+            for (int x = 0; x < width; x++)
             {
-                int pixelIndex = y * outputShape.dimensions[2] + x;
+                int pixelIndex = y * width + x;
                 float value = 0;
 
                 if (isModelNHWCFormat)

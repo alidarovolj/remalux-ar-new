@@ -1031,4 +1031,18 @@ public static class ModelFixerMenu
         int inputSize = 224 * 224 * 3;
         Debug.Log($"Input dimensions: 224x224x3 = {inputSize} elements");
     }
+
+    [MenuItem("AR/Model Config/Analyze Error Tensor Shape")]
+    public static void AnalyzeErrorTensorShape()
+    {
+        // Find the ModelConfigFixer in the scene
+        ModelConfigFixer fixer = GameObject.FindObjectOfType<ModelConfigFixer>();
+        if (fixer == null)
+        {
+            Debug.LogError("ModelConfigFixer not found in scene. Please add it first.");
+            return;
+        }
+
+        fixer.AnalyzeErrorTensorShape();
+    }
 } 

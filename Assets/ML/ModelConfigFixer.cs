@@ -836,10 +836,17 @@ public class ModelConfigFixer : MonoBehaviour
             
             foreach (var input in runtimeModel.inputs)
             {
-                Debug.Log($"[ModelConfigFixer] Input: {input.name}, Shape: [{string.Join(", ", input.shape)}]");
+                // Get input shape as int[]
+                int[] inputShapeArray = new int[input.shape.Length];
+                for (int i = 0; i < input.shape.Length; i++)
+                {
+                    inputShapeArray[i] = input.shape[i];
+                }
+                
+                Debug.Log($"[ModelConfigFixer] Input: {input.name}, Shape: [{string.Join(", ", inputShapeArray)}]");
                 
                 // Additional information about the input if available
-                Debug.Log($"[ModelConfigFixer] - Input dimensions: {string.Join(" × ", input.shape)}");
+                Debug.Log($"[ModelConfigFixer] - Input dimensions: {string.Join(" × ", inputShapeArray)}");
             }
             
             // Create dummy input to examine outputs
@@ -854,11 +861,14 @@ public class ModelConfigFixer : MonoBehaviour
                 // Check the shape info to determine format
                 bool isNHWC = true; // Default to NHWC
                 
-                // Convert to int[] to avoid direct indexing issues
-                int[] inputShape = new int[firstInput.shape.Length];
-                for (int i = 0; i < firstInput.shape.Length; i++)
+                // Get the shape as an array to work with safely
+                int[] inputShape = new int[4]; // Use fixed size array for model input shapes
+                if (firstInput.shape != null)
                 {
-                    inputShape[i] = firstInput.shape[i];
+                    for (int i = 0; i < firstInput.shape.Length && i < 4; i++)
+                    {
+                        inputShape[i] = firstInput.shape[i];
+                    }
                 }
                 
                 if (inputShape.Length >= 4)
@@ -900,23 +910,25 @@ public class ModelConfigFixer : MonoBehaviour
                 Tensor outputTensor = worker.PeekOutput(outputName);
                 if (outputTensor != null)
                 {
-                    Debug.Log($"[ModelConfigFixer] Output: {outputName}, Shape: [{string.Join(", ", outputTensor.shape.dimensions)}], Elements: {outputTensor.length}");
+                    // Get the dimensions array explicitly
+                    int[] outputDims = outputTensor.shape.dimensions;
+                    Debug.Log($"[ModelConfigFixer] Output: {outputName}, Shape: [{string.Join(", ", outputDims)}], Elements: {outputTensor.length}");
                     
                     // Additional information about the output
-                    Debug.Log($"[ModelConfigFixer] - Batch (N): {outputTensor.shape.dimensions[0]}");
+                    Debug.Log($"[ModelConfigFixer] - Batch (N): {outputDims[0]}");
                     
                     // Try to determine if NCHW or NHWC format based on output tensor
                     int possibleClassCount;
                     
                     // Check if shape is compatible with NCHW format (class dimension is 1)
-                    possibleClassCount = outputTensor.shape.dimensions[1];
-                    Debug.Log($"[ModelConfigFixer] If NCHW format: Class count = {possibleClassCount}, Height = {outputTensor.shape.dimensions[2]}, Width = {outputTensor.shape.dimensions[3]}");
+                    possibleClassCount = outputDims[1];
+                    Debug.Log($"[ModelConfigFixer] If NCHW format: Class count = {possibleClassCount}, Height = {outputDims[2]}, Width = {outputDims[3]}");
                     
                     // Check if shape is compatible with NHWC format (class dimension is 3)
-                    if (outputTensor.shape.dimensions.Length >= 4)
+                    if (outputDims.Length >= 4)
                     {
-                        possibleClassCount = outputTensor.shape.dimensions[3];
-                        Debug.Log($"[ModelConfigFixer] If NHWC format: Height = {outputTensor.shape.dimensions[1]}, Width = {outputTensor.shape.dimensions[2]}, Class count = {possibleClassCount}");
+                        possibleClassCount = outputDims[3];
+                        Debug.Log($"[ModelConfigFixer] If NHWC format: Height = {outputDims[1]}, Width = {outputDims[2]}, Class count = {possibleClassCount}");
                     }
                     
                     // Try to determine if this is a segmentation model by checking dimensions
@@ -950,26 +962,31 @@ public class ModelConfigFixer : MonoBehaviour
                 if (runtimeModel.inputs.Count > 0)
                 {
                     // Get input shape as an array to prevent direct indexing issues
-                    int[] inputDims = new int[runtimeModel.inputs[0].shape.Length];
-                    for (int i = 0; i < runtimeModel.inputs[0].shape.Length; i++)
+                    int[] inputDims = new int[4]; // Initialize with default size 4 for model input shapes
+                    if (runtimeModel.inputs[0].shape != null)
                     {
-                        inputDims[i] = runtimeModel.inputs[0].shape[i];
+                        for (int i = 0; i < runtimeModel.inputs[0].shape.Length; i++)
+                        {
+                            if (i < 4) // Stay within the bounds of our array
+                            {
+                                inputDims[i] = runtimeModel.inputs[0].shape[i];
+                            }
+                        }
                     }
                     
-                    if (inputDims.Length >= 4)
-                    {
-                        Debug.Log($"[ModelConfigFixer] Suggested input dimensions: {inputDims[2]}x{inputDims[1]}x{inputDims[3]} (if NHWC) or {inputDims[3]}x{inputDims[2]}x{inputDims[1]} (if NCHW)");
-                    }
+                    // Use fixed array size since we initialized with length 4
+                    Debug.Log($"[ModelConfigFixer] Suggested input dimensions: {inputDims[2]}x{inputDims[1]}x{inputDims[3]} (if NHWC) or {inputDims[3]}x{inputDims[2]}x{inputDims[1]} (if NCHW)");
                 }
                 
                 // Suggest possible output format (NCHW vs NHWC)
-                if (mainOutput.shape.dimensions.Length == 4)
+                int[] mainOutputDims = mainOutput.shape.dimensions;
+                if (mainOutputDims.Length == 4)
                 {
-                    if (mainOutput.shape.dimensions[1] > 32 && mainOutput.shape.dimensions[3] < 32)
+                    if (mainOutputDims[1] > 32 && mainOutputDims[3] < 32)
                     {
                         Debug.Log($"[ModelConfigFixer] Based on dimensions, model likely uses NCHW format (Channels after Batch)");
                     }
-                    else if (mainOutput.shape.dimensions[3] > 32 && mainOutput.shape.dimensions[1] < 32)
+                    else if (mainOutputDims[3] > 32 && mainOutputDims[1] < 32)
                     {
                         Debug.Log($"[ModelConfigFixer] Based on dimensions, model likely uses NHWC format (Channels after Width)");
                     }
@@ -1118,5 +1135,25 @@ public class ModelConfigFixer : MonoBehaviour
         {
             Debug.LogWarning("[TensorAnalysis] No possible dimensions found that divide evenly.");
         }
+    }
+
+    /// <summary>
+    /// Analyzes the specific tensor shape for the common error case with 7593984 elements and 103 classes
+    /// </summary>
+    [ContextMenu("Analyze 7593984 Tensor Shape")]
+    public void AnalyzeErrorTensorShape()
+    {
+        Debug.Log("Analyzing tensor shape for the common error case: 7593984 elements with 103 classes");
+        AnalyzeTensorShapePossibilities(7593984, 103);
+        
+        // Also provide information about input dimensions
+        Debug.Log($"Current input dimensions: {segmentationManager?.inputWidth}x{segmentationManager?.inputHeight}x{segmentationManager?.inputChannels}");
+        Debug.Log($"Standard input size: 224x224x3 = {224*224*3} elements");
+        
+        // Suggest potential input dimensions that might work
+        Debug.Log("Potential input dimensions that might work with a 72x32x103 output:");
+        Debug.Log("- 576x256x3 (expecting 8:1 downsampling ratio)");
+        Debug.Log("- 288x128x3 (expecting 4:1 downsampling ratio)");
+        Debug.Log("- 144x64x3 (expecting 2:1 downsampling ratio)");
     }
 } 

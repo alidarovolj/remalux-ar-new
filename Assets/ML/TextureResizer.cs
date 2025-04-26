@@ -27,7 +27,11 @@ public static class TextureResizer
         RenderTexture.active = rt;
         
         // Create a new texture and read pixels from the active RT
+        #if UNITY_2022_1_OR_NEWER
+        Texture2D resized = new Texture2D(width, height, TextureFormat.RGBA32, false, false);
+        #else
         Texture2D resized = new Texture2D(width, height, TextureFormat.RGBA32, false);
+        #endif
         resized.ReadPixels(new Rect(0, 0, width, height), 0, 0);
         resized.Apply();
         
@@ -82,7 +86,11 @@ public static class TextureResizer
         RenderTexture.active = rt;
         
         // Create a new texture and read pixels
+        #if UNITY_2022_1_OR_NEWER
+        Texture2D resized = new Texture2D(targetWidth, targetHeight, TextureFormat.RGBA32, false, false);
+        #else
         Texture2D resized = new Texture2D(targetWidth, targetHeight, TextureFormat.RGBA32, false);
+        #endif
         resized.ReadPixels(new Rect(0, 0, targetWidth, targetHeight), 0, 0);
         resized.Apply();
         

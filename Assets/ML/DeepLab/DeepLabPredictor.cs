@@ -545,20 +545,30 @@ public class DeepLabPredictor : MonoBehaviour
     
     private Texture2D ResizeTexture(Texture2D source, int width, int height)
     {
-        if (source.width == width && source.height == height)
-            return source;
-            
-        RenderTexture rt = RenderTexture.GetTemporary(width, height, 0);
+        // Create RenderTexture for scaling
+        RenderTexture rt = RenderTexture.GetTemporary(width, height, 0, RenderTextureFormat.ARGB32);
+        rt.filterMode = FilterMode.Bilinear;
+
+        // Blit source texture to RenderTexture
         Graphics.Blit(source, rt);
+
+        // Create result texture
+        #if UNITY_2022_1_OR_NEWER
+        Texture2D resized = new Texture2D(width, height, TextureFormat.RGBA32, false, false);
+        #else
+        Texture2D resized = new Texture2D(width, height, TextureFormat.RGBA32, false);
+        #endif
         
-        RenderTexture prevRT = RenderTexture.active;
+        // Store active RenderTexture and set to our temporary
+        RenderTexture previousRT = RenderTexture.active;
         RenderTexture.active = rt;
         
-        Texture2D resized = new Texture2D(width, height, TextureFormat.RGBA32, false);
+        // Read pixels from RenderTexture to result texture
         resized.ReadPixels(new Rect(0, 0, width, height), 0, 0);
         resized.Apply();
         
-        RenderTexture.active = prevRT;
+        // Restore previous RenderTexture
+        RenderTexture.active = previousRT;
         RenderTexture.ReleaseTemporary(rt);
         
         return resized;
@@ -656,5 +666,201 @@ public class DeepLabPredictor : MonoBehaviour
         }
         
         return result;
+    }
+
+    private Texture2D ConvertLabelToTexture(Tensor outputTensor)
+    {
+        if (outputTensor == null)
+        {
+            Debug.LogError("Output tensor is null");
+            return null;
+        }
+
+        // Get dimensions from the tensor
+        int width = outputTensor.width;
+        int height = outputTensor.height;
+
+        // Create output texture
+        #if UNITY_2022_1_OR_NEWER
+        Texture2D outputTex = new Texture2D(width, height, TextureFormat.R8, false, false);
+        #else
+        Texture2D outputTex = new Texture2D(width, height, TextureFormat.R8, false);
+        #endif
+
+        // Create pixel array - using byte[] for R8 format
+        byte[] pixelData = new byte[width * height];
+
+        // Get data from tensor
+        float[] outputData = outputTensor.AsFloats();
+        
+        // Process output based on format
+        if (useArgMax)
+        {
+            // Model output is already class IDs (one per pixel)
+            for (int i = 0; i < pixelData.Length; i++)
+            {
+                int classId = Mathf.RoundToInt(outputData[i]);
+                
+                // Check if this pixel is a wall (using current wallClassId or auto-detect)
+                bool isWall = false;
+                
+                if (autoDetectWallClass && !hasDetectedWalls)
+                {
+                    // Try all alternative wall class IDs if auto-detect is enabled
+                    isWall = classId == selectedWallClassId;
+                    
+                    // If not matching current selection, check alternates
+                    if (!isWall)
+                    {
+                        foreach (int altClass in alternateWallClassIds)
+                        {
+                            if (classId == altClass)
+                            {
+                                if (enableDebugLogging && selectedWallClassId != altClass)
+                                {
+                                    selectedWallClassId = altClass;
+                                    Debug.Log($"Detected potential wall with class ID: {altClass}");
+                                }
+                                isWall = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+                else
+                {
+                    // Just check against the specified wall class ID
+                    isWall = classId == wallClassId;
+                }
+                
+                // Set pixel value (255 for wall, 0 for other)
+                pixelData[i] = isWall ? (byte)255 : (byte)0;
+            }
+        }
+        else
+        {
+            // Model output is probabilities/logits
+            // Determine output format based on channel count
+            int numClasses = outputTensor.channels;
+            
+            if (numClasses > 1)
+            {
+                // Multi-class output (softmax/logits)
+                for (int y = 0; y < outputTensor.height; y++)
+                {
+                    for (int x = 0; x < outputTensor.width; x++)
+                    {
+                        int pixelIdx = y * outputTensor.width + x;
+                        
+                        // Get probability for each class at this pixel
+                        float maxProb = 0f;
+                        int maxClass = 0;
+                        
+                        // Find class with highest probability
+                        for (int c = 0; c < numClasses; c++)
+                        {
+                            int idx = (c * outputTensor.height * outputTensor.width) + pixelIdx;
+                            float prob = outputData[idx];
+                            
+                            if (prob > maxProb)
+                            {
+                                maxProb = prob;
+                                maxClass = c;
+                            }
+                        }
+                        
+                        // Check if max class is wall and above threshold
+                        bool isWall = false;
+                        
+                        if (autoDetectWallClass && !hasDetectedWalls)
+                        {
+                            // Auto-detect mode
+                            if (maxClass == selectedWallClassId && maxProb >= classificationThreshold)
+                            {
+                                isWall = true;
+                            }
+                            else
+                            {
+                                // Check alternates
+                                foreach (int altClass in alternateWallClassIds)
+                                {
+                                    float altProb = 0f;
+                                    int idx = (altClass * outputTensor.height * outputTensor.width) + pixelIdx;
+                                    
+                                    if (altClass < numClasses)
+                                    {
+                                        altProb = outputData[idx];
+                                    }
+                                    
+                                    if (altProb >= classificationThreshold && altProb > maxProb)
+                                    {
+                                        if (enableDebugLogging && selectedWallClassId != altClass)
+                                        {
+                                            selectedWallClassId = altClass;
+                                            Debug.Log($"Detected potential wall with class ID: {altClass}");
+                                        }
+                                        isWall = true;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        else
+                        {
+                            // Just check specified wall class
+                            int idx = (wallClassId * outputTensor.height * outputTensor.width) + pixelIdx;
+                            if (wallClassId < numClasses)
+                            {
+                                float wallProb = outputData[idx];
+                                isWall = wallProb >= classificationThreshold;
+                            }
+                        }
+                        
+                        // Set pixel value
+                        pixelData[pixelIdx] = isWall ? (byte)255 : (byte)0;
+                    }
+                }
+            }
+            else
+            {
+                // Single-channel output (binary)
+                for (int i = 0; i < pixelData.Length; i++)
+                {
+                    pixelData[i] = outputData[i] >= classificationThreshold ? (byte)255 : (byte)0;
+                }
+            }
+        }
+        
+        // Apply noise reduction if enabled
+        if (noiseReduction && noiseReductionKernelSize > 0)
+        {
+            pixelData = ApplyNoiseReduction(pixelData, outputTensor.width, outputTensor.height);
+        }
+        
+        // Update texture with processed data
+        outputTex.LoadRawTextureData(pixelData);
+        outputTex.Apply();
+        
+        return outputTex;
+    }
+
+    private Texture2D GetRenderTexturePixels(RenderTexture rt)
+    {
+        // Create new Texture2D and read pixels
+        #if UNITY_2022_1_OR_NEWER
+        Texture2D tex = new Texture2D(rt.width, rt.height, TextureFormat.RGBA32, false, false);
+        #else
+        Texture2D tex = new Texture2D(rt.width, rt.height, TextureFormat.RGBA32, false);
+        #endif
+        
+        RenderTexture currentRT = RenderTexture.active;
+        RenderTexture.active = rt;
+        
+        tex.ReadPixels(new Rect(0, 0, rt.width, rt.height), 0, 0);
+        tex.Apply();
+        
+        RenderTexture.active = currentRT;
+        
+        return tex;
     }
 } 
