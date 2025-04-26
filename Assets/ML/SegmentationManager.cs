@@ -15,6 +15,7 @@ using System.IO;
 public class SegmentationManager : MonoBehaviour
 {
     [Header("Model Settings")]
+    [Tooltip("Assign the model.onnx asset here. This is the only supported model for the AR scene.")]
     [SerializeField] private NNModel modelAsset;
     [SerializeField] private string inputName = "ImageTensor";
     [SerializeField] private string outputName = "SemanticPredictions";
@@ -68,6 +69,12 @@ public class SegmentationManager : MonoBehaviour
             Debug.LogError("No model asset assigned to SegmentationManager!");
             enabled = false;
             return;
+        }
+        
+        // Verify this is the correct model (model.onnx)
+        if (!modelAsset.name.Contains("model"))
+        {
+            Debug.LogWarning($"SegmentationManager: The model '{modelAsset.name}' is being used, but 'model.onnx' is the only fully supported model for this project. This may cause issues with wall detection and segmentation. Please update references to use model.onnx.");
         }
         
         // Load model

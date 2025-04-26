@@ -6,9 +6,145 @@ using UnityEditor;
 #endif
 
 /// <summary>
+/// Utility class for configuring and ensuring proper AR Camera setup
+/// </summary>
+public static class ARCameraSetup
+{
+    /// <summary>
+    /// Ensures that an AR Camera exists and is properly configured in the scene
+    /// </summary>
+    public static void EnsureARCameraExists()
+    {
+        Debug.Log("ARCameraSetup: Checking AR Camera configuration");
+
+        // First, find XROrigin in the scene
+        var xrOrigins = Object.FindObjectsByType<XROrigin>(FindObjectsSortMode.None);
+        if (xrOrigins == null || xrOrigins.Length == 0)
+        {
+            Debug.LogWarning("ARCameraSetup: No XROrigin found in the scene. Unable to set up AR Camera.");
+            return;
+        }
+
+        foreach (var origin in xrOrigins)
+        {
+            if (origin.Camera == null)
+            {
+                Debug.LogWarning("ARCameraSetup: XROrigin has no camera assigned. Looking for a suitable camera...");
+                
+                // Try to find the main camera or any camera under Camera Offset
+                Camera cameraToUse = FindCameraForXROrigin(origin);
+                
+                if (cameraToUse != null)
+                {
+                    origin.Camera = cameraToUse;
+                    Debug.Log($"ARCameraSetup: Assigned camera '{cameraToUse.name}' to XROrigin");
+                    
+                    // Ensure the camera has ARCameraManager
+                    EnsureARCameraManager(cameraToUse.gameObject);
+                }
+                else
+                {
+                    Debug.LogWarning("ARCameraSetup: No suitable camera found for XROrigin");
+                }
+            }
+            else
+            {
+                // Camera exists, ensure it has ARCameraManager
+                EnsureARCameraManager(origin.Camera.gameObject);
+            }
+        }
+    }
+    
+    /// <summary>
+    /// Find a suitable camera to use with XROrigin
+    /// </summary>
+    private static Camera FindCameraForXROrigin(XROrigin origin)
+    {
+        // First, check for Camera.main
+        Camera mainCamera = Camera.main;
+        if (mainCamera != null)
+        {
+            Debug.Log("ARCameraSetup: Found main camera to use with XROrigin");
+            return mainCamera;
+        }
+        
+        // Next, look for a camera under Camera Offset if it exists
+        Transform cameraOffset = null;
+        
+        // Find the Camera Offset
+        foreach (Transform child in origin.transform)
+        {
+            if (child.name.Contains("Camera Offset") || child.name.Contains("CameraOffset"))
+            {
+                cameraOffset = child;
+                break;
+            }
+        }
+        
+        // If we found a camera offset, look for cameras underneath
+        if (cameraOffset != null)
+        {
+            Camera[] cameras = cameraOffset.GetComponentsInChildren<Camera>();
+            if (cameras.Length > 0)
+            {
+                Debug.Log($"ARCameraSetup: Found camera '{cameras[0].name}' under Camera Offset");
+                return cameras[0];
+            }
+        }
+        
+        // As a last resort, look for any camera in the scene
+        Camera[] allCameras = Object.FindObjectsByType<Camera>(FindObjectsSortMode.None);
+        if (allCameras.Length > 0)
+        {
+            Debug.Log($"ARCameraSetup: Using camera '{allCameras[0].name}' found in the scene");
+            return allCameras[0];
+        }
+        
+        return null;
+    }
+    
+    /// <summary>
+    /// Ensures that the AR camera has an ARCameraManager component
+    /// </summary>
+    private static void EnsureARCameraManager(GameObject cameraObject)
+    {
+        if (cameraObject == null)
+        {
+            Debug.LogWarning("ARCameraSetup: Camera object is null, cannot add ARCameraManager");
+            return;
+        }
+        
+        // Check if ARCameraManager already exists
+        ARCameraManager cameraManager = cameraObject.GetComponent<ARCameraManager>();
+        if (cameraManager == null)
+        {
+            Debug.Log($"ARCameraSetup: Adding ARCameraManager to {cameraObject.name}");
+            cameraManager = cameraObject.AddComponent<ARCameraManager>();
+        }
+        
+        // Check if ARCameraBackground exists
+        ARCameraBackground cameraBackground = cameraObject.GetComponent<ARCameraBackground>();
+        if (cameraBackground == null)
+        {
+            Debug.Log($"ARCameraSetup: Adding ARCameraBackground to {cameraObject.name}");
+            cameraBackground = cameraObject.AddComponent<ARCameraBackground>();
+        }
+        
+#if UNITY_IOS || UNITY_ANDROID
+        // Configure auto-focus for mobile devices
+        if (cameraManager != null)
+        {
+            Debug.Log("ARCameraSetup: Setting up camera focus mode for mobile");
+            cameraManager.autoFocusRequested = true;
+        }
+#endif
+    }
+}
+
+/// <summary>
 /// Utility script to fix AR Camera setup issues
 /// </summary>
-public class ARCameraSetup : MonoBehaviour
+public class ARCameraSetupTool : MonoBehaviour
 {
 #if UNITY_EDITOR
     [MenuItem("AR/Fix AR Camera Setup")]
@@ -127,7 +263,7 @@ public class ARCameraSetup : MonoBehaviour
     }
 #endif
 
-    public static void EnsureARCameraExists()
+    public static void ConfigureARCamera()
     {
         // Find XR Origin in the scene
         XROrigin xrOrigin = Object.FindObjectOfType<XROrigin>();

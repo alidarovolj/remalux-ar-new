@@ -280,6 +280,12 @@ namespace ML.DeepLab
                     Debug.LogError("EnhancedDeepLabPredictor: Model asset is null after copying from source!");
                     return false;
                 }
+                
+                // Check if the model asset is the correct one (model.onnx)
+                if (!this.modelAsset.name.Contains("model"))
+                {
+                    Debug.LogWarning($"EnhancedDeepLabPredictor: The model '{this.modelAsset.name}' is being used, but 'model.onnx' is the only fully supported model. This may cause issues with wall segmentation. Please update references to use model.onnx.");
+                }
 
                 if (debugMode)
                 {
@@ -376,35 +382,59 @@ namespace ML.DeepLab
         {
             try
             {
-                // Log model info before loading
-                Debug.Log($"EnhancedDeepLabPredictor: Attempting to load model asset {modelAsset.name}");
-                
-                // Similar to base class Initialize but with our own engine reference
-                var runtimeModel = ModelLoader.Load(modelAsset);
-                
-                if (runtimeModel != null)
+                // Check if we have a valid model asset
+                if (modelAsset == null)
                 {
-                    Debug.Log($"EnhancedDeepLabPredictor: Successfully loaded model with {runtimeModel.outputs.Count} outputs");
-                    
-                    // Create worker with appropriate backend
-                    localEngine = WorkerFactory.CreateWorker(WorkerFactory.Type.Auto, runtimeModel);
-                    
-                    // Log available model outputs
-                    Debug.Log($"EnhancedDeepLabPredictor: Model outputs: {string.Join(", ", runtimeModel.outputs)}");
-                    
-                    Debug.Log("EnhancedDeepLabPredictor: Model initialized successfully");
+                    Debug.LogError("EnhancedDeepLabPredictor: No model asset assigned!");
+                    return;
                 }
-                else
+                
+                // Check if this is the correct model (model.onnx)
+                if (!modelAsset.name.Contains("model"))
                 {
-                    Debug.LogError("EnhancedDeepLabPredictor: Runtime model is null after loading!");
-                    TryRecoverModel();
+                    Debug.LogWarning($"EnhancedDeepLabPredictor: The model '{modelAsset.name}' is being used, but 'model.onnx' is the only fully supported model. This may cause issues with wall segmentation. Please update references to use model.onnx.");
+                }
+
+                // Try to load the model
+                Model model = ModelLoader.Load(modelAsset);
+                
+                if (model == null)
+                {
+                    Debug.LogError("EnhancedDeepLabPredictor: Failed to load model!");
+                    return;
+                }
+                
+                // Select appropriate backend based on platform
+                WorkerFactory.Type workerType = WorkerFactory.Type.Auto;
+                
+                // On mobile, prefer GPU compute with fallback
+                if (Application.isMobilePlatform)
+                {
+                    workerType = WorkerFactory.ValidateType(WorkerFactory.Type.ComputePrecompiled);
+                    if (workerType != WorkerFactory.Type.ComputePrecompiled)
+                        workerType = WorkerFactory.Type.CSharpBurst;
+                }
+                
+                // Create worker
+                try
+                {
+                    localEngine = WorkerFactory.CreateWorker(workerType, model);
+                    
+                    if (debugMode)
+                        Debug.Log($"EnhancedDeepLabPredictor: Created ML worker with {workerType} backend");
+                    
+                    isModelLoaded = true;
+                }
+                catch (System.Exception e)
+                {
+                    Debug.LogError($"EnhancedDeepLabPredictor: Failed to create worker: {e.Message}");
+                    isModelLoaded = false;
                 }
             }
             catch (System.Exception e)
             {
-                Debug.LogError($"EnhancedDeepLabPredictor: Failed to initialize model: {e.Message}");
-                Debug.LogException(e);
-                TryRecoverModel();
+                Debug.LogError($"EnhancedDeepLabPredictor: Error initializing model: {e.Message}");
+                isModelLoaded = false;
             }
         }
         

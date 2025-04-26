@@ -6,6 +6,7 @@ using System.Linq;
 public class DeepLabPredictor : MonoBehaviour
 {
     [Header("Model Settings")]
+    [Tooltip("Assign the model.onnx asset here. Do not use any other model file.")]
     public NNModel modelAsset;
     private Model runtimeModel;
     private IWorker engine;
@@ -98,6 +99,28 @@ public class DeepLabPredictor : MonoBehaviour
     private int frameCount = 0;
     private int selectedWallClassId;
     private bool hasDetectedWalls = false;
+
+    protected virtual void Awake()
+    {
+        // Validate model asset
+        ValidateModelAsset();
+    }
+
+    protected virtual void ValidateModelAsset()
+    {
+        if (modelAsset == null)
+        {
+            Debug.LogError("DeepLabPredictor: No model asset assigned! Please assign model.onnx in the inspector.");
+            enabled = false;
+            return;
+        }
+
+        // Verify this is the correct model (model.onnx)
+        if (!modelAsset.name.Contains("model"))
+        {
+            Debug.LogWarning($"DeepLabPredictor: The model '{modelAsset.name}' is being used, but 'model.onnx' is the only fully supported model for this project. This may cause issues with wall detection and segmentation. Please update references to use model.onnx.");
+        }
+    }
 
     protected virtual void Start()
     {
@@ -313,190 +336,211 @@ public class DeepLabPredictor : MonoBehaviour
     /// <summary>
     /// Process the output tensor to create a mask
     /// </summary>
-    private unsafe void ProcessOutputToMask(Tensor output, RenderTexture targetTexture)
+    private void ProcessOutputToMask(Tensor output, RenderTexture targetTexture)
     {
-        // Создаем временную текстуру для результата
-        Texture2D maskTexture = new Texture2D(inputWidth, inputHeight, TextureFormat.RGBA32, false);
+        // Process the output tensor to create a segmentation mask
+        // This implementation will vary based on the output format of your model
         
-        // Get raw data from the output tensor
-        float[] rawData = output.AsFloats();
-        
-        // Prepare color array for the mask texture
-        Color[] colors = new Color[inputWidth * inputHeight];
-        
-        // Used for counting wall pixels
-        int totalPixels = 0;
-        int wallPixels = 0;
-        
-        // Get class ID to use for wall detection
-        int classIdToUse = selectedWallClassId > 0 ? selectedWallClassId : WallClassId;
-        
-        // ArgMax format (one channel with class IDs)
-        if (useArgMax)
+        try
         {
-            // Safety check
-            if (rawData.Length < inputWidth * inputHeight)
-            {
-                Debug.LogError($"Tensor data size mismatch: {rawData.Length} vs {inputWidth * inputHeight}");
-                Destroy(maskTexture);
-                return;
-            }
+            // Create temporary texture for processing
+            Texture2D outputTex = new Texture2D(output.width, output.height, TextureFormat.R8, false);
             
-            // Оптимизированный подсчет пикселей стен с использованием unsafe
-            fixed (float* rawDataPtr = rawData)
+            // Get data from tensor
+            float[] outputData = output.AsFloats();
+            byte[] pixels = new byte[output.width * output.height];
+            
+            // Process output based on format
+            if (useArgMax)
             {
-                float* ptr = rawDataPtr;
-                for (int i = 0; i < inputWidth * inputHeight; i++, ptr++)
+                // Model output is already class IDs (one per pixel)
+                for (int i = 0; i < pixels.Length; i++)
                 {
-                    totalPixels++;
-                    int classId = (int)(*ptr + 0.5f); // Rounded class ID
+                    int classId = Mathf.RoundToInt(outputData[i]);
                     
-                    // Проверка на принадлежность к классу стены
-                    bool isWall = (classId == classIdToUse);
-                    if (isWall) wallPixels++;
+                    // Check if this pixel is a wall (using current wallClassId or auto-detect)
+                    bool isWall = false;
                     
-                    // Устанавливаем цвет (белый для стен, прозрачный для остальных)
-                    colors[i] = isWall ? Color.white : new Color(0, 0, 0, 0);
+                    if (autoDetectWallClass && !hasDetectedWalls)
+                    {
+                        // Try all alternative wall class IDs if auto-detect is enabled
+                        isWall = classId == selectedWallClassId;
+                        
+                        // If not matching current selection, check alternates
+                        if (!isWall)
+                        {
+                            foreach (int altClass in alternateWallClassIds)
+                            {
+                                if (classId == altClass)
+                                {
+                                    if (enableDebugLogging && selectedWallClassId != altClass)
+                                    {
+                                        selectedWallClassId = altClass;
+                                        Debug.Log($"Detected potential wall with class ID: {altClass}");
+                                    }
+                                    isWall = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    else
+                    {
+                        // Just check against the specified wall class ID
+                        isWall = classId == wallClassId;
+                    }
+                    
+                    // Set pixel value (255 for wall, 0 for other)
+                    pixels[i] = isWall ? (byte)255 : (byte)0;
                 }
             }
-            
-            // Log wall statistics for debug
-            float wallPercentage = (float)wallPixels / totalPixels * 100f;
-            Debug.Log($"Wall pixels found: {wallPixels} out of {totalPixels} ({wallPercentage:F2}%)");
-            
-            // Update our detection status
-            hasDetectedWalls = wallPixels > 100;
-        }
-        // Original multi-channel format
-        else if (output.shape.channels > 1)
-        {
-            Debug.Log($"Processing multi-channel tensor with {output.shape.channels} channels");
-            // Multi-channel tensor (class probabilities)
-            int numClasses = output.shape.channels;
-            Dictionary<int, int> classPixelCounts = new Dictionary<int, int>();
-            
-            // Оптимизированная обработка с небезопасным кодом
-            fixed (float* rawDataPtr = rawData)
+            else
             {
-                for (int y = 0; y < inputHeight; y++)
+                // Model output is probabilities/logits
+                // Determine output format based on channel count
+                int numClasses = output.channels;
+                
+                if (numClasses > 1)
                 {
-                    for (int x = 0; x < inputWidth; x++)
+                    // Multi-class output (softmax/logits)
+                    for (int y = 0; y < output.height; y++)
                     {
-                        totalPixels++;
-                        int pixelIdx = y * inputWidth + x;
-                        int maxClassId = 0;
-                        float maxProb = float.MinValue;
-                        
-                        // Базовый индекс для текущего пикселя
-                        int baseIdx = pixelIdx * numClasses;
-                        
-                        // Find the class with highest probability
-                        for (int c = 0; c < numClasses; c++)
+                        for (int x = 0; x < output.width; x++)
                         {
-                            int idx = baseIdx + c;
-                            if (idx < rawData.Length)
+                            int pixelIdx = y * output.width + x;
+                            
+                            // Get probability for each class at this pixel
+                            float maxProb = 0f;
+                            int maxClass = 0;
+                            
+                            // Find class with highest probability
+                            for (int c = 0; c < numClasses; c++)
                             {
-                                float prob = rawDataPtr[idx];
+                                int idx = (c * output.height * output.width) + pixelIdx;
+                                float prob = outputData[idx];
+                                
                                 if (prob > maxProb)
                                 {
                                     maxProb = prob;
-                                    maxClassId = c;
+                                    maxClass = c;
                                 }
                             }
-                        }
-                        
-                        // If auto-detection is enabled, track class counts
-                        if (autoDetectWallClass)
-                        {
-                            if (!classPixelCounts.ContainsKey(maxClassId))
-                                classPixelCounts[maxClassId] = 0;
-                            classPixelCounts[maxClassId]++;
-                        }
-                        
-                        // Set color based on whether it's a wall or not
-                        bool isWall = (maxClassId == classIdToUse && maxProb > classificationThreshold);
-                        if (isWall) wallPixels++;
-                        colors[pixelIdx] = isWall ? Color.white : new Color(0, 0, 0, 0);
-                    }
-                }
-            }
-            
-            // If auto-detection is enabled, log statistics about classes
-            if (autoDetectWallClass && classPixelCounts.Count > 0)
-            {
-                Debug.Log("Class distribution in segmentation output:");
-                foreach (var kvp in classPixelCounts.OrderByDescending(k => k.Value))
-                {
-                    float percentage = (float)kvp.Value / totalPixels * 100f;
-                    Debug.Log($"  Class {kvp.Key}: {kvp.Value} pixels ({percentage:F2}%)");
-                    
-                    // Auto-update wall class if we found a good candidate and haven't detected walls yet
-                    if (!hasDetectedWalls && percentage > 5f && kvp.Key != 0)
-                    {
-                        Debug.Log($"Auto-selecting class {kvp.Key} as wall class");
-                        selectedWallClassId = kvp.Key;
-                        
-                        // Reprocess with this class ID for this frame
-                        for (int y = 0; y < inputHeight; y++)
-                        {
-                            for (int x = 0; x < inputWidth; x++)
+                            
+                            // Check if max class is wall and above threshold
+                            bool isWall = false;
+                            
+                            if (autoDetectWallClass && !hasDetectedWalls)
                             {
-                                int pixelIdx = y * inputWidth + x;
-                                int cls = 0;
-                                float maxProb = float.MinValue;
-                                
-                                // Determine class ID for this pixel
-                                for (int c = 0; c < numClasses; c++)
+                                // Auto-detect mode
+                                if (maxClass == selectedWallClassId && maxProb >= classificationThreshold)
                                 {
-                                    int idx = (pixelIdx * numClasses) + c;
-                                    if (idx < rawData.Length && rawData[idx] > maxProb)
+                                    isWall = true;
+                                }
+                                else
+                                {
+                                    // Check alternates
+                                    foreach (int altClass in alternateWallClassIds)
                                     {
-                                        maxProb = rawData[idx];
-                                        cls = c;
+                                        float altProb = 0f;
+                                        int idx = (altClass * output.height * output.width) + pixelIdx;
+                                        
+                                        if (altClass < numClasses)
+                                        {
+                                            altProb = outputData[idx];
+                                        }
+                                        
+                                        if (altProb >= classificationThreshold && altProb > maxProb)
+                                        {
+                                            if (enableDebugLogging && selectedWallClassId != altClass)
+                                            {
+                                                selectedWallClassId = altClass;
+                                                Debug.Log($"Detected potential wall with class ID: {altClass}");
+                                            }
+                                            isWall = true;
+                                            break;
+                                        }
                                     }
                                 }
-                                
-                                // Update color based on new wall class
-                                colors[pixelIdx] = (cls == selectedWallClassId && maxProb > classificationThreshold) 
-                                                ? Color.white 
-                                                : new Color(0, 0, 0, 0);
                             }
+                            else
+                            {
+                                // Just check specified wall class
+                                int idx = (wallClassId * output.height * output.width) + pixelIdx;
+                                if (wallClassId < numClasses)
+                                {
+                                    float wallProb = outputData[idx];
+                                    isWall = wallProb >= classificationThreshold;
+                                }
+                            }
+                            
+                            // Set pixel value
+                            pixels[pixelIdx] = isWall ? (byte)255 : (byte)0;
                         }
+                    }
+                }
+                else
+                {
+                    // Single-channel output (binary)
+                    for (int i = 0; i < pixels.Length; i++)
+                    {
+                        pixels[i] = outputData[i] >= classificationThreshold ? (byte)255 : (byte)0;
                     }
                 }
             }
             
-            // Update wall detection status
-            hasDetectedWalls = wallPixels > 100;
-            
-            // Count walls for debugging
-            float wallPercentage = (float)wallPixels / totalPixels * 100f;
-            Debug.Log($"Wall pixels found: {wallPixels} out of {totalPixels} ({wallPercentage:F2}%)");
-        }
-        
-        // Set the colors to the texture with fully opaque alpha to ensure visibility
-        for (int i = 0; i < colors.Length; i++)
-        {
-            if (colors[i].r > 0.5f || colors[i].g > 0.5f || colors[i].b > 0.5f)
+            // Apply noise reduction if enabled
+            if (noiseReduction && noiseReductionKernelSize > 0)
             {
-                colors[i].a = 1.0f;  // Make sure wall pixels are fully opaque
+                pixels = ApplyNoiseReduction(pixels, output.width, output.height);
+            }
+            
+            // Update texture with processed data
+            outputTex.LoadRawTextureData(pixels);
+            outputTex.Apply();
+            
+            // Copy to render texture
+            Graphics.Blit(outputTex, targetTexture);
+            
+            // Cleanup
+            Destroy(outputTex);
+            
+            // Mark that we've detected walls if auto-detect is enabled
+            if (autoDetectWallClass && !hasDetectedWalls)
+            {
+                // Check if we've found walls
+                int wallPixels = 0;
+                foreach (byte p in pixels)
+                {
+                    if (p > 0) wallPixels++;
+                }
+                
+                // If we found a significant number of wall pixels, consider detection success
+                if (wallPixels > pixels.Length * 0.05f)
+                {
+                    hasDetectedWalls = true;
+                    wallClassId = selectedWallClassId;
+                    Debug.Log($"Wall class auto-detection successful. Using class ID: {wallClassId}");
+                }
+            }
+            
+            // Debug
+            if (enableDebugLogging && frameCount % 30 == 0)
+            {
+                int wallCount = pixels.Count(p => p > 0);
+                float wallPercentage = (float)wallCount / pixels.Length * 100f;
+                Debug.Log($"Wall detection: {wallCount} pixels ({wallPercentage:F1}%) using class ID {wallClassId}");
+            }
+            
+            // Save debug output if enabled
+            if (saveDebugImages)
+            {
+                SaveRenderTextureToFile(targetTexture, $"segmentation_{System.DateTime.Now.Ticks}.png");
             }
         }
-        
-        maskTexture.SetPixels(colors);
-        maskTexture.Apply();
-        
-        // Copy to RenderTexture
-        RenderTexture prevRT = RenderTexture.active;
-        RenderTexture.active = targetTexture;
-        
-        GL.Clear(true, true, Color.clear);
-        Graphics.Blit(maskTexture, targetTexture);
-        
-        RenderTexture.active = prevRT;
-        
-        // Cleanup
-        Destroy(maskTexture);
+        catch (System.Exception e)
+        {
+            Debug.LogError($"Error processing segmentation output: {e.Message}\n{e.StackTrace}");
+        }
     }
     
     private Texture2D ResizeTexture(Texture2D source, int width, int height)
@@ -567,5 +611,50 @@ public class DeepLabPredictor : MonoBehaviour
         {
             resultMask.Release();
         }
+    }
+
+    // Add noise reduction method
+    private byte[] ApplyNoiseReduction(byte[] pixels, int width, int height)
+    {
+        // Simple median filter implementation for noise reduction
+        byte[] result = new byte[pixels.Length];
+        System.Array.Copy(pixels, result, pixels.Length);
+        
+        int kernelSize = Mathf.Min(noiseReductionKernelSize, 5); // Cap at 5x5 for performance
+        int kernelRadius = kernelSize / 2;
+        
+        // Apply median filter to reduce noise
+        for (int y = kernelRadius; y < height - kernelRadius; y++)
+        {
+            for (int x = kernelRadius; x < width - kernelRadius; x++)
+            {
+                int centerIdx = y * width + x;
+                
+                // For binary mask, we can just count neighbors instead of full median
+                int wallCount = 0;
+                int totalCount = 0;
+                
+                // Check neighborhood
+                for (int ky = -kernelRadius; ky <= kernelRadius; ky++)
+                {
+                    for (int kx = -kernelRadius; kx <= kernelRadius; kx++)
+                    {
+                        int idx = (y + ky) * width + (x + kx);
+                        if (idx >= 0 && idx < pixels.Length)
+                        {
+                            totalCount++;
+                            if (pixels[idx] > 0)
+                                wallCount++;
+                        }
+                    }
+                }
+                
+                // Set pixel based on majority vote
+                float wallRatio = (float)wallCount / totalCount;
+                result[centerIdx] = wallRatio > 0.5f ? (byte)255 : (byte)0;
+            }
+        }
+        
+        return result;
     }
 } 

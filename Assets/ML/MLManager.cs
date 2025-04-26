@@ -123,6 +123,9 @@ public class MLManager : MonoBehaviour
     {
         if (runPredictionOnStart)
             StartPrediction();
+            
+        // Verify the model is correct
+        VerifyModelAsset();
     }
     
     private void Awake()
@@ -333,6 +336,42 @@ public class MLManager : MonoBehaviour
         {
             Destroy(_frameTexture);
             _frameTexture = null;
+        }
+    }
+    
+    // Check if the predictor is using the correct model asset
+    private void VerifyModelAsset()
+    {
+        if (_predictor != null)
+        {
+            // Check if the model asset name contains "model" (indicating model.onnx)
+            var modelField = _predictor.GetType().GetField("modelAsset", 
+                System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+                
+            if (modelField != null)
+            {
+                var modelAsset = modelField.GetValue(_predictor) as NNModel;
+                if (modelAsset != null && !modelAsset.name.Contains("model"))
+                {
+                    Debug.LogWarning($"MLManager: DeepLabPredictor is using '{modelAsset.name}' but 'model.onnx' is the only fully supported model for this project. This may cause issues with wall detection and segmentation. Please update references to use model.onnx.");
+                }
+            }
+        }
+        
+        if (_enhancedPredictor != null && _enhancedPredictor != _predictor)
+        {
+            // Check enhanced predictor model as well
+            var modelField = _enhancedPredictor.GetType().GetField("modelAsset", 
+                System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+                
+            if (modelField != null)
+            {
+                var modelAsset = modelField.GetValue(_enhancedPredictor) as NNModel;
+                if (modelAsset != null && !modelAsset.name.Contains("model"))
+                {
+                    Debug.LogWarning($"MLManager: EnhancedDeepLabPredictor is using '{modelAsset.name}' but 'model.onnx' is the only fully supported model for this project. This may cause issues with wall detection and segmentation. Please update references to use model.onnx.");
+                }
+            }
         }
     }
 }

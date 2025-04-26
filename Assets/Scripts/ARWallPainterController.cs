@@ -417,8 +417,26 @@ public class ARWallPainterController : MonoBehaviour
     
     private void OnDestroy()
     {
-        // Clean up textures
+        // Unsubscribe from all events
+        if (arSystem != null && arSystem.PlaneManager != null)
+        {
+            arSystem.PlaneManager.planesChanged -= OnPlanesChanged;
+        }
+        
+        // Clean up resources
+        foreach (var renderer in _paintRenderers.Values)
+        {
+            if (renderer != null)
+            {
+                Destroy(renderer.gameObject);
+            }
+        }
+        
+        _paintRenderers.Clear();
+        
         if (_cameraTexture != null)
+        {
             Destroy(_cameraTexture);
+        }
     }
 } 

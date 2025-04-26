@@ -2,13 +2,14 @@ using UnityEngine;
 using UnityEngine.XR.ARFoundation;
 using UnityEngine.XR.ARSubsystems;
 using System.Collections.Generic;
+using Unity.XR.CoreUtils;
 
 /// <summary>
 /// Manages AR Foundation components and provides centralized access to them.
 /// Only handles AR setup and tracking, not visual representation or business logic.
 /// </summary>
 [RequireComponent(typeof(ARSession))]
-[RequireComponent(typeof(ARSessionOrigin))]
+[RequireComponent(typeof(XROrigin))]
 [RequireComponent(typeof(ARPlaneManager))]
 [RequireComponent(typeof(ARRaycastManager))]
 public class ARSystemManager : MonoBehaviour
@@ -33,10 +34,10 @@ public class ARSystemManager : MonoBehaviour
     private void Awake()
     {
         // Get required components
-        var sessionOrigin = GetComponent<ARSessionOrigin>();
-        CameraManager = sessionOrigin.camera.GetComponent<ARCameraManager>();
+        var xrOrigin = GetComponent<XROrigin>();
+        CameraManager = xrOrigin.Camera.GetComponent<ARCameraManager>();
         if (CameraManager == null)
-            CameraManager = sessionOrigin.camera.gameObject.AddComponent<ARCameraManager>();
+            CameraManager = xrOrigin.Camera.gameObject.AddComponent<ARCameraManager>();
             
         PlaneManager = GetComponent<ARPlaneManager>();
         RaycastManager = GetComponent<ARRaycastManager>();
@@ -47,7 +48,7 @@ public class ARSystemManager : MonoBehaviour
             AnchorManager = gameObject.AddComponent<ARAnchorManager>();
         
         // Set AR camera reference
-        ARCamera = sessionOrigin.camera;
+        ARCamera = xrOrigin.Camera;
         
         // Configure plane detection
         PlaneManager.requestedDetectionMode = detectionMode;

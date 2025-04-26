@@ -3,6 +3,7 @@ using UnityEngine.XR.ARFoundation;
 using UnityEngine.XR.ARSubsystems;
 using System.Collections.Generic;
 using ML.DeepLab; // Add namespace for EnhancedDeepLabPredictor
+using Unity.XR.CoreUtils;
 
 /// <summary>
 /// Component that integrates AR plane detection with wall segmentation for accurate wall painting
@@ -81,45 +82,47 @@ public class ARWallPainter : MonoBehaviour
     
     private void OnEnable()
     {
-        // Subscribe to AR planes changed event
+        // Get plane manager if not assigned
+        if (_planeManager == null)
+        {
+            _planeManager = GetComponent<ARPlaneManager>();
+        }
+        
+        // Subscribe to plane changes
         if (_planeManager != null)
         {
             _planeManager.planesChanged += OnPlanesChanged;
         }
         
-        // Subscribe to segmentation events if predictor is available
-        EnhancedDeepLabPredictor predictor = FindObjectOfType<EnhancedDeepLabPredictor>();
-        if (predictor != null)
+        // Get AR camera reference
+        if (_arCamera == null)
         {
-            predictor.OnSegmentationCompleted += OnSegmentationCompleted;
-            
-            // Update wall class ID to match predictor
-            _wallClassId = (byte)predictor.WallClassId;
-            _normalizedClassId = _wallClassId / 255f;
-            
-            if (_debugMode)
-                Debug.Log($"ARWallPainter: Connected to predictor with wall class ID {_wallClassId}");
+            var sessionOrigin = FindAnyObjectByType<XROrigin>();
+            if (sessionOrigin != null && sessionOrigin.Camera != null)
+            {
+                _arCamera = sessionOrigin.Camera;
+            }
         }
         
-        // Cache AR camera reference
-        if (_cameraManager != null)
-            _arCamera = _cameraManager.GetComponent<Camera>();
+        // Subscribe to segmentation events
+        // We're using direct event subscription in this sample
     }
     
     private void OnDisable()
     {
-        // Unsubscribe from AR planes changed event
+        // Unsubscribe from plane changes
         if (_planeManager != null)
         {
             _planeManager.planesChanged -= OnPlanesChanged;
         }
         
-        // Unsubscribe from segmentation events
-        EnhancedDeepLabPredictor predictor = FindObjectOfType<EnhancedDeepLabPredictor>();
-        if (predictor != null)
+        // Clean up materials to avoid memory leaks
+        foreach (var material in _wallPlaneMaterials.Values)
         {
-            predictor.OnSegmentationCompleted -= OnSegmentationCompleted;
+            if (material != null)
+                Destroy(material);
         }
+        _wallPlaneMaterials.Clear();
     }
     
     private void Update()
