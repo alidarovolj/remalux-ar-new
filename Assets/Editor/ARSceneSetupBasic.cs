@@ -1091,7 +1091,7 @@ public class ARSceneSetupBasic : EditorWindow
                                     string prefabPath = "Assets/Resources/Prefabs/DefaultARPlane.prefab";
                                     
                                     // Сначала делаем префаб временным объектом на сцене
-                                    GameObject tempPrefab = Object.Instantiate(newPlanePrefab);
+                                    GameObject tempPrefab = UnityEngine.Object.Instantiate(newPlanePrefab);
                                     
                                     // Создаем или перезаписываем файл префаба
                                     bool success = false;
@@ -1110,7 +1110,7 @@ public class ARSceneSetupBasic : EditorWindow
                                     }
                                     
                                     // Удаляем временный объект
-                                    Object.DestroyImmediate(tempPrefab);
+                                    UnityEngine.Object.DestroyImmediate(tempPrefab);
                                     
                                     if (success)
                                     {
