@@ -176,6 +176,14 @@ public class ARSceneSetupBasic : EditorWindow
                 // Create Wall Painter Controller
                 CreateWallPainterController(xrOrigin);
                 
+                // Create AR Plane Visualizer
+                CreateARPlaneVisualizer(xrOrigin);
+                
+                // Создаем контроллер для обеспечения обнаружения вертикальных плоскостей при запуске
+                GameObject planeDetectionControllerObj = new GameObject("AR Plane Detection Controller");
+                planeDetectionControllerObj.AddComponent<ARPlaneDetectionController>();
+                Debug.Log("Added AR Plane Detection Controller to ensure vertical plane detection");
+                
                 Selection.activeGameObject = xrSessionOrigin;
                 EditorSceneManager.MarkSceneDirty(EditorSceneManager.GetActiveScene());
                 
@@ -310,6 +318,40 @@ public class ARSceneSetupBasic : EditorWindow
             {
                 SafeAddComponent<ARRaycastManager>(xrOrigin.gameObject);
                 Debug.Log("Added AR Raycast Manager to XR Origin");
+            }
+            
+            // Добавляем ARPlaneManager с поддержкой горизонтальных и вертикальных плоскостей
+            if (xrOrigin != null && xrOrigin.gameObject.GetComponent<ARPlaneManager>() == null)
+            {
+                ARPlaneManager planeManager = SafeAddComponent<ARPlaneManager>(xrOrigin.gameObject);
+                
+                // Включаем обнаружение как горизонтальных, так и вертикальных плоскостей
+                #if UNITY_2020_1_OR_NEWER
+                planeManager.requestedDetectionMode = UnityEngine.XR.ARSubsystems.PlaneDetectionMode.Horizontal | 
+                                                     UnityEngine.XR.ARSubsystems.PlaneDetectionMode.Vertical;
+                #else
+                planeManager.detectionMode = UnityEngine.XR.ARSubsystems.PlaneDetectionFlags.Horizontal | 
+                                            UnityEngine.XR.ARSubsystems.PlaneDetectionFlags.Vertical;
+                #endif
+                
+                Debug.Log("Added AR Plane Manager with horizontal and vertical plane detection to XR Origin");
+            }
+            // Если ARPlaneManager уже существует, настраиваем его для обнаружения вертикальных плоскостей
+            else if (xrOrigin != null)
+            {
+                ARPlaneManager existingPlaneManager = xrOrigin.gameObject.GetComponent<ARPlaneManager>();
+                if (existingPlaneManager != null)
+                {
+                    #if UNITY_2020_1_OR_NEWER
+                    existingPlaneManager.requestedDetectionMode = UnityEngine.XR.ARSubsystems.PlaneDetectionMode.Horizontal | 
+                                                                UnityEngine.XR.ARSubsystems.PlaneDetectionMode.Vertical;
+                    #else
+                    existingPlaneManager.detectionMode = UnityEngine.XR.ARSubsystems.PlaneDetectionFlags.Horizontal | 
+                                                       UnityEngine.XR.ARSubsystems.PlaneDetectionFlags.Vertical;
+                    #endif
+                    
+                    Debug.Log("Updated existing AR Plane Manager to detect both horizontal and vertical planes");
+                }
             }
             
             Debug.Log("AR System setup completed successfully");
@@ -768,6 +810,145 @@ public class ARSceneSetupBasic : EditorWindow
                 Debug.LogError($"Error creating Wall Painter Controller: {ex.Message}");
             }
         }
+        
+        /// <summary>
+        /// Создает и настраивает визуализатор AR плоскостей
+        /// </summary>
+        private static void CreateARPlaneVisualizer(XROrigin xrOrigin)
+        {
+            try
+            {
+                // Проверяем, существует ли уже визуализатор
+                GameObject existingVisualizer = GameObject.Find("AR Plane Visualizer");
+                if (existingVisualizer != null)
+                {
+                    Debug.Log("Using existing AR Plane Visualizer");
+                    return;
+                }
+                
+                // Создаем новый визуализатор
+                GameObject visualizerObj = new GameObject("AR Plane Visualizer");
+                
+                // Получаем ARPlaneManager с родительского XR Origin
+                ARPlaneManager planeManager = null;
+                if (xrOrigin != null && xrOrigin.gameObject != null)
+                {
+                    planeManager = xrOrigin.gameObject.GetComponent<ARPlaneManager>();
+                }
+                
+                // Если ARPlaneManager не найден, добавляем предупреждение
+                if (planeManager == null)
+                {
+                    Debug.LogWarning("ARPlaneManager not found on XR Origin. AR Plane Visualizer may not work correctly.");
+                }
+                else
+                {
+                    // Добавляем скрипт для визуализации плоскостей (если он существует)
+                    Type visualizerType = Type.GetType("ARPlaneVisualizer, Assembly-CSharp");
+                    if (visualizerType != null)
+                    {
+                        var visualizer = visualizerObj.AddComponent(visualizerType);
+                        Debug.Log("Added ARPlaneVisualizer component");
+                        
+                        // Если у компонента есть поле для ссылки на planeManager, устанавливаем его
+                        var planeManagerField = visualizerType.GetField("planeManager");
+                        if (planeManagerField != null)
+                        {
+                            planeManagerField.SetValue(visualizer, planeManager);
+                        }
+                    }
+                    else
+                    {
+                        // Добавляем компонент-заглушку для отслеживания плоскостей
+                        visualizerObj.AddComponent<ARPlaneMeshVisualizer>();
+                        Debug.Log("Added ARPlaneMeshVisualizer component");
+                        
+                        // Добавляем ссылку на ARPlanesParent для отслеживания созданных плоскостей
+                        GameObject planesParent = new GameObject("Trackables");
+                        planesParent.transform.SetParent(visualizerObj.transform, false);
+                        
+                        // Настраиваем ARPlaneManager, чтобы использовать этот объект для визуализации
+                        if (planeManager != null)
+                        {
+                            // Загружаем префаб для плоскостей (горизонтальных и вертикальных)
+                            GameObject defaultPlanePrefab = Resources.Load<GameObject>("Prefabs/DefaultARPlane");
+                            if (defaultPlanePrefab == null)
+                            {
+                                // Если префаб не найден, создаем простой префаб
+                                defaultPlanePrefab = new GameObject("DefaultARPlane");
+                                defaultPlanePrefab.AddComponent<ARPlaneMeshVisualizer>();
+                                var meshRenderer = defaultPlanePrefab.AddComponent<MeshRenderer>();
+                                meshRenderer.sharedMaterial = new Material(Shader.Find("AR/PlaneWithTexture"));
+                                defaultPlanePrefab.AddComponent<MeshFilter>();
+                                defaultPlanePrefab.AddComponent<BoxCollider>();
+                            }
+                            
+                            planeManager.planePrefab = defaultPlanePrefab;
+                            
+                            // Trackables уже создаются автоматически ARPlaneManager
+                            // Создаем новый подход для связывания визуализатора с плоскостями
+                            
+                            // Добавим обработчик события добавления плоскости
+                            EditorApplication.delayCall += () => {
+                                try {
+                                    // Находим ARPlaneManager снова, на случай если он был пересоздан
+                                    var pm = FindFirstObjectByType<ARPlaneManager>();
+                                    if (pm != null)
+                                    {
+                                        // Добавляем компонент, обрабатывающий события добавления плоскостей
+                                        GameObject planeEventsHandler = new GameObject("PlaneEventsHandler");
+                                        planeEventsHandler.transform.SetParent(visualizerObj.transform, false);
+                                        
+                                        // Используем SafeAddComponent для добавления обработчика событий
+                                        Type handlerType = Type.GetType("ARPlaneEventsHandler, Assembly-CSharp");
+                                        if (handlerType != null)
+                                        {
+                                            planeEventsHandler.AddComponent(handlerType);
+                                        }
+                                        else
+                                        {
+                                            Debug.Log("ARPlaneEventsHandler type not found, setup will continue without it");
+                                            
+                                            // Если не нашли тип, пробуем добавить напрямую
+                                            try 
+                                            {
+                                                var eventsHandler = planeEventsHandler.AddComponent<ARPlaneEventsHandler>();
+                                                Debug.Log("Successfully added ARPlaneEventsHandler component directly");
+                                            }
+                                            catch (System.Exception ex)
+                                            {
+                                                Debug.LogWarning($"Could not add ARPlaneEventsHandler component directly: {ex.Message}");
+                                            }
+                                        }
+                                    }
+                                }
+                                catch (System.Exception e)
+                                {
+                                    Debug.LogError($"Failed to setup plane events handler: {e.Message}");
+                                }
+                            };
+                            
+                            Debug.Log("Configured AR Plane Manager to use AR Plane Visualizer");
+                        }
+                    }
+                }
+                
+                // Добавляем скрипт для фиксации иерархии визуализатора плоскостей
+                GameObject fixerObj = new GameObject("AR Plane Visualizer Fixer");
+                Type fixerType = Type.GetType("ARPlaneVisualizerFixer, Assembly-CSharp");
+                if (fixerType != null)
+                {
+                    fixerObj.AddComponent(fixerType);
+                    Debug.Log("Added AR Plane Visualizer Fixer");
+                }
+                
+                Debug.Log("AR Plane Visualizer setup completed");
+            }
+            catch (System.Exception ex)
+            {
+                Debug.LogError($"Error creating AR Plane Visualizer: {ex.Message}");
+            }
+        }
 }
 
 /// <summary>
@@ -783,4 +964,36 @@ public class BasicARMeshManagerCheckerStarter : MonoBehaviour
         // но будет использован для создания ARMeshManagerChecker при запуске игры
         }
     }
-} 
+
+/// <summary>
+/// Компонент, обеспечивающий правильную настройку обнаружения плоскостей при запуске игры
+/// </summary>
+public class ARPlaneDetectionController : MonoBehaviour
+{
+    private ARPlaneManager planeManager;
+    
+    void Start()
+    {
+        // Находим ARPlaneManager в сцене
+        planeManager = FindFirstObjectByType<ARPlaneManager>();
+        
+        if (planeManager != null)
+        {
+            // Устанавливаем режим обнаружения на горизонтальные и вертикальные плоскости
+            #if UNITY_2020_1_OR_NEWER
+            planeManager.requestedDetectionMode = UnityEngine.XR.ARSubsystems.PlaneDetectionMode.Horizontal | 
+                                                 UnityEngine.XR.ARSubsystems.PlaneDetectionMode.Vertical;
+            #else
+            planeManager.detectionMode = UnityEngine.XR.ARSubsystems.PlaneDetectionFlags.Horizontal | 
+                                       UnityEngine.XR.ARSubsystems.PlaneDetectionFlags.Vertical;
+            #endif
+            
+            Debug.Log("ARPlaneDetectionController: Установлен режим обнаружения горизонтальных и вертикальных плоскостей");
+        }
+        else
+        {
+            Debug.LogWarning("ARPlaneDetectionController: ARPlaneManager не найден в сцене");
+        }
+    }
+}
+} // namespace ARSceneSetupUtils 
