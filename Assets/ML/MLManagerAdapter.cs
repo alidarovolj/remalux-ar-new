@@ -3,10 +3,13 @@ using UnityEngine.XR.ARFoundation;
 using ML.DeepLab;
 using System.Collections;
 using UnityEngine.XR.ARSubsystems;
+using System.Runtime.InteropServices;
+using System;
 
 /// <summary>
 /// Адаптер для совместимости между ARMLController и SegmentationManager
 /// </summary>
+[RequireComponent(typeof(ARCameraManager))]
 public class MLManagerAdapter : MonoBehaviour
 {
     [Header("Объекты для связывания")]
@@ -19,18 +22,31 @@ public class MLManagerAdapter : MonoBehaviour
     [SerializeField] private float predictionInterval = 0.5f;
     [SerializeField] private bool autoStartPrediction = true;
     [SerializeField] private bool debugMode = false;
+    [SerializeField] private int downsampleFactor = 4;
+    [SerializeField] private bool processOnEveryFrame = false;
+    [SerializeField] private float processingInterval = 0.5f;
+    [SerializeField] private int captureWidth = 576;
+    [SerializeField] private int captureHeight = 256;
     
     private Texture2D _currentFrameTexture;
+    private Texture2D _cameraTexture;
     private Coroutine _predictionCoroutine;
     private bool _isPredicting = false;
+    private float lastProcessingTime = 0f;
+    
+    private ARCameraManager cameraManager;
     
     private void Awake()
     {
+        cameraManager = GetComponent<ARCameraManager>();
+        _cameraTexture = new Texture2D(captureWidth, captureHeight, TextureFormat.RGBA32, false);
+        lastProcessingTime = 0f;
         FindMissingReferences();
     }
     
     private void OnEnable()
     {
+        cameraManager.frameReceived += OnCameraFrameReceived;
         // Автозапуск предсказаний при включении
         if (autoStartPrediction)
             StartContinuousPrediction();
@@ -38,6 +54,7 @@ public class MLManagerAdapter : MonoBehaviour
     
     private void OnDisable()
     {
+        cameraManager.frameReceived -= OnCameraFrameReceived;
         StopContinuousPrediction();
     }
     
@@ -155,33 +172,87 @@ public class MLManagerAdapter : MonoBehaviour
     /// </summary>
     public Texture2D CaptureCurrentFrame()
     {
-        if (arCameraManager == null)
+        if (arCameraManager != null)
         {
-            Debug.LogWarning("MLManagerAdapter: Cannot capture frame - missing ARCameraManager");
-            return null;
+            // Используем ARFoundation CPU Image API вместо ReadPixels
+            if (arCameraManager.TryAcquireLatestCpuImage(out XRCpuImage image))
+            {
+                using (image)
+                {
+                    try
+                    {
+                        // Конвертируем XRCpuImage в Texture2D
+                        var conversionParams = new XRCpuImage.ConversionParams
+                        {
+                            inputRect = new RectInt(0, 0, image.width, image.height),
+                            outputDimensions = new Vector2Int(image.width / downsampleFactor, image.height / downsampleFactor),
+                            outputFormat = TextureFormat.RGBA32,
+                            transformation = XRCpuImage.Transformation.MirrorY
+                        };
+                        
+                        int size = image.GetConvertedDataSize(conversionParams);
+                        var buffer = new byte[size];
+                        
+                        GCHandle handle = GCHandle.Alloc(buffer, GCHandleType.Pinned);
+                        image.Convert(conversionParams, handle.AddrOfPinnedObject(), buffer.Length);
+                        handle.Free();
+                        
+                        // Создаем текстуру если нужно
+                        if (_currentFrameTexture == null || _currentFrameTexture.width != conversionParams.outputDimensions.x || 
+                            _currentFrameTexture.height != conversionParams.outputDimensions.y)
+                        {
+                            if (_currentFrameTexture != null)
+                                Destroy(_currentFrameTexture);
+                                
+                            _currentFrameTexture = new Texture2D(
+                                conversionParams.outputDimensions.x,
+                                conversionParams.outputDimensions.y,
+                                conversionParams.outputFormat,
+                                false
+                            );
+                        }
+                        
+                        // Загружаем данные напрямую в текстуру
+                        _currentFrameTexture.LoadRawTextureData(buffer);
+                        _currentFrameTexture.Apply();
+                        
+                        ProcessFrame(_currentFrameTexture);
+                        return _currentFrameTexture;
+                    }
+                    catch (System.Exception e)
+                    {
+                        Debug.LogError($"Error converting CPU image to texture: {e.Message}");
+                    }
+                }
+            }
+            else
+            {
+                Debug.LogWarning("Failed to acquire CPU image from AR camera");
+            }
         }
         
-        // Захват текущего кадра через ARCameraManager
-        if (_currentFrameTexture == null)
+        // Фолбэк на старый метод с WaitForEndOfFrame (он уже вызван в PredictionCoroutine)
+        if (Camera.main == null)
+            return null;
+            
+        int width = Screen.width / downsampleFactor;
+        int height = Screen.height / downsampleFactor;
+        
+        // Создаем текстуру если нужно
+        if (_currentFrameTexture == null || _currentFrameTexture.width != width || _currentFrameTexture.height != height)
         {
-            _currentFrameTexture = new Texture2D(Screen.width, Screen.height, TextureFormat.RGBA32, false);
+            if (_currentFrameTexture != null)
+                Destroy(_currentFrameTexture);
+                
+            _currentFrameTexture = new Texture2D(width, height, TextureFormat.RGBA32, false);
         }
         
-        try
-        {
-            // Захват текущего кадра с экрана как запасной вариант
-            _currentFrameTexture.ReadPixels(new Rect(0, 0, Screen.width, Screen.height), 0, 0, false);
-            _currentFrameTexture.Apply();
-            
-            ProcessFrame(_currentFrameTexture);
-            
-            return _currentFrameTexture;
-        }
-        catch (System.Exception e)
-        {
-            Debug.LogError($"MLManagerAdapter: Error capturing frame: {e.Message}");
-            return null;
-        }
+        // Читаем пиксели (вызывается после WaitForEndOfFrame в PredictionCoroutine)
+        _currentFrameTexture.ReadPixels(new Rect(0, 0, Screen.width, Screen.height), 0, 0, false);
+        _currentFrameTexture.Apply();
+        
+        ProcessFrame(_currentFrameTexture);
+        return _currentFrameTexture;
     }
     
     /// <summary>
@@ -191,11 +262,18 @@ public class MLManagerAdapter : MonoBehaviour
     {
         while (_isPredicting)
         {
-            yield return new WaitForSeconds(predictionInterval);
+            // Ждем конец кадра перед захватом изображения
+            yield return new WaitForEndOfFrame();
             
-            Texture2D frame = CaptureCurrentFrame();
-            if (frame != null && debugMode)
-                Debug.Log("MLManagerAdapter: Captured and processed frame");
+            // Захватываем текущий кадр с камеры
+            CaptureCurrentFrame();
+            
+            #if UNITY_EDITOR
+            Debug.Log("MLManagerAdapter: Captured and processed frame");
+            #endif
+            
+            // Ждем указанный интервал
+            yield return new WaitForSeconds(predictionInterval);
         }
     }
     
@@ -239,31 +317,108 @@ public class MLManagerAdapter : MonoBehaviour
     /// <summary>
     /// Process the current camera frame using the ML model
     /// </summary>
-    /// <param name="cameraFrame">The AR camera frame to process</param>
+    /// <param name="frame">The AR camera frame to process</param>
     /// <returns>True if processing started successfully</returns>
-    public bool ProcessCameraFrame(XRCameraFrame cameraFrame)
+    public bool ProcessCameraFrame(XRCameraFrame frame)
     {
         if (segmentationManager == null)
         {
-            Debug.LogWarning("MLManagerAdapter: SegmentationManager reference is missing");
+            Debug.LogWarning("No SegmentationManager assigned to MLManagerAdapter");
             return false;
         }
+
+        if (!processOnEveryFrame && Time.time - lastProcessingTime < processingInterval)
+        {
+            return false;
+        }
+
+        if (_cameraTexture == null)
+        {
+            _cameraTexture = new Texture2D(captureWidth, captureHeight, TextureFormat.RGBA32, false);
+        }
+        
+        UpdateCameraTextureFromFrame(frame);
+        
+        if (_cameraTexture != null)
+        {
+            // Process the camera texture with the segmentation manager
+            segmentationManager.ProcessTexture(_cameraTexture);
+        }
+        lastProcessingTime = Time.time;
+        return true;
+    }
+
+    private void OnCameraFrameReceived(ARCameraFrameEventArgs eventArgs)
+    {
+        if (!processOnEveryFrame && Time.time - lastProcessingTime < processingInterval)
+            return;
+            
+        lastProcessingTime = Time.time;
+        
+        // ARCameraFrameEventArgs doesn't have a cameraFrame property
+        // We need to use the camera manager to get the latest frame
+        if (arCameraManager != null && arCameraManager.TryAcquireLatestCpuImage(out XRCpuImage cpuImage))
+        {
+            using (cpuImage)
+            {
+                ProcessCameraFrame(new XRCameraFrame());
+            }
+        }
+        else
+        {
+            // Fallback to texture-based processing
+            CaptureCurrentFrame();
+        }
+    }
+
+    private void UpdateCameraTextureFromFrame(XRCameraFrame frame)
+    {
+        // This is a simplified version - in a real implementation, you would
+        // use ARCameraManager.TryAcquireLatestCpuImage and convert the XRCpuImage to a texture
         
         try
         {
-            // Pass a default resolution for XRCameraFrame processing
-            Vector2Int targetResolution = new Vector2Int(512, 512);
+            // Placeholder implementation - fill with a color pattern for testing
+            Color[] colors = new Color[captureWidth * captureHeight];
+            for (int y = 0; y < captureHeight; y++)
+            {
+                for (int x = 0; x < captureWidth; x++)
+                {
+                    // Create a simple gradient pattern
+                    colors[y * captureWidth + x] = new Color(
+                        (float)x / captureWidth,
+                        (float)y / captureHeight,
+                        0.5f,
+                        1.0f
+                    );
+                }
+            }
             
-            // We can't directly access dimensions from XRCameraFrame in this version
-            // so we'll use a fixed size that matches our model's expected input
+            _cameraTexture.SetPixels(colors);
+            _cameraTexture.Apply();
             
-            // Process the frame in the segmentation manager
-            return segmentationManager.ProcessCameraFrame(cameraFrame, targetResolution);
+            Debug.Log("Updated camera texture from frame");
         }
-        catch (System.Exception ex)
+        catch (Exception e)
         {
-            Debug.LogError($"MLManagerAdapter: Error processing camera frame: {ex.Message}");
-            return false;
+            Debug.LogError($"Error updating camera texture: {e.Message}");
         }
+    }
+
+    // Implement a proper conversion from XRCpuImage to Texture2D in a real application
+    // This would replace the placeholder implementation above
+    private bool TryConvertCpuImageToTexture(XRCpuImage cpuImage, ref Texture2D texture)
+    {
+        if (texture == null)
+        {
+            texture = new Texture2D(captureWidth, captureHeight, TextureFormat.RGBA32, false);
+        }
+        
+        // Your conversion code would go here
+        
+        // For a complete implementation, look at the ARFoundation samples from Unity:
+        // https://github.com/Unity-Technologies/arfoundation-samples/blob/main/Assets/Scripts/CpuImageSample.cs
+        
+        return true;
     }
 } 

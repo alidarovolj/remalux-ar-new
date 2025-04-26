@@ -8,6 +8,7 @@ using UnityEditor.SceneManagement;
 using Unity.XR.CoreUtils;
 using System;
 using UnityEngine.SceneManagement;
+using UnityEngine.InputSystem.XR;
 
 namespace ARSceneSetupUtils
 {
@@ -173,6 +174,9 @@ public class ARSceneSetupBasic : EditorWindow
                 // Create AR Segmentation Manager
                 CreateSegmentationManager();
                 
+                // Create ML Manager Adapter
+                CreateMLManagerAdapter();
+                
                 // Create Wall Painter Controller
                 CreateWallPainterController(xrOrigin);
                 
@@ -284,10 +288,6 @@ public class ARSceneSetupBasic : EditorWindow
                                     runtimeField.SetValue(runtimeHandler, planeManager);
                                     Debug.Log("ARPlaneManager reference set on RuntimeARPlaneEventsHandler via private field");
                                 }
-                                else
-                                {
-                                    Debug.LogWarning("RuntimeARPlaneEventsHandler не удалось автоматически установить planeManager. Пожалуйста, назначьте его вручную в инспекторе.");
-                                }
                             }
                         }
                         
@@ -379,6 +379,20 @@ public class ARSceneSetupBasic : EditorWindow
     {
         try
         {
+            // Проверяем и удаляем дублирующиеся ARSession компоненты
+            ARSession[] arSessions = FindObjectsByType<ARSession>(FindObjectsSortMode.None);
+            if (arSessions.Length > 1)
+            {
+                Debug.Log($"Found {arSessions.Length} ARSession components, removing duplicates and keeping only one.");
+                // Оставляем первый ARSession, остальные отключаем
+                for (int i = 1; i < arSessions.Length; i++)
+                {
+                    GameObject sessionObj = arSessions[i].gameObject;
+                    Debug.Log($"Disabling duplicate ARSession on {sessionObj.name}");
+                    arSessions[i].enabled = false;
+                }
+            }
+            
             // Удаляем все старые ARMeshManager, чтобы не плодить дубли
             foreach (var old in UnityEngine.Object.FindObjectsByType<ARMeshManager>(FindObjectsSortMode.None))
                 GameObject.DestroyImmediate(old.gameObject);
@@ -425,6 +439,9 @@ public class ARSceneSetupBasic : EditorWindow
                     ARCameraManager cameraManager = SafeAddComponent<UnityEngine.XR.ARFoundation.ARCameraManager>(arCameraObj);
                     ARCameraBackground cameraBackground = SafeAddComponent<UnityEngine.XR.ARFoundation.ARCameraBackground>(arCameraObj);
                     
+                    // Добавляем TrackedPoseDriver для решения проблемы с позиционированием камеры
+                    TrackedPoseDriver poseDriver = SafeAddComponent<TrackedPoseDriver>(arCameraObj);
+                    
                     // Настраиваем автофокус для мобильных устройств
                     #if UNITY_IOS || UNITY_ANDROID
                     cameraManager.autoFocusRequested = true;
@@ -461,6 +478,13 @@ public class ARSceneSetupBasic : EditorWindow
                             SafeAddComponent<ARCameraBackground>(cameraObj);
                             Debug.Log("Added ARCameraBackground to existing AR Camera for native rendering");
                         }
+                        
+                        // Добавляем TrackedPoseDriver если нет
+                        if (cameraObj.GetComponent<TrackedPoseDriver>() == null)
+                        {
+                            TrackedPoseDriver poseDriver = SafeAddComponent<TrackedPoseDriver>(cameraObj);
+                            Debug.Log("Added TrackedPoseDriver to existing AR Camera");
+                        }
                     }
             }
             
@@ -496,6 +520,9 @@ public class ARSceneSetupBasic : EditorWindow
                                             UnityEngine.XR.ARSubsystems.PlaneDetectionFlags.Vertical;
                 #endif
                 
+                // Назначаем префаб плоскостей
+                SetupPlanePrefab(planeManager);
+                
                 Debug.Log("Added AR Plane Manager with horizontal and vertical plane detection to XR Origin");
             }
             // Если ARPlaneManager уже существует, настраиваем его для обнаружения вертикальных плоскостей
@@ -511,6 +538,12 @@ public class ARSceneSetupBasic : EditorWindow
                     existingPlaneManager.detectionMode = UnityEngine.XR.ARSubsystems.PlaneDetectionFlags.Horizontal | 
                                                        UnityEngine.XR.ARSubsystems.PlaneDetectionFlags.Vertical;
                     #endif
+                    
+                    // Проверяем и назначаем префаб плоскостей, если не задан
+                    if (existingPlaneManager.planePrefab == null)
+                    {
+                        SetupPlanePrefab(existingPlaneManager);
+                    }
                     
                     Debug.Log("Updated existing AR Plane Manager to detect both horizontal and vertical planes");
                 }
@@ -889,6 +922,117 @@ public class ARSceneSetupBasic : EditorWindow
                 if (existingManager != null)
                 {
                     Debug.Log("Using existing SegmentationManager");
+                    
+                    // Check if model asset is assigned, if not - try to assign it
+                    var modelField = typeof(SegmentationManager).GetField("ModelAsset", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                    if (modelField != null && modelField.GetValue(existingManager) == null)
+                    {
+                        // Find and assign model.onnx
+                        var modelAsset = AssetDatabase.LoadAssetAtPath<Unity.Barracuda.NNModel>("Assets/ML/Models/model.onnx");
+                        if (modelAsset != null)
+                        {
+                            modelField.SetValue(existingManager, modelAsset);
+                            Debug.Log("Assigned model.onnx to existing SegmentationManager");
+                            EditorUtility.SetDirty(existingManager);
+                        }
+                        else
+                        {
+                            Debug.LogWarning("Could not find model.onnx at Assets/ML/Models/model.onnx");
+                        }
+                    }
+                    
+                    // Настройка параметров существующего SegmentationManager
+                    try 
+                    {
+                        // Установка правильных входных и выходных параметров для модели
+                        var inputWidthField = typeof(SegmentationManager).GetField("inputWidth", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                        var inputHeightField = typeof(SegmentationManager).GetField("inputHeight", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                        var outputNameField = typeof(SegmentationManager).GetField("outputName", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                        var wallClassIdField = typeof(SegmentationManager).GetField("wallClassId", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                        var debugModeField = typeof(SegmentationManager).GetField("debugMode", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                        
+                        if (inputWidthField != null && inputHeightField != null)
+                        {
+                            inputWidthField.SetValue(existingManager, 268);
+                            inputHeightField.SetValue(existingManager, 412);
+                            Debug.Log("Set input dimensions to 268x412 for existing SegmentationManager");
+                        }
+                        
+                        if (outputNameField != null)
+                        {
+                            outputNameField.SetValue(existingManager, "logits");
+                            Debug.Log("Set output name to 'logits' for existing SegmentationManager");
+                        }
+                        
+                        if (wallClassIdField != null)
+                        {
+                            wallClassIdField.SetValue(existingManager, 9);
+                            Debug.Log("Set wall class ID to 9 for existing SegmentationManager");
+                        }
+                        
+                        if (debugModeField != null)
+                        {
+                            debugModeField.SetValue(existingManager, true);
+                            Debug.Log("Enabled debug mode for existing SegmentationManager");
+                        }
+                        
+                        EditorUtility.SetDirty(existingManager);
+                    }
+                    catch (Exception ex)
+                    {
+                        Debug.LogWarning($"Error configuring existing SegmentationManager: {ex.Message}");
+                    }
+                    
+                    // Проверяем наличие компонента ModelFixer на объекте SegmentationManager
+                    var existingFixer = existingManager.GetComponent<ModelFixer>();
+                    if (existingFixer == null)
+                    {
+                        // Добавляем ModelFixer если его еще нет
+                        try 
+                        {
+                            // Проверяем, существует ли тип ModelFixer
+                            Type modelFixerType = Type.GetType("ModelFixer, Assembly-CSharp");
+                            if (modelFixerType != null)
+                            {
+                                // Добавляем ModelFixer к существующему объекту SegmentationManager
+                                var modelFixer = existingManager.gameObject.AddComponent(modelFixerType);
+                                
+                                // Устанавливаем ссылку на SegmentationManager
+                                var segManagerField = modelFixerType.GetField("segmentationManager");
+                                if (segManagerField != null)
+                                {
+                                    segManagerField.SetValue(modelFixer, existingManager);
+                                    Debug.Log("Added ModelFixer to existing SegmentationManager for automatic configuration");
+                                }
+                            }
+                            else
+                            {
+                                // Если не найден через Type.GetType, пробуем прямое добавление
+                                try 
+                                {
+                                    var modelFixer = existingManager.gameObject.AddComponent<ModelFixer>();
+                                    if (modelFixer != null)
+                                    {
+                                        modelFixer.segmentationManager = existingManager;
+                                        Debug.Log("Added ModelFixer to existing SegmentationManager for automatic configuration");
+                                    }
+                                }
+                                catch (Exception)
+                                {
+                                    Debug.LogWarning("Could not add ModelFixer - type not found. The SegmentationManager may require manual configuration.");
+                                }
+                            }
+                        }
+                        catch (Exception fixerEx)
+                        {
+                            Debug.LogWarning($"Error adding ModelFixer to existing SegmentationManager: {fixerEx.Message}");
+                        }
+                    }
+                    else
+                    {
+                        Debug.Log("ModelFixer already attached to existing SegmentationManager");
+                    }
+                    
                     return;
                 }
                 
@@ -899,8 +1043,104 @@ public class ARSceneSetupBasic : EditorWindow
                 Type segManagerType = Type.GetType("SegmentationManager, Assembly-CSharp");
                 if (segManagerType != null)
                 {
-                    segManagerObj.AddComponent(segManagerType);
+                    var segManager = segManagerObj.AddComponent(segManagerType);
                     Debug.Log("Created Segmentation Manager");
+                    
+                    // Find and assign model.onnx
+                    var modelAsset = AssetDatabase.LoadAssetAtPath<Unity.Barracuda.NNModel>("Assets/ML/Models/model.onnx");
+                    if (modelAsset != null)
+                    {
+                        // Use reflection to access and set the ModelAsset field
+                        var modelField = segManagerType.GetField("ModelAsset", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                        if (modelField != null)
+                        {
+                            modelField.SetValue(segManager, modelAsset);
+                            Debug.Log("Assigned model.onnx to new SegmentationManager");
+                            
+                            // Установка правильных входных и выходных параметров для модели
+                            var inputWidthField = segManagerType.GetField("inputWidth", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                            var inputHeightField = segManagerType.GetField("inputHeight", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                            var outputNameField = segManagerType.GetField("outputName", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                            var wallClassIdField = segManagerType.GetField("wallClassId", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                            var debugModeField = segManagerType.GetField("debugMode", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                            
+                            if (inputWidthField != null && inputHeightField != null)
+                            {
+                                inputWidthField.SetValue(segManager, 268);
+                                inputHeightField.SetValue(segManager, 412);
+                                Debug.Log("Set input dimensions to 268x412 for SegmentationManager");
+                            }
+                            
+                            if (outputNameField != null)
+                            {
+                                outputNameField.SetValue(segManager, "logits");
+                                Debug.Log("Set output name to 'logits' for SegmentationManager");
+                            }
+                            
+                            if (wallClassIdField != null)
+                            {
+                                wallClassIdField.SetValue(segManager, 9);
+                                Debug.Log("Set wall class ID to 9 for SegmentationManager");
+                            }
+                            
+                            if (debugModeField != null)
+                            {
+                                debugModeField.SetValue(segManager, true);
+                                Debug.Log("Enabled debug mode for SegmentationManager");
+                            }
+                            
+                            EditorUtility.SetDirty(segManagerObj);
+                        }
+                        else
+                        {
+                            Debug.LogWarning("Could not find ModelAsset field in SegmentationManager");
+                        }
+                    }
+                    else
+                    {
+                        Debug.LogWarning("Could not find model.onnx at Assets/ML/Models/model.onnx");
+                    }
+                    
+                    // Добавляем ModelFixer для автоматического исправления настроек SegmentationManager
+                    try 
+                    {
+                        // Проверяем, существует ли тип ModelFixer
+                        Type modelFixerType = Type.GetType("ModelFixer, Assembly-CSharp");
+                        if (modelFixerType != null)
+                        {
+                            // Добавляем ModelFixer к объекту SegmentationManager
+                            var modelFixer = segManagerObj.AddComponent(modelFixerType);
+                            
+                            // Устанавливаем ссылку на SegmentationManager
+                            var segManagerField = modelFixerType.GetField("segmentationManager");
+                            if (segManagerField != null && segManager != null)
+                            {
+                                segManagerField.SetValue(modelFixer, segManager);
+                                Debug.Log("Added ModelFixer to SegmentationManager for automatic configuration");
+                            }
+                        }
+                        else
+                        {
+                            // Если не найден через Type.GetType, пробуем прямое добавление
+                            try 
+                            {
+                                var modelFixer = segManagerObj.AddComponent<ModelFixer>();
+                                if (modelFixer != null && segManager != null)
+                                {
+                                    modelFixer.segmentationManager = (SegmentationManager)segManager;
+                                    Debug.Log("Added ModelFixer to SegmentationManager for automatic configuration");
+                                }
+                            }
+                            catch (Exception)
+                            {
+                                Debug.LogWarning("Could not add ModelFixer - type not found. The SegmentationManager may require manual configuration.");
+                            }
+                        }
+                    }
+                    catch (Exception fixerEx)
+                    {
+                        Debug.LogWarning($"Error adding ModelFixer: {fixerEx.Message}");
+                    }
                 }
                 else
                 {
@@ -915,61 +1155,147 @@ public class ARSceneSetupBasic : EditorWindow
         }
         
         /// <summary>
-        /// Creates the Wall Painter Controller for AR painting functionality
+        /// Создает и настраивает MLManagerAdapter для работы с SegmentationManager
         /// </summary>
-        private static void CreateWallPainterController(XROrigin xrOrigin)
+        private static void CreateMLManagerAdapter()
         {
             try
             {
-                // Check if ARWallPainterController already exists
-                var existingController = FindFirstObjectByType<ARWallPainterController>();
-                if (existingController != null)
-                {
-                    Debug.Log("Using existing ARWallPainterController");
-                    return;
-                }
+                // Проверяем, существует ли MLManagerAdapter
+                Type mlManagerAdapterType = Type.GetType("MLManagerAdapter, Assembly-CSharp");
+                Component existingAdapter = null;
                 
-                // Create a new ARWallPainterController
-                GameObject painterObj = new GameObject("AR Wall Painter Controller");
-                
-                // Try to add the component directly if it exists
-                Type controllerType = Type.GetType("ARWallPainterController, Assembly-CSharp");
-                if (controllerType != null)
+                if (mlManagerAdapterType != null)
                 {
-                    painterObj.AddComponent(controllerType);
-                    Debug.Log("Created Wall Painter Controller");
+                    existingAdapter = (Component)FindObjectOfType(mlManagerAdapterType);
                 }
                 else
                 {
-                    // If type lookup fails, try adding the component directly
-                    // This approach requires the type to be already known at compile time
                     try
                     {
-                        var controller = painterObj.AddComponent<ARWallPainterController>();
-                        
-                        // Set references if possible
-                        if (xrOrigin != null && controller != null)
-                        {
-                            // Set ARCamera reference - implementation depends on actual controller properties
-                            var cameraField = controllerType?.GetField("arCamera");
-                            if (cameraField != null && xrOrigin.Camera != null)
-                            {
-                                cameraField.SetValue(controller, xrOrigin.Camera);
-                            }
-                        }
-                        
-                        Debug.Log("Created Wall Painter Controller");
+                        existingAdapter = FindObjectOfType<MLManagerAdapter>();
                     }
                     catch (Exception)
                     {
-                        Debug.LogWarning("Could not create ARWallPainterController - type not found. Make sure AR Wall Painter is properly imported.");
-                        UnityEngine.Object.DestroyImmediate(painterObj);
+                        Debug.LogWarning("MLManagerAdapter type not found directly");
+                    }
+                }
+                
+                if (existingAdapter != null)
+                {
+                    Debug.Log("Using existing MLManagerAdapter");
+                    
+                    // Настройка параметров существующего MLManagerAdapter
+                    try
+                    {
+                        // Установка правильного интервала обработки
+                        var processingIntervalField = existingAdapter.GetType().GetField("processingInterval", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                        if (processingIntervalField != null)
+                        {
+                            float currentInterval = (float)processingIntervalField.GetValue(existingAdapter);
+                            if (currentInterval > 0.5f)
+                            {
+                                processingIntervalField.SetValue(existingAdapter, 0.5f);
+                                Debug.Log("Set processing interval to 0.5 for existing MLManagerAdapter");
+                                EditorUtility.SetDirty(existingAdapter);
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Debug.LogWarning($"Error configuring existing MLManagerAdapter: {ex.Message}");
+                    }
+                    
+                    return;
+                }
+                
+                // Создаем новый MLManagerAdapter
+                GameObject mlManagerObj = new GameObject("MLManagerAdapter");
+                
+                // Добавляем компонент MLManagerAdapter
+                Component mlManagerAdapter = null;
+                
+                if (mlManagerAdapterType != null)
+                {
+                    mlManagerAdapter = mlManagerObj.AddComponent(mlManagerAdapterType);
+                    Debug.Log("Created MLManagerAdapter");
+                    
+                    // Настройка параметров нового MLManagerAdapter
+                    try
+                    {
+                        // Установка правильного интервала обработки
+                        var processingIntervalField = mlManagerAdapterType.GetField("processingInterval", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                        if (processingIntervalField != null)
+                        {
+                            processingIntervalField.SetValue(mlManagerAdapter, 0.5f);
+                            Debug.Log("Set processing interval to 0.5 for new MLManagerAdapter");
+                        }
+                        
+                        // Находим и связываем с SegmentationManager
+                        var segmentationManager = FindFirstObjectByType<SegmentationManager>();
+                        if (segmentationManager != null)
+                        {
+                            var segManagerField = mlManagerAdapterType.GetField("segmentationManager", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                            if (segManagerField != null)
+                            {
+                                segManagerField.SetValue(mlManagerAdapter, segmentationManager);
+                                Debug.Log("Linked MLManagerAdapter with SegmentationManager");
+                            }
+                        }
+                        else
+                        {
+                            Debug.LogWarning("SegmentationManager not found to link with MLManagerAdapter");
+                        }
+                        
+                        EditorUtility.SetDirty(mlManagerObj);
+                    }
+                    catch (Exception ex)
+                    {
+                        Debug.LogWarning($"Error configuring new MLManagerAdapter: {ex.Message}");
+                    }
+                }
+                else
+                {
+                    try
+                    {
+                        mlManagerAdapter = mlManagerObj.AddComponent<MLManagerAdapter>();
+                        Debug.Log("Created MLManagerAdapter directly");
+                        
+                        // Настройка параметров напрямую
+                        if (mlManagerAdapter != null)
+                        {
+                            var propertyInfo = mlManagerAdapter.GetType().GetProperty("ProcessingInterval");
+                            if (propertyInfo != null && propertyInfo.CanWrite)
+                            {
+                                propertyInfo.SetValue(mlManagerAdapter, 0.5f);
+                                Debug.Log("Set processing interval to 0.5 for new MLManagerAdapter");
+                            }
+                            
+                            // Находим и связываем с SegmentationManager
+                            var segmentationManager = FindFirstObjectByType<SegmentationManager>();
+                            if (segmentationManager != null)
+                            {
+                                var propertyInfoSeg = mlManagerAdapter.GetType().GetProperty("SegmentationManager");
+                                if (propertyInfoSeg != null && propertyInfoSeg.CanWrite)
+                                {
+                                    propertyInfoSeg.SetValue(mlManagerAdapter, segmentationManager);
+                                    Debug.Log("Linked MLManagerAdapter with SegmentationManager");
+                                }
+                            }
+                            
+                            EditorUtility.SetDirty(mlManagerObj);
+                        }
+                    }
+                    catch (Exception)
+                    {
+                        Debug.LogWarning("Could not create MLManagerAdapter - type not found. ML segmentation may not work properly.");
+                        UnityEngine.Object.DestroyImmediate(mlManagerObj);
                     }
                 }
             }
             catch (System.Exception ex)
             {
-                Debug.LogError($"Error creating Wall Painter Controller: {ex.Message}");
+                Debug.LogError($"Error creating MLManagerAdapter: {ex.Message}");
             }
         }
         
@@ -1201,6 +1527,183 @@ public class ARSceneSetupBasic : EditorWindow
             {
                 Debug.LogError($"Error creating AR Plane Visualizer: {ex.Message}");
             }
+        }
+
+        /// <summary>
+        /// Назначает префаб плоскостей для ARPlaneManager
+        /// </summary>
+        private static void SetupPlanePrefab(ARPlaneManager planeManager)
+        {
+            // Проверяем наличие префаба
+            bool prefabFound = false;
+            
+            // Проверяем существование папки Resources/Prefabs
+            if (AssetDatabase.IsValidFolder("Assets/Resources/Prefabs"))
+            {
+                // Загружаем префаб для плоскостей (горизонтальных и вертикальных)
+                GameObject defaultPlanePrefab = Resources.Load<GameObject>("Prefabs/DefaultARPlane");
+                prefabFound = defaultPlanePrefab != null;
+                
+                if (prefabFound)
+                {
+                    planeManager.planePrefab = defaultPlanePrefab;
+                    Debug.Log("Found and assigned DefaultARPlane prefab from Resources/Prefabs");
+                }
+            }
+            else
+            {
+                Debug.LogWarning("Resources/Prefabs folder not found. Will create default plane prefab.");
+            }
+            
+            // Если префаб не найден, создаем простой префаб
+            if (!prefabFound)
+            {
+                // Создаем простой префаб для плоскостей
+                GameObject newPlanePrefab = new GameObject("DefaultARPlane");
+                newPlanePrefab.AddComponent<ARPlaneMeshVisualizer>();
+                var meshFilter = newPlanePrefab.AddComponent<MeshFilter>();
+                var meshRenderer = newPlanePrefab.AddComponent<MeshRenderer>();
+                
+                // Проверяем, существует ли шейдер
+                Shader planeShader = Shader.Find("AR/PlaneWithTexture");
+                if (planeShader != null)
+                {
+                    meshRenderer.sharedMaterial = new Material(planeShader);
+                    Debug.Log("Found AR/PlaneWithTexture shader and assigned to plane material");
+                }
+                else
+                {
+                    // Используем стандартный шейдер, если специального нет
+                    meshRenderer.sharedMaterial = new Material(Shader.Find("Standard"));
+                    Debug.LogWarning("AR/PlaneWithTexture shader not found. Using Standard shader instead.");
+                }
+                
+                newPlanePrefab.AddComponent<BoxCollider>();
+                
+                // Сохраняем новый префаб, если есть папка Resources
+                if (AssetDatabase.IsValidFolder("Assets/Resources"))
+                {
+                    // Проверяем наличие папки Prefabs в Resources
+                    if (!AssetDatabase.IsValidFolder("Assets/Resources/Prefabs"))
+                    {
+                        AssetDatabase.CreateFolder("Assets/Resources", "Prefabs");
+                    }
+                    
+                    // Сохраняем префаб
+                    string prefabPath = "Assets/Resources/Prefabs/DefaultARPlane.prefab";
+                    
+                    // Сначала делаем префаб временным объектом на сцене
+                    GameObject tempPrefab = UnityEngine.Object.Instantiate(newPlanePrefab);
+                    
+                    // Создаем или перезаписываем файл префаба
+                    bool success = false;
+                    try 
+                    {
+                        #if UNITY_2018_3_OR_NEWER
+                        GameObject createdPrefab = PrefabUtility.SaveAsPrefabAsset(tempPrefab, prefabPath);
+                        success = createdPrefab != null;
+                        #else
+                        success = PrefabUtility.CreatePrefab(prefabPath, tempPrefab);
+                        #endif
+                    }
+                    catch (System.Exception e)
+                    {
+                        Debug.LogError($"Failed to save plane prefab: {e.Message}");
+                    }
+                    
+                    // Удаляем временный объект
+                    UnityEngine.Object.DestroyImmediate(tempPrefab);
+                    
+                    if (success)
+                    {
+                        // Загружаем созданный префаб из ресурсов
+                        GameObject savedPrefab = Resources.Load<GameObject>("Prefabs/DefaultARPlane");
+                        if (savedPrefab != null)
+                        {
+                            planeManager.planePrefab = savedPrefab;
+                            Debug.Log("Created and saved DefaultARPlane prefab to Resources/Prefabs");
+                        }
+                    }
+                    else 
+                    {
+                        planeManager.planePrefab = newPlanePrefab;
+                        Debug.LogWarning("Failed to save prefab. Using temporary prefab instead.");
+                    }
+                }
+                else
+                {
+                    planeManager.planePrefab = newPlanePrefab;
+                    Debug.LogWarning("Resources folder not found. Using temporary prefab.");
+                }
+            }
+            
+            Debug.Log("Configured AR Plane Manager with plane prefab");
+        }
+
+        /// <summary>
+        /// Creates the Wall Painter Controller for AR painting functionality
+        /// </summary>
+        private static void CreateWallPainterController(XROrigin xrOrigin)
+        {
+            try
+            {
+                // Check if ARWallPainterController already exists
+                var existingController = FindFirstObjectByType<ARWallPainterController>();
+                if (existingController != null)
+                {
+                    Debug.Log("Using existing ARWallPainterController");
+                    return;
+                }
+                
+                // Create a new ARWallPainterController
+                GameObject painterObj = new GameObject("AR Wall Painter Controller");
+                
+                // Try to add the component directly if it exists
+                Type controllerType = Type.GetType("ARWallPainterController, Assembly-CSharp");
+                if (controllerType != null)
+                {
+                    painterObj.AddComponent(controllerType);
+                    Debug.Log("Created Wall Painter Controller");
+                }
+                else
+                {
+                    // If type lookup fails, try adding the component directly
+                    // This approach requires the type to be already known at compile time
+                    try
+                    {
+                        var controller = painterObj.AddComponent<ARWallPainterController>();
+                        
+                        // Set references if possible
+                        if (xrOrigin != null && controller != null)
+                        {
+                            // Set ARCamera reference - implementation depends on actual controller properties
+                            var cameraField = controllerType?.GetField("arCamera");
+                            if (cameraField != null && xrOrigin.Camera != null)
+                            {
+                                cameraField.SetValue(controller, xrOrigin.Camera);
+                            }
+                        }
+                        
+                        Debug.Log("Created Wall Painter Controller");
+                    }
+                    catch (Exception)
+                    {
+                        Debug.LogWarning("Could not create ARWallPainterController - type not found. Make sure AR Wall Painter is properly imported.");
+                        UnityEngine.Object.DestroyImmediate(painterObj);
+                    }
+                }
+            }
+            catch (System.Exception ex)
+            {
+                Debug.LogError($"Error creating Wall Painter Controller: {ex.Message}");
+            }
+        }
+
+        [MenuItem("AR/ML Tools/Fix SegmentationManager Model Configuration")]
+        public static void FixSegmentationManagerModelConfiguration()
+        {
+            // Call the ModelFixerMenu's method directly
+            ModelFixerMenu.FixModelShapeIssues();
         }
 }
 

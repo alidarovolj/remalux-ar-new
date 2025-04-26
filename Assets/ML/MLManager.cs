@@ -213,7 +213,9 @@ public class MLManager : MonoBehaviour
             _predictionCoroutine = StartCoroutine(PredictionLoop());
         }
         
+        #if UNITY_EDITOR
         Debug.Log("MLManager: Started prediction loop");
+        #endif
     }
     
     public void StopPrediction()
@@ -226,7 +228,9 @@ public class MLManager : MonoBehaviour
             _predictionCoroutine = null;
         }
         
+        #if UNITY_EDITOR
         Debug.Log("MLManager: Stopped prediction loop");
+        #endif
     }
     
     private IEnumerator PredictionLoop()
