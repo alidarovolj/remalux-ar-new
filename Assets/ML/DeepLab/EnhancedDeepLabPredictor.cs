@@ -223,28 +223,52 @@ namespace ML.DeepLab
                 if (_cachedPostProcessingShader != null)
                     return _cachedPostProcessingShader;
                 
-                // Try to find the built-in shader first
-                _cachedPostProcessingShader = Shader.Find("Hidden/BlendTextures");
+                // First try to find it by name
+                Shader shader = Shader.Find("Hidden/DeepLabPostProcessing");
                 
-                // If not found, try alternate shader names
-                if (_cachedPostProcessingShader == null)
-                    _cachedPostProcessingShader = Shader.Find("Hidden/Blend");
+                if (shader != null)
+                {
+                    _cachedPostProcessingShader = shader;
+                    return shader;
+                }
                 
-                // If still not found, create a basic shader
-                if (_cachedPostProcessingShader == null)
+                // Next try other common shader names
+                string[] shaderNames = new string[]
+                {
+                    "Custom/DeepLabSegmentationProcess",
+                    "Hidden/SegmentationPostProcess",
+                    "Unlit/Texture"
+                };
+                
+                foreach (string name in shaderNames)
+                {
+                    shader = Shader.Find(name);
+                    if (shader != null)
+                    {
+                        _cachedPostProcessingShader = shader;
+                        if (debugMode)
+                            Debug.Log($"EnhancedDeepLabPredictor: Found shader: {name}");
+                        return shader;
+                    }
+                }
+                
+                // If we have allowFallbackShader enabled, create a simple fallback
+                if (allowFallbackShader)
                 {
                     if (debugMode)
                         Debug.Log("EnhancedDeepLabPredictor: Creating fallback post-processing shader");
                     
-                    _cachedPostProcessingShader = CreateBasicPostProcessingShader();
-                    
-                    if (_cachedPostProcessingShader == null)
-                        Debug.LogError("EnhancedDeepLabPredictor: Failed to create fallback shader");
-                    else if (debugMode)
-                        Debug.Log("EnhancedDeepLabPredictor: Fallback shader created successfully");
+                    shader = CreateBasicPostProcessingShader();
+                    if (shader != null)
+                    {
+                        _cachedPostProcessingShader = shader;
+                        return shader;
+                    }
                 }
                 
-                return _cachedPostProcessingShader;
+                // If all else fails
+                Debug.LogWarning("EnhancedDeepLabPredictor: No suitable post-processing shader found");
+                return null;
             }
         }
         
@@ -323,50 +347,111 @@ namespace ML.DeepLab
         
         IEnumerator InitializeDelayed()
         {
-            if (debugMode)
-                Debug.Log("EnhancedDeepLabPredictor: Starting delayed initialization...");
-
-            // Wait for a frame to ensure all components are properly initialized
-            yield return null;
-
+            // Delay initialization to ensure all components are ready
+            Debug.Log("EnhancedDeepLabPredictor: Starting delayed initialization...");
+            yield return new WaitForSeconds(0.1f);
+            
             bool success = false;
             try
             {
+                // Try to initialize components with a robust approach
                 success = InitializeComponents();
             }
-            catch (System.Exception ex)
+            catch (System.Exception e)
             {
-                Debug.LogError($"EnhancedDeepLabPredictor: Error during delayed initialization: {ex.Message}");
-                // Try to recover from initialization failure
+                Debug.LogError($"EnhancedDeepLabPredictor: Error during initialization: {e.Message}\n{e.StackTrace}");
                 TryRecoverModel();
+                yield break;
             }
-
-            if (success && debugMode)
-                Debug.Log("EnhancedDeepLabPredictor: Delayed initialization completed successfully");
+            
+            // If component initialization failed, try with retry logic
+            if (!success)
+            {
+                Debug.LogWarning("EnhancedDeepLabPredictor: Initial component initialization failed, retrying in 0.5s...");
+                yield return new WaitForSeconds(0.5f);
+                
+                try
+                {
+                    // Second attempt
+                    success = InitializeComponents();
+                }
+                catch (System.Exception e)
+                {
+                    Debug.LogError($"EnhancedDeepLabPredictor: Error during retry initialization: {e.Message}\n{e.StackTrace}");
+                    TryRecoverModel();
+                    yield break;
+                }
+                
+                if (!success)
+                {
+                    Debug.LogError("EnhancedDeepLabPredictor: Component initialization failed after retries");
+                    TryRecoverModel();
+                    yield break;
+                }
+            }
+            
+            // Force texture initialization after model is loaded
+            if (isModelLoaded && !texturesInitialized)
+            {
+                try
+                {
+                    Debug.Log("EnhancedDeepLabPredictor: Model loaded but textures not initialized, initializing now...");
+                    InitializeTextures();
+                    
+                    if (!texturesInitialized)
+                    {
+                        Debug.LogError("EnhancedDeepLabPredictor: Failed to initialize textures after model loaded");
+                    }
+                }
+                catch (System.Exception e)
+                {
+                    Debug.LogError($"EnhancedDeepLabPredictor: Error initializing textures: {e.Message}");
+                }
+            }
+            
+            // Notify completion
+            Debug.Log("EnhancedDeepLabPredictor: Delayed initialization completed successfully");
         }
         
         private bool InitializeComponents()
         {
             try
             {
-                // Initialize the model
+                // Initialize model first since it sets isModelLoaded flag
                 InitializeModel();
-
-                // Initialize post-processing and other enhancements
+                
+                if (!isModelLoaded)
+                {
+                    Debug.LogError("EnhancedDeepLabPredictor: Model initialization failed");
+                    return false;
+                }
+                
+                // Next initialize enhancements which includes texture setup
                 InitializeEnhancements();
-
-                // Initialize result textures with current dimensions
-                InitializeResultTextures(inputWidth, inputHeight);
-
-                // Create preprocessor if needed
-                if (_preprocessor == null)
-                    _preprocessor = new DeepLabPreprocessor();
-
+                
+                // Validate that critical texture components are initialized
+                if (!texturesInitialized)
+                {
+                    Debug.LogError("EnhancedDeepLabPredictor: Texture initialization failed");
+                    // Force texture initialization one more time
+                    InitializeTextures();
+                    
+                    if (!texturesInitialized)
+                    {
+                        Debug.LogError("EnhancedDeepLabPredictor: Texture initialization failed even after retry");
+                        return false;
+                    }
+                }
+                
+                // Set the self-reference to avoid null predictor errors
+                _predictor = this;
+                
+                // Everything initialized successfully
                 return true;
             }
-            catch (System.Exception ex)
+            catch (System.Exception e)
             {
-                Debug.LogError($"EnhancedDeepLabPredictor: Error initializing components: {ex.Message}");
+                Debug.LogError($"EnhancedDeepLabPredictor: Error in InitializeComponents: {e.Message}");
                 return false;
             }
         }
@@ -448,75 +533,77 @@ namespace ML.DeepLab
         
         private void InitializeEnhancements()
         {
-            try
+            try 
             {
-                // Initialize the self-reference to avoid null predictor errors
-                _predictor = this;
+                // Set input dimensions with constraints for better performance
+                int maxInputSize = Mathf.Min(SystemInfo.maxTextureSize, maxTextureSize > 0 ? maxTextureSize : 512);
                 
-                // Apply optimization settings
-                if (limitTextureSize)
+                if (Application.isMobilePlatform)
                 {
-                    inputWidth = Mathf.Min(inputWidth, maxTextureSize);
-                    inputHeight = Mathf.Min(inputHeight, maxTextureSize);
+                    // More conservative limits for mobile
+                    maxInputSize = Mathf.Min(maxInputSize, 256);
+                }
+                
+                // Set input dimensions
+                inputWidth = maxInputSize;
+                inputHeight = maxInputSize;
+                
+                if (debugMode)
+                    Debug.Log($"EnhancedDeepLabPredictor: Limited texture size to {inputWidth}x{inputHeight}");
+                
+                // Initialize textures
+                if (!texturesInitialized)
+                {
+                    InitializeTextures();
                     
-                    if (debugMode)
-                        Debug.Log($"EnhancedDeepLabPredictor: Limited texture size to {inputWidth}x{inputHeight}");
-                }
-                
-                // Create a render texture for enhanced result
-                _enhancedResultMask = new RenderTexture(inputWidth, inputHeight, 0, RenderTextureFormat.ARGB32);
-                _enhancedResultMask.enableRandomWrite = true;
-                _enhancedResultMask.Create();
-                
-                // Initialize for temporal smoothing if needed
-                if (applyTemporalSmoothing)
-                {
-                    previousMask = new RenderTexture(inputWidth, inputHeight, 0, RenderTextureFormat.ARGB32);
-                    previousMask.enableRandomWrite = true;
-                    previousMask.Create();
-                }
-                
-                // Load post-processing shader if needed
-                if (applyNoiseReduction || applyWallFilling)
-                {
-                    try
+                    if (!texturesInitialized)
                     {
-                        // Use the property getter to find or create the shader
-                        Shader shader = PostProcessingShader;
+                        Debug.LogError("EnhancedDeepLabPredictor: Failed to initialize textures during enhancement initialization");
+                    }
+                }
+                
+                // Create preprocessor for color space conversion if needed
+                if (_preprocessor == null)
+                {
+                    _preprocessor = new DeepLabPreprocessor();
+                }
+                
+                // Check for required post-processing shader
+                if (applyTemporalSmoothing || applyWallFilling || applyNoiseReduction)
+                {
+                    if (PostProcessingShader != null)
+                    {
+                        if (debugMode)
+                            Debug.Log("EnhancedDeepLabPredictor: Using post-processing shader: " + PostProcessingShader.name);
+                    }
+                    else if (allowFallbackShader)
+                    {
+                        if (debugMode)
+                            Debug.Log("EnhancedDeepLabPredictor: Creating fallback post-processing shader");
                         
-                        if (shader == null && allowFallbackShader)
+                        _cachedPostProcessingShader = CreateBasicPostProcessingShader();
+                        
+                        if (_cachedPostProcessingShader != null)
                         {
                             if (debugMode)
-                                Debug.Log("EnhancedDeepLabPredictor: Post-processing shader not found, creating basic one");
-                            
-                            _cachedPostProcessingShader = CreateBasicPostProcessingShader();
+                                Debug.Log("EnhancedDeepLabPredictor: Fallback shader created successfully");
                         }
-                        
-                        if (_cachedPostProcessingShader == null)
+                        else
                         {
-                            Debug.LogWarning("EnhancedDeepLabPredictor: Could not load or create post-processing shader, some features will be disabled");
+                            Debug.LogWarning("EnhancedDeepLabPredictor: Failed to create fallback shader");
                         }
                     }
-                    catch (System.Exception e)
-                    {
-                        Debug.LogError($"EnhancedDeepLabPredictor: Error loading post-processing shader: {e.Message}");
-                        _cachedPostProcessingShader = null;
-                    }
                 }
                 
-                // Find main camera for frame capture
-                mainCamera = Camera.main;
-                if (mainCamera == null)
-                {
-                    mainCamera = FindFirstObjectByType<Camera>();
-                }
-                
+                // Mark enhanced features as initialized
                 isModelLoaded = true;
-                Debug.Log("EnhancedDeepLabPredictor: Enhanced features initialized successfully");
+                
+                if (debugMode)
+                    Debug.Log("EnhancedDeepLabPredictor: Enhanced features initialized successfully");
             }
             catch (System.Exception e)
             {
-                Debug.LogError($"EnhancedDeepLabPredictor: Failed to initialize enhanced features: {e.Message}");
+                Debug.LogError($"EnhancedDeepLabPredictor: Error initializing enhancements: {e.Message}");
                 isModelLoaded = false;
             }
         }
@@ -557,7 +644,7 @@ namespace ML.DeepLab
                 }
                 
                 // Initialize or resize the result textures if needed
-                InitializeResultTextures(inputTexture.width, inputTexture.height);
+                InitializeTextures();
                 
                 // No predictor means we can't process
                 if (_predictor == null)
@@ -746,31 +833,57 @@ namespace ML.DeepLab
         /// </summary>
         private void InitializeTextures()
         {
-            // Create result texture with proper format
-            _enhancedResultMask = new RenderTexture(inputWidth, inputHeight, 0, RenderTextureFormat.ARGB32);
-            _enhancedResultMask.enableRandomWrite = true;
-            _enhancedResultMask.Create();
-            
-            // Create raw segmentation texture for intermediary results
-            rawSegmentationResult = new RenderTexture(inputWidth, inputHeight, 0, RenderTextureFormat.ARGB32);
-            rawSegmentationResult.enableRandomWrite = true;
-            rawSegmentationResult.Create();
-            
-            // Create texture for previous frame result if temporal smoothing is enabled
-            if (applyTemporalSmoothing)
+            try
             {
-                previousResultTexture = new RenderTexture(inputWidth, inputHeight, 0, RenderTextureFormat.ARGB32);
-                previousResultTexture.enableRandomWrite = true;
-                previousResultTexture.Create();
+                // Create result texture with proper format
+                if (_enhancedResultMask == null)
+                {
+                    _enhancedResultMask = new RenderTexture(inputWidth, inputHeight, 0, RenderTextureFormat.ARGB32);
+                    _enhancedResultMask.enableRandomWrite = true;
+                    _enhancedResultMask.Create();
+                }
                 
-                // Clear it
-                RenderTexture prevActive = RenderTexture.active;
-                RenderTexture.active = previousResultTexture;
-                GL.Clear(true, true, Color.clear);
-                RenderTexture.active = prevActive;
+                // Create raw segmentation texture for intermediary results
+                if (rawSegmentationResult == null)
+                {
+                    rawSegmentationResult = new RenderTexture(inputWidth, inputHeight, 0, RenderTextureFormat.ARGB32);
+                    rawSegmentationResult.enableRandomWrite = true;
+                    rawSegmentationResult.Create();
+                }
+                
+                // Create texture for previous frame result if temporal smoothing is enabled
+                if (applyTemporalSmoothing && previousResultTexture == null)
+                {
+                    previousResultTexture = new RenderTexture(inputWidth, inputHeight, 0, RenderTextureFormat.ARGB32);
+                    previousResultTexture.enableRandomWrite = true;
+                    previousResultTexture.Create();
+                    
+                    // Clear it
+                    RenderTexture prevActive = RenderTexture.active;
+                    RenderTexture.active = previousResultTexture;
+                    GL.Clear(true, true, Color.clear);
+                    RenderTexture.active = prevActive;
+                }
+                
+                // Verify textures were created successfully
+                if (_enhancedResultMask != null && _enhancedResultMask.IsCreated() && 
+                    rawSegmentationResult != null && rawSegmentationResult.IsCreated())
+                {
+                    texturesInitialized = true;
+                    if (debugMode)
+                        Debug.Log("EnhancedDeepLabPredictor: Textures initialized successfully");
+                }
+                else
+                {
+                    Debug.LogError("EnhancedDeepLabPredictor: Failed to create textures");
+                    texturesInitialized = false;
+                }
             }
-            
-            texturesInitialized = true;
+            catch (System.Exception e)
+            {
+                Debug.LogError($"EnhancedDeepLabPredictor: Error in InitializeTextures: {e.Message}");
+                texturesInitialized = false;
+            }
         }
         
         /// <summary>
@@ -1122,156 +1235,167 @@ namespace ML.DeepLab
         /// <returns>A RenderTexture containing the enhanced segmentation result</returns>
         public override RenderTexture PredictSegmentation(Texture2D inputTexture)
         {
-            // Проверяем готовность модели к использованию
-            if (!isModelLoaded || localEngine == null)
+            // Check if model is loaded
+            if (!isModelLoaded)
             {
                 Debug.LogWarning("EnhancedDeepLabPredictor: Сегментация пока не готова, пропускаем кадр");
                 return null;
             }
             
-            if (inputTexture == null)
+            // Ensure textures are initialized
+            if (!texturesInitialized)
             {
-                Debug.LogError("EnhancedDeepLabPredictor: Input texture is null");
-                return null;
-            }
-            
-            // Skip if prediction interval is set and not enough time has passed
-            if (minPredictionInterval > 0f)
-            {
-                if (Time.time - lastPredictionTime < minPredictionInterval)
-                {
-                    if (enableDebugLogging && verbose)
+                try {
+                    InitializeTextures();
+                    if (!texturesInitialized)
                     {
-                        Debug.Log($"EnhancedDeepLabPredictor: Skipping prediction due to interval: {Time.time - lastPredictionTime}s < {minPredictionInterval}s");
+                        Debug.LogWarning("EnhancedDeepLabPredictor: Unable to initialize textures, skipping frame");
+                        return null;
                     }
-                    return _enhancedResultMask;
                 }
-                lastPredictionTime = Time.time;
-            }
-            
-            _enhancedFrameCount++;
-            if (enableDebugLogging)
-            {
-                Debug.Log($"EnhancedDeepLabPredictor: Processing frame {_enhancedFrameCount} with texture {inputTexture.width}x{inputTexture.height}");
-            }
-            
-            // Initialize result textures if needed
-            if (_enhancedResultMask == null || !texturesInitialized)
-            {
-                InitializeTextures();
-                if (_enhancedResultMask == null)
+                catch (System.Exception e)
                 {
-                    Debug.LogError("EnhancedDeepLabPredictor: Failed to initialize textures");
+                    Debug.LogError($"EnhancedDeepLabPredictor: Error initializing textures: {e.Message}");
                     return null;
                 }
             }
             
-            // Clear the raw result texture
-            if (rawSegmentationResult != null)
+            // Check throttling to avoid processing frames too quickly
+            if (Time.time - lastPredictionTime < minPredictionInterval)
             {
-                ClearRenderTexture(rawSegmentationResult);
-            }
-            else
-            {
-                Debug.LogWarning("EnhancedDeepLabPredictor: Raw segmentation texture is null, cannot clear");
+                if (debugMode && verbose)
+                    Debug.Log($"EnhancedDeepLabPredictor: Skipping frame due to throttling ({Time.time - lastPredictionTime}s < {minPredictionInterval}s)");
                 return _enhancedResultMask;
             }
             
-            // Process the input texture
-            Texture2D resized = null;
-            Tensor inputTensor = null;
-            Tensor outputTensor = null;
+            // Update timing
+            lastPredictionTime = Time.time;
+            _enhancedFrameCount++;
             
+            // Process the frame
             try
             {
-                // Resize input to model dimensions
-                resized = ResizeTexture(inputTexture, inputWidth, inputHeight);
-                if (resized == null)
+                if (inputTexture == null)
                 {
-                    Debug.LogError("EnhancedDeepLabPredictor: Failed to resize input texture");
+                    Debug.LogError("EnhancedDeepLabPredictor: Input texture is null");
+                    return null;
+                }
+                
+                if (debugMode && verbose)
+                    Debug.Log($"EnhancedDeepLabPredictor: Processing frame {_enhancedFrameCount} with texture {inputTexture.width}x{inputTexture.height}");
+                
+                // Clear the raw result texture
+                if (rawSegmentationResult != null)
+                {
+                    ClearRenderTexture(rawSegmentationResult);
+                }
+                else
+                {
+                    Debug.LogWarning("EnhancedDeepLabPredictor: Raw segmentation texture is null, cannot clear");
                     return _enhancedResultMask;
                 }
                 
-                // Convert to tensor
-                inputTensor = PreprocessTexture(resized);
-                if (inputTensor == null)
-                {
-                    Debug.LogError("EnhancedDeepLabPredictor: Failed to preprocess texture to tensor");
-                    return _enhancedResultMask;
-                }
+                // Process the input texture
+                Texture2D resized = null;
+                Tensor inputTensor = null;
+                Tensor outputTensor = null;
                 
-                // Run inference
-                localEngine.Execute(inputTensor);
-                
-                // Get output tensor
                 try
                 {
-                    // Try to get output using the model's output name
-                    string outputName = "SemanticPredictions"; // Default name
-                    outputTensor = localEngine.PeekOutput(outputName);
+                    // Resize input to model dimensions
+                    resized = ResizeTexture(inputTexture, inputWidth, inputHeight);
+                    if (resized == null)
+                    {
+                        Debug.LogError("EnhancedDeepLabPredictor: Failed to resize input texture");
+                        return _enhancedResultMask;
+                    }
+                    
+                    // Convert to tensor
+                    inputTensor = PreprocessTexture(resized);
+                    if (inputTensor == null)
+                    {
+                        Debug.LogError("EnhancedDeepLabPredictor: Failed to preprocess texture to tensor");
+                        return _enhancedResultMask;
+                    }
+                    
+                    // Run inference
+                    localEngine.Execute(inputTensor);
+                    
+                    // Get output tensor
+                    try
+                    {
+                        // Try to get output using the model's output name
+                        string outputName = "SemanticPredictions"; // Default name
+                        outputTensor = localEngine.PeekOutput(outputName);
+                    }
+                    catch (System.Exception e)
+                    {
+                        Debug.LogWarning($"EnhancedDeepLabPredictor: Error getting named output: {e.Message}");
+                        
+                        try
+                        {
+                            // Fallback to getting the first output tensor
+                            outputTensor = localEngine.PeekOutput();
+                            if (debugMode)
+                                Debug.Log("EnhancedDeepLabPredictor: Using default PeekOutput without parameters");
+                        }
+                        catch (System.Exception e2)
+                        {
+                            Debug.LogError($"EnhancedDeepLabPredictor: Failed to get model outputs: {e2.Message}");
+                            return _enhancedResultMask;
+                        }
+                    }
+                    
+                    if (outputTensor == null)
+                    {
+                        Debug.LogError("EnhancedDeepLabPredictor: Failed to get output tensor");
+                        return _enhancedResultMask;
+                    }
+                    
+                    // Process output tensor to raw result texture
+                    EnhancedConvertOutputToMask(outputTensor, rawSegmentationResult, (byte)WallClassId);
+                    
+                    // Apply post-processing
+                    ProcessOutputToMask(outputTensor, _enhancedResultMask);
+                    
+                    // Check for wall detection
+                    CheckIfWallsDetected();
+                    
+                    // Return the enhanced result
+                    return _enhancedResultMask;
                 }
                 catch (System.Exception e)
                 {
-                    Debug.LogWarning($"EnhancedDeepLabPredictor: Error getting named output: {e.Message}");
-                    
-                    try
-                    {
-                        // Fallback to getting the first output tensor
-                        outputTensor = localEngine.PeekOutput();
-                        if (debugMode)
-                            Debug.Log("EnhancedDeepLabPredictor: Using default PeekOutput without parameters");
-                    }
-                    catch (System.Exception e2)
-                    {
-                        Debug.LogError($"EnhancedDeepLabPredictor: Failed to get model outputs: {e2.Message}");
-                        return _enhancedResultMask;
-                    }
-                }
-                
-                if (outputTensor == null)
-                {
-                    Debug.LogError("EnhancedDeepLabPredictor: Failed to get output tensor");
+                    Debug.LogError($"EnhancedDeepLabPredictor: Error in PredictSegmentation: {e.Message}\n{e.StackTrace}");
                     return _enhancedResultMask;
                 }
-                
-                // Process output tensor to raw result texture
-                EnhancedConvertOutputToMask(outputTensor, rawSegmentationResult, (byte)WallClassId);
-                
-                // Apply post-processing
-                ProcessOutputToMask(outputTensor, _enhancedResultMask);
-                
-                // Check for wall detection
-                CheckIfWallsDetected();
-                
-                // Return the enhanced result
-                return _enhancedResultMask;
+                finally
+                {
+                    // Properly dispose of resources
+                    if (inputTensor != null)
+                    {
+                        inputTensor.Dispose();
+                        inputTensor = null;
+                    }
+                    
+                    if (outputTensor != null)
+                    {
+                        outputTensor.Dispose();
+                        outputTensor = null;
+                    }
+                    
+                    // Clean up resized texture if created
+                    if (resized != null && resized != inputTexture)
+                    {
+                        Destroy(resized);
+                        resized = null;
+                    }
+                }
             }
             catch (System.Exception e)
             {
                 Debug.LogError($"EnhancedDeepLabPredictor: Error in PredictSegmentation: {e.Message}\n{e.StackTrace}");
                 return _enhancedResultMask;
-            }
-            finally
-            {
-                // Properly dispose of resources
-                if (inputTensor != null)
-                {
-                    inputTensor.Dispose();
-                    inputTensor = null;
-                }
-                
-                if (outputTensor != null)
-                {
-                    outputTensor.Dispose();
-                    outputTensor = null;
-                }
-                
-                // Clean up resized texture if created
-                if (resized != null && resized != inputTexture)
-                {
-                    Destroy(resized);
-                    resized = null;
-                }
             }
         }
         
@@ -1713,40 +1837,6 @@ namespace ML.DeepLab
             {
                 Debug.LogError($"EnhancedDeepLabPredictor: Error creating fallback shader: {e.Message}");
                 return null;
-            }
-        }
-
-        /// <summary>
-        /// Initializes or reinitializes the result textures with the specified dimensions
-        /// </summary>
-        /// <param name="width">Width of the result textures</param>
-        /// <param name="height">Height of the result textures</param>
-        private void InitializeResultTextures(int width, int height)
-        {
-            if (width <= 0 || height <= 0)
-            {
-                Debug.LogError($"EnhancedDeepLabPredictor: Invalid texture dimensions: {width}x{height}");
-                return;
-            }
-            
-            // Apply stricter size constraints to prevent GPU memory issues on mobile
-            int maxTextureSize = Mathf.Min(SystemInfo.maxTextureSize, 1024); // More conservative limit for mobile
-            
-            // Check if the texture is too large and resize if needed
-            if (width > maxTextureSize || height > maxTextureSize)
-            {
-                float scale = Mathf.Min((float)maxTextureSize / width, (float)maxTextureSize / height);
-                width = Mathf.FloorToInt(width * scale);
-                height = Mathf.FloorToInt(height * scale);
-                
-                if (debugMode)
-                    Debug.LogWarning($"EnhancedDeepLabPredictor: Texture dimensions were clamped to {width}x{height} to avoid GPU memory issues");
-            }
-            
-            // Additional check for mobile platforms to ensure smaller textures
-            if (Application.isMobilePlatform)
-            {
-                // Use
             }
         }
 

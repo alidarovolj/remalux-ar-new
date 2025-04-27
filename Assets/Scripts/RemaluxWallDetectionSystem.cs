@@ -54,30 +54,33 @@ public class RemaluxWallDetectionSystem : MonoBehaviour
     
     private void Awake()
     {
-        // Find required components if not assigned
+        // Найти обязательные компоненты, если не заданы
         if (_arSession == null)
             _arSession = FindObjectOfType<ARSession>();
-            
-        if (_arCameraManager == null)
-            _arCameraManager = FindObjectOfType<ARCameraManager>();
             
         if (_arPlaneManager == null)
             _arPlaneManager = FindObjectOfType<ARPlaneManager>();
             
-        if (_arRaycastManager == null)
-            _arRaycastManager = FindObjectOfType<ARRaycastManager>();
-            
-        if (_arAnchorManager == null)
-            _arAnchorManager = FindObjectOfType<ARAnchorManager>();
+        // Особая обработка для ARAnchorManager - нужно найти тот, что связан с основным ARSessionOrigin
+        EnsureCorrectARAnchorManager();
             
         if (_deepLabPredictor == null)
             _deepLabPredictor = FindObjectOfType<DeepLabPredictor>();
             
+        if (_arCameraManager == null)
+            _arCameraManager = FindObjectOfType<ARCameraManager>();
+            
+        if (_arRaycastManager == null)
+            _arRaycastManager = FindObjectOfType<ARRaycastManager>();
+            
         if (_wallAnchorConnector == null)
             _wallAnchorConnector = FindObjectOfType<WallAnchorConnector>();
             
-        // Validate components in Awake instead of Start
-        _isInitialized = ValidateComponents();
+        // Валидировать компоненты в Awake вместо Start
+        ValidateComponents();
+        
+        // Создать список для хранения стен
+        _wallAnchors = new List<ARWallAnchor>();
     }
     
     private void Start()
@@ -113,6 +116,81 @@ public class RemaluxWallDetectionSystem : MonoBehaviour
     {
         // Unsubscribe from events
         UnsubscribeFromAREvents();
+    }
+    
+    /// <summary>
+    /// Убеждается, что мы используем правильный экземпляр ARAnchorManager, связанный с основным ARSessionOrigin
+    /// </summary>
+    private void EnsureCorrectARAnchorManager()
+    {
+        if (_arAnchorManager != null)
+        {
+            // Проверяем, является ли текущий ARAnchorManager тем, что на основном ARSessionOrigin
+            ARSessionOrigin sessionOrigin = _arAnchorManager.GetComponentInParent<ARSessionOrigin>();
+            if (sessionOrigin != null && sessionOrigin == FindMainARSessionOrigin())
+            {
+                Debug.Log("RemaluxWallDetectionSystem: Using correct ARAnchorManager from the main ARSessionOrigin");
+                return; // Уже правильный ARAnchorManager
+            }
+        }
+        
+        // Ищем основной ARSessionOrigin и его ARAnchorManager
+        ARSessionOrigin mainSessionOrigin = FindMainARSessionOrigin();
+        if (mainSessionOrigin != null)
+        {
+            ARAnchorManager anchorManager = mainSessionOrigin.GetComponent<ARAnchorManager>();
+            if (anchorManager != null)
+            {
+                _arAnchorManager = anchorManager;
+                Debug.Log("RemaluxWallDetectionSystem: Successfully found ARAnchorManager on main ARSessionOrigin");
+            }
+            else
+            {
+                // Если на основном ARSessionOrigin нет ARAnchorManager, добавляем его
+                _arAnchorManager = mainSessionOrigin.gameObject.AddComponent<ARAnchorManager>();
+                Debug.Log("RemaluxWallDetectionSystem: Added new ARAnchorManager to main ARSessionOrigin");
+            }
+        }
+        else
+        {
+            Debug.LogWarning("RemaluxWallDetectionSystem: No ARSessionOrigin found in the scene");
+        }
+    }
+    
+    /// <summary>
+    /// Находит основной ARSessionOrigin в сцене
+    /// </summary>
+    private ARSessionOrigin FindMainARSessionOrigin()
+    {
+        // Ищем ARSessionOrigin, у которого есть компоненты AR
+        ARSessionOrigin[] sessionOrigins = FindObjectsOfType<ARSessionOrigin>();
+        
+        if (sessionOrigins.Length == 0)
+        {
+            Debug.LogError("RemaluxWallDetectionSystem: No ARSessionOrigin found in the scene");
+            return null;
+        }
+        
+        if (sessionOrigins.Length == 1)
+        {
+            return sessionOrigins[0]; // Единственный экземпляр
+        }
+        
+        // Если есть несколько, находим тот, у которого есть активная AR камера
+        foreach (ARSessionOrigin origin in sessionOrigins)
+        {
+            // Проверяем, есть ли у этого ARSessionOrigin связанная AR камера
+            Camera arCamera = origin.camera;
+            if (arCamera != null && arCamera.gameObject.activeSelf && arCamera == Camera.main)
+            {
+                Debug.Log($"RemaluxWallDetectionSystem: Using ARSessionOrigin with the main camera: {origin.name}");
+                return origin;
+            }
+        }
+        
+        // Если не можем найти по камере, берем первый
+        Debug.LogWarning("RemaluxWallDetectionSystem: Multiple ARSessionOrigin found. Using the first one.");
+        return sessionOrigins[0];
     }
     
     /// <summary>
@@ -619,10 +697,13 @@ public class RemaluxWallDetectionSystem : MonoBehaviour
             return;
         }
 
-        // Create a pose for attaching to the plane
+        // Отладочная информация о позиции камеры до создания
+        Debug.Log($"RemaluxWallDetectionSystem: Camera BEFORE: {Camera.main.transform.position}");
+        
+        // Создаем позу в координатной системе плоскости
         Pose anchorPose = new Pose(plane.center, plane.transform.rotation);
         
-        // Create an AR Anchor properly through ARAnchorManager
+        // Создаем якорь через ARAnchorManager
         ARAnchor arAnchor = _arAnchorManager.AttachAnchor(plane, anchorPose);
         
         if (arAnchor == null)
@@ -631,34 +712,62 @@ public class RemaluxWallDetectionSystem : MonoBehaviour
             return;
         }
         
-        // Now instantiate wall anchor as a child of the AR anchor
-        GameObject wallAnchorObject = Instantiate(_wallAnchorPrefab, arAnchor.transform);
-        wallAnchorObject.name = $"Wall Anchor ({plane.trackableId})";
+        // Отладочная информация о позиции якоря
+        Debug.Log($"RemaluxWallDetectionSystem: Anchor at: {arAnchor.transform.position}, camera at: {Camera.main.transform.position}");
+        
+        // Создаем квадрик отдельно и затем привязываем его к якорю С СОХРАНЕНИЕМ мировых координат
+        GameObject wallAnchorObject = Instantiate(_wallAnchorPrefab);
+        // Сначала активируем, чтобы transform проинициализировался корректно
         wallAnchorObject.SetActive(true);
+        wallAnchorObject.name = $"Wall Anchor ({plane.trackableId})";
         
-        // Set local transform properties
-        wallAnchorObject.transform.localPosition = Vector3.zero;
-        wallAnchorObject.transform.localRotation = Quaternion.identity;
+        // Позиционируем квадрик в мировых координатах совпадающим с якорем
+        wallAnchorObject.transform.position = arAnchor.transform.position;
+        wallAnchorObject.transform.rotation = arAnchor.transform.rotation;
         
-        // Scale according to plane dimensions
-        // Assuming quad is in XY plane with Z as normal
+        // ЗАТЕМ устанавливаем родителя, СОХРАНЯЯ мировые координаты
+        wallAnchorObject.transform.SetParent(arAnchor.transform, worldPositionStays: true);
+        
+        // Отладочный вывод после привязки
+        Debug.Log($"RemaluxWallDetectionSystem: After parenting - Quad at: {wallAnchorObject.transform.position}, anchor at: {arAnchor.transform.position}");
+        
+        // Масштабируем в соответствии с размерами плоскости
+        // Предполагаем, что квад находится в плоскости XY с нормалью Z
         wallAnchorObject.transform.localScale = new Vector3(plane.size.x, plane.size.y, 1f);
         
-        // Get or add ARWallAnchor component
+        // Получаем или добавляем компонент ARWallAnchor
         ARWallAnchor wallAnchor = wallAnchorObject.GetComponent<ARWallAnchor>();
         if (wallAnchor == null)
             wallAnchor = wallAnchorObject.AddComponent<ARWallAnchor>();
         
-        // Set wall anchor properties
+        // Устанавливаем свойства стены
         wallAnchor.ARPlane = plane;
         wallAnchor.ARAnchor = arAnchor;
         wallAnchor.SetWallDimensions(plane.size.x, _minWallHeight);
         
-        // Add the wall anchor to the list
+        // Добавляем стену в список
         _wallAnchors.Add(wallAnchor);
         
+        // Отладочный вывод иерархии
+        // Это поможет проверить, как выглядит дерево объектов
+        PrintObjectHierarchy(arAnchor.transform, 0);
+        
         if (_debugMode)
-            Debug.Log($"RemaluxWallDetectionSystem: Created properly attached wall anchor for plane {plane.trackableId} with size {plane.size}");
+            Debug.Log($"RemaluxWallDetectionSystem: Created wall anchor for plane {plane.trackableId} with size {plane.size}");
+    }
+    
+    /// <summary>
+    /// Отладочная функция для вывода иерархии объектов
+    /// </summary>
+    private void PrintObjectHierarchy(Transform obj, int depth)
+    {
+        string indent = new string(' ', depth * 2);
+        Debug.Log($"{indent}└─ {obj.name} (position: {obj.position}, localPosition: {obj.localPosition})");
+        
+        foreach (Transform child in obj)
+        {
+            PrintObjectHierarchy(child, depth + 1);
+        }
     }
     
     /// <summary>
