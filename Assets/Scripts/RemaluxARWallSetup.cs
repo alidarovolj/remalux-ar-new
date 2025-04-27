@@ -5,6 +5,7 @@ using UnityEngine.XR.ARFoundation;
 using UnityEngine.XR.ARSubsystems;
 using ML.DeepLab;
 using UnityEngine.Events;
+using UnityEditor;
 
 /// <summary>
 /// Класс для настройки и управления AR стенами в приложении Remalux
@@ -655,126 +656,84 @@ public class RemaluxARWallSetup : MonoBehaviour
     /// </summary>
     private void CreateWallAnchorForPlane(ARPlane plane)
     {
+        if (_debugMode)
+        {
+            Debug.Log($"[СТЕНА] Начинаю создание стены для плоскости {plane.trackableId}");
+        }
+
+        // Проверим, что нет уже существующего якоря для этой плоскости
+        foreach (var existingAnchor in _wallAnchors)
+        {
+            if (existingAnchor != null && existingAnchor.ARPlane != null && 
+                existingAnchor.ARPlane.trackableId == plane.trackableId)
+            {
+                Debug.Log($"[СТЕНА] Якорь для плоскости {plane.trackableId} уже существует");
+                return;
+            }
+        }
+
         // если вдруг шаблон не создан — создаём на лету
         if (_wallAnchorPrefab == null)
             ValidateComponents();
 
         if (_wallAnchorPrefab == null)
         {
-            Debug.LogError("RemaluxARWallSetup: _wallAnchorPrefab всё ещё не задан — пропускаем создание якоря");
+            Debug.LogError("[СТЕНА] _wallAnchorPrefab всё ещё не задан — пропускаем создание якоря");
             return;
         }
         
-        if (_arAnchorManager == null)
-        {
-            Debug.LogError("RemaluxARWallSetup: Missing ARAnchorManager - cannot create proper AR anchors");
-            return;
-        }
-
-        // Отладочная информация о позиции камеры до создания
-        Debug.Log($"RemaluxARWallSetup: Camera BEFORE: {Camera.main.transform.position}");
+        // --- УПРОЩЕННЫЙ ПОДХОД ---
+        // Создаем стену напрямую, без зависимости от AR Anchor
         
-        // Создаем якорь через ARAnchorManager, используя центр плоскости
-        Pose anchorPose = new Pose(plane.center, Quaternion.LookRotation(plane.normal, Vector3.up));
+        // Создаем позицию и вращение для стены из данных AR плоскости
+        Pose wallPose = new Pose(plane.center, Quaternion.LookRotation(plane.normal, Vector3.up));
         
-        // Use the correct method to create an anchor based on the AR Foundation version
-        ARAnchor arAnchor = null;
-        
-        // Try to attach anchor to the plane first (this is the preferred and most stable method)
-        arAnchor = _arAnchorManager.AttachAnchor(plane, anchorPose);
-        
-        if (arAnchor == null)
-        {
-            Debug.LogWarning($"RemaluxARWallSetup: Failed to create anchor for plane {plane.trackableId} - trying alternate method");
-            
-            // Fallback: Try to create a free-floating anchor if available in this AR Foundation version
-            try
-            {
-                // Some versions have this method, try using reflection to call it if available
-                var methodInfo = typeof(ARAnchorManager).GetMethod("AddAnchor", new[] { typeof(Pose) });
-                if (methodInfo != null)
-                {
-                    arAnchor = methodInfo.Invoke(_arAnchorManager, new object[] { anchorPose }) as ARAnchor;
-                }
-                else
-                {
-                    // Last resort: create a GameObject with ARAnchor manually
-                    GameObject anchorGO = new GameObject($"Manual Anchor ({plane.trackableId})");
-                    anchorGO.transform.position = anchorPose.position;
-                    anchorGO.transform.rotation = anchorPose.rotation;
-                    arAnchor = anchorGO.AddComponent<ARAnchor>();
-                }
-            }
-            catch (System.Exception ex)
-            {
-                Debug.LogError($"RemaluxARWallSetup: Error creating anchor: {ex.Message}");
-            }
-        }
-        
-        if (arAnchor == null)
-        {
-            Debug.LogError($"RemaluxARWallSetup: All attempts to create anchor failed for plane {plane.trackableId}");
-            return;
-        }
-        
-        // Отладочная информация о позиции якоря
-        Debug.Log($"RemaluxARWallSetup: Anchor created at: {arAnchor.transform.position}");
-        
-        // Создаем стену из префаба и активируем ее
+        // Создаем объект стены напрямую
         GameObject wallAnchorObject = Instantiate(_wallAnchorPrefab);
         wallAnchorObject.SetActive(true);
         wallAnchorObject.name = $"Wall Anchor ({plane.trackableId})";
         
-        // Устанавливаем положение и ориентацию стены НАПРЯМУЮ, без родительской связи
-        wallAnchorObject.transform.position = arAnchor.transform.position;
-        wallAnchorObject.transform.rotation = arAnchor.transform.rotation;
+        // Устанавливаем положение и вращение стены
+        wallAnchorObject.transform.position = wallPose.position;
+        wallAnchorObject.transform.rotation = wallPose.rotation;
         
-        // Устанавливаем родительскую связь ПОСЛЕ установки позиции и поворота
-        wallAnchorObject.transform.parent = arAnchor.transform;
+        // Получаем компонент ARWallAnchor
+        ARWallAnchor wallAnchor = wallAnchorObject.GetComponent<ARWallAnchor>();
+        if (wallAnchor == null)
+            wallAnchor = wallAnchorObject.AddComponent<ARWallAnchor>();
         
-        // Устанавливаем локальное смещение в 0 для гарантии точного позиционирования
-        wallAnchorObject.transform.localPosition = Vector3.zero;
-        wallAnchorObject.transform.localRotation = Quaternion.identity;
-        
-        // Отладочный вывод после привязки
-        Debug.Log($"RemaluxARWallSetup: After parenting - Wall at: {wallAnchorObject.transform.position}, anchor at: {arAnchor.transform.position}");
+        // Включаем отладку
+        wallAnchor.DebugMode = true;
         
         // Масштабируем в соответствии с размерами плоскости
         float wallWidth = Mathf.Max(plane.size.x, 1.0f);
         float wallHeight = Mathf.Max(_minWallHeight, plane.size.y);
         
-        // Получаем или добавляем компонент ARWallAnchor
-        ARWallAnchor wallAnchor = wallAnchorObject.GetComponent<ARWallAnchor>();
-        if (wallAnchor == null)
-            wallAnchor = wallAnchorObject.AddComponent<ARWallAnchor>();
-        
-        // Устанавливаем свойства стены
-        wallAnchor.ARPlane = plane;
-        wallAnchor.ARAnchor = arAnchor;
+        // Устанавливаем размеры стены
         wallAnchor.SetWallDimensions(wallWidth, wallHeight);
         
-        // Устанавливаем материал и цвет стены если они заданы
+        // Устанавливаем материал и цвет стены
         if (_wallMaterial != null)
         {
             wallAnchor.SetWallMaterial(_wallMaterial);
             wallAnchor.SetWallColor(_wallColor);
         }
         
+        // Для совместимости со старым кодом, пытаемся сохранить ссылки на AR компоненты
+        try
+        {
+            wallAnchor.SetARPlane(plane);
+        }
+        catch (System.Exception ex)
+        {
+            Debug.LogWarning($"[СТЕНА] Не удалось установить ссылку на ARPlane: {ex.Message}");
+        }
+        
         // Добавляем стену в список
         _wallAnchors.Add(wallAnchor);
         
-        // Отладочная проверка родительской связи
-        if (wallAnchorObject.transform.parent != arAnchor.transform)
-        {
-            Debug.LogWarning("RemaluxARWallSetup: Wall parenting failed! Fixing...");
-            wallAnchorObject.transform.parent = arAnchor.transform;
-        }
-        
-        if (_debugMode)
-        {
-            Debug.Log($"RemaluxARWallSetup: Created wall anchor for plane {plane.trackableId} with size {wallWidth}x{wallHeight}");
-            PrintObjectHierarchy(arAnchor.transform, 0);
-        }
+        // Отладочный вывод
+        Debug.Log($"[СТЕНА] Успешно создана стена с размерами {wallWidth}x{wallHeight}");
     }
     
     /// <summary>
@@ -796,20 +755,97 @@ public class RemaluxARWallSetup : MonoBehaviour
     /// </summary>
     private bool IsVerticalPlane(ARPlane plane)
     {
-        // Check plane classification
+        if (plane == null) return false;
+        
+        // Проверка по классификации
         if (plane.classification == PlaneClassification.Wall)
+        {
+            if (_debugMode) Debug.Log($"[СТЕНА-ПРОВЕРКА] Плоскость {plane.trackableId} классифицирована как стена");
             return true;
-            
-        // Check plane alignment
+        }
+        
+        // Проверка по выравниванию
         if (plane.alignment == PlaneAlignment.Vertical)
+        {
+            if (_debugMode) Debug.Log($"[СТЕНА-ПРОВЕРКА] Плоскость {plane.trackableId} имеет вертикальное выравнивание");
             return true;
-            
-        // Check normal vector to see if it's approximately horizontal (indicating a vertical plane)
+        }
+        
+        // Проверка по вектору нормали
         Vector3 normal = plane.normal;
         float dotProduct = Vector3.Dot(normal, Vector3.up);
-        float threshold = 0.3f;  // Adjust this threshold if needed
+        float threshold = 0.3f;  // Можно регулировать порог для точности
         
-        return Mathf.Abs(dotProduct) < threshold;
+        bool isVerticalByNormal = Mathf.Abs(dotProduct) < threshold;
+        
+        if (isVerticalByNormal)
+        {
+            if (_debugMode) Debug.Log($"[СТЕНА-ПРОВЕРКА] Плоскость {plane.trackableId} вертикальна по нормали: {normal}, dot: {dotProduct}");
+        }
+        
+        return isVerticalByNormal;
+    }
+    
+    /// <summary>
+    /// Добавим метод для регулярной проверки и создания стен
+    /// </summary>
+    private void CheckVerticalPlanesAndCreateWalls()
+    {
+        if (_arPlaneManager == null)
+        {
+            Debug.LogError("[СТЕНА] ARPlaneManager не найден - не могу проверить плоскости");
+            return;
+        }
+        
+        // Отладочный вывод - список всех найденных плоскостей
+        if (_debugMode)
+        {
+            Debug.Log($"[СТЕНА-ДИАГНОСТИКА] Найдено {_arPlaneManager.trackables.count} плоскостей:");
+            int verticalCount = 0;
+            
+            foreach (var plane in _arPlaneManager.trackables)
+            {
+                bool isVertical = IsVerticalPlane(plane);
+                Debug.Log($"[СТЕНА-ДИАГНОСТИКА] Плоскость {plane.trackableId} - размер: {plane.size}, " +
+                          $"выравнивание: {plane.alignment}, вертикальная: {isVertical}, " +
+                          $"нормаль: {plane.normal}, центр: {plane.center}");
+                
+                if (isVertical) verticalCount++;
+            }
+            
+            Debug.Log($"[СТЕНА-ДИАГНОСТИКА] Всего найдено {verticalCount} вертикальных плоскостей");
+        }
+        
+        // Очистим от null-ссылок
+        _wallAnchors.RemoveAll(w => w == null);
+        
+        // Попытка создать стены для всех вертикальных плоскостей
+        foreach (var plane in _arPlaneManager.trackables)
+        {
+            if (IsVerticalPlane(plane))
+            {
+                // Проверяем, нет ли уже стены для этой плоскости
+                bool alreadyExists = false;
+                foreach (var existingWall in _wallAnchors)
+                {
+                    if (existingWall != null && existingWall.ARPlane != null && 
+                        existingWall.ARPlane.trackableId == plane.trackableId)
+                    {
+                        alreadyExists = true;
+                        break;
+                    }
+                }
+                
+                if (!alreadyExists)
+                {
+                    Debug.Log($"[СТЕНА-ДИАГНОСТИКА] Создаю стену для новой вертикальной плоскости {plane.trackableId}");
+                    CreateWallAnchorForPlane(plane);
+                }
+            }
+        }
+        
+        // Выводим текущий статус стен
+        LogCurrentWalls();
     }
     
     /// <summary>
@@ -819,12 +855,15 @@ public class RemaluxARWallSetup : MonoBehaviour
     {
         if (!_isTracking) return;
         
-        // Check if it's time for the next wall detection
+        // Периодически проверяем плоскости и создаем стены
         if (Time.time - _lastDetectionTime > _wallDetectionInterval)
         {
             _lastDetectionTime = Time.time;
             
-            // Trigger wall detection
+            // Запускаем нашу новую диагностику
+            CheckVerticalPlanesAndCreateWalls();
+            
+            // Продолжаем использовать существующую логику
             if (_wallAnchorConnector != null)
             {
                 _wallAnchorConnector.ProcessSegmentationForAnchors();
@@ -861,5 +900,171 @@ public class RemaluxARWallSetup : MonoBehaviour
     public List<ARWallAnchor> GetWallAnchors()
     {
         return _wallAnchors;
+    }
+    
+    private void LogCurrentWalls()
+    {
+        Debug.Log($"[СТЕНА-СТАТУС] ======= ТЕКУЩИЕ СТЕНЫ ({_wallAnchors.Count}) =======");
+        
+        int validCount = 0;
+        int index = 0;
+        
+        foreach (var wall in _wallAnchors)
+        {
+            if (wall == null)
+            {
+                Debug.Log($"[СТЕНА-СТАТУС] #{index}: NULL");
+                continue;
+            }
+            
+            string planeInfo = wall.ARPlane != null ? 
+                $"ID:{wall.ARPlane.trackableId}, размер:{wall.ARPlane.size}" : "NULL";
+            
+            string anchorInfo = wall.ARAnchor != null ? 
+                $"позиция:{wall.ARAnchor.transform.position}" : "NULL";
+            
+            bool isActive = wall.gameObject.activeInHierarchy;
+            bool hasWallObject = wall.Wall != null;
+            
+            Debug.Log($"[СТЕНА-СТАТУС] #{index}: {wall.name} - Active:{isActive}, Valid:{wall.IsValid}, " +
+                     $"Wall:{hasWallObject}, Plane:{planeInfo}, Anchor:{anchorInfo}");
+            
+            if (wall.IsValid) validCount++;
+            index++;
+        }
+        
+        Debug.Log($"[СТЕНА-СТАТУС] Всего активных стен: {validCount} из {_wallAnchors.Count}");
+        Debug.Log($"[СТЕНА-СТАТУС] =================================");
+    }
+
+    /// <summary>
+    /// Создает тестовые стены с фиксированными позициями для отладки
+    /// </summary>
+    public void CreateDebugWalls()
+    {
+        Debug.Log("[ТЕСТ] Создаю тестовые стены для отладки");
+        
+        // Получаем позицию камеры
+        Camera mainCamera = Camera.main;
+        if (mainCamera == null)
+        {
+            Debug.LogError("[ТЕСТ] Камера не найдена!");
+            return;
+        }
+        
+        Vector3 cameraPos = mainCamera.transform.position;
+        Vector3 cameraForward = mainCamera.transform.forward;
+        
+        Debug.Log($"[ТЕСТ] Позиция камеры: {cameraPos}, направление: {cameraForward}");
+        
+        // Очищаем все существующие стены для чистоты эксперимента
+        ClearAllWalls();
+        
+        // Создаем 4 тестовые стены вокруг камеры
+        float distance = 2.0f; // Расстояние от камеры
+        float wallWidth = 2.0f;
+        float wallHeight = 2.5f;
+        
+        // Создаем стену спереди
+        CreateTestWall(
+            cameraPos + cameraForward * distance,
+            Quaternion.LookRotation(-cameraForward), // Развернута к камере
+            wallWidth,
+            wallHeight,
+            Color.red,
+            "Front Wall"
+        );
+        
+        // Создаем стену справа
+        Vector3 rightDir = Vector3.Cross(Vector3.up, cameraForward).normalized;
+        CreateTestWall(
+            cameraPos + rightDir * distance,
+            Quaternion.LookRotation(-rightDir), // Развернута к камере
+            wallWidth,
+            wallHeight,
+            Color.green,
+            "Right Wall"
+        );
+        
+        // Создаем стену слева
+        CreateTestWall(
+            cameraPos - rightDir * distance,
+            Quaternion.LookRotation(rightDir), // Развернута к камере
+            wallWidth,
+            wallHeight,
+            Color.blue,
+            "Left Wall"
+        );
+        
+        // Создаем стену сзади
+        CreateTestWall(
+            cameraPos - cameraForward * distance,
+            Quaternion.LookRotation(cameraForward), // Развернута к камере
+            wallWidth,
+            wallHeight,
+            Color.yellow,
+            "Back Wall"
+        );
+        
+        Debug.Log("[ТЕСТ] Создано 4 тестовые стены");
+    }
+
+    /// <summary>
+    /// Создает тестовую стену в указанной позиции
+    /// </summary>
+    private void CreateTestWall(Vector3 position, Quaternion rotation, float width, float height, Color color, string name)
+    {
+        if (_wallAnchorPrefab == null)
+            ValidateComponents();
+        
+        if (_wallAnchorPrefab == null)
+        {
+            Debug.LogError("[ТЕСТ] Не задан префаб для стены!");
+            return;
+        }
+        
+        // Создаем объект стены
+        GameObject wallObject = Instantiate(_wallAnchorPrefab);
+        wallObject.SetActive(true);
+        wallObject.name = name;
+        
+        // Устанавливаем позицию и поворот
+        wallObject.transform.position = position;
+        wallObject.transform.rotation = rotation;
+        
+        // Получаем компонент ARWallAnchor
+        ARWallAnchor wallAnchor = wallObject.GetComponent<ARWallAnchor>();
+        if (wallAnchor == null)
+            wallAnchor = wallObject.AddComponent<ARWallAnchor>();
+        
+        // Включаем отладку
+        wallAnchor.DebugMode = true;
+        
+        // Устанавливаем размеры стены
+        wallAnchor.SetWallDimensions(width, height);
+        
+        // Создаем материал с указанным цветом
+        Material wallMaterial = new Material(Shader.Find("Universal Render Pipeline/Lit"));
+        wallMaterial.color = new Color(color.r, color.g, color.b, 0.7f);
+        
+        // Настраиваем материал для прозрачности
+        wallMaterial.SetFloat("_Surface", 1);  // 1 = прозрачный
+        wallMaterial.SetFloat("_Blend", 0);    // 0 = альфа-смешивание
+        wallMaterial.EnableKeyword("_ALPHAPREMULTIPLY_ON");
+        wallMaterial.renderQueue = 3000;       // Прозрачная очередь рендеринга
+        
+        // Устанавливаем материал
+        wallAnchor.SetWallMaterial(wallMaterial);
+        
+        // Добавляем стену в список
+        _wallAnchors.Add(wallAnchor);
+        
+        Debug.Log($"[ТЕСТ] Создана тестовая стена {name} в позиции {position}");
+    }
+
+    // Добавим публичный метод для вызова из инспектора
+    public void DebugCreateTestWalls()
+    {
+        CreateDebugWalls();
     }
 } 

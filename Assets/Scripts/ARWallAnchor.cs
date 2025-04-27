@@ -75,8 +75,29 @@ public class ARWallAnchor : MonoBehaviour
         set { _wall = value; }
     }
     
+    // Add fields for AR component IDs
+    [SerializeField] private string _anchorID;
+    [SerializeField] private string _planeID;
+    
+    // Добавим публичное свойство для _debugMode
+    public bool DebugMode
+    {
+        get { return _debugMode; }
+        set { _debugMode = value; }
+    }
+    
     private void Awake()
     {
+        // Enable debug mode by default in development
+        #if UNITY_EDITOR
+        _debugMode = true;
+        #endif
+        
+        if (_debugMode)
+        {
+            Debug.Log($"ARWallAnchor: Initializing {gameObject.name}");
+        }
+        
         // Find AR references if not already set
         if (_arAnchor == null)
             _arAnchor = GetComponent<ARAnchor>();
@@ -91,6 +112,12 @@ public class ARWallAnchor : MonoBehaviour
         if (_visualizeWall)
         {
             EnsureMeshComponents();
+        }
+        
+        // Create the wall object if not set
+        if (_wall == null)
+        {
+            CreateWallObject();
         }
     }
     
@@ -392,49 +419,260 @@ public class ARWallAnchor : MonoBehaviour
     /// </summary>
     private void UpdateWall()
     {
+        // Убедимся, что стена существует
         if (_wall == null)
         {
-            if (_debugMode) Debug.LogWarning("Cannot update wall: wall object is null");
-            return;
+            CreateWallObject();
+            if (_debugMode) Debug.Log("Created wall object in UpdateWall");
         }
 
-        // Set wall position to anchor position
+        // Даже если AR Anchor и AR Plane не назначены, 
+        // мы все равно можем отобразить стену в текущей позиции
+        
+        // 1. Установим позицию стены равной позиции этого объекта
         _wall.transform.position = transform.position;
         
-        // If we have a valid AR plane, align the wall with its normal
-        if (_arPlane != null)
+        // 2. Установим вращение стены
+        // Если мы не можем использовать нормаль плоскости, используем текущее вращение объекта
+        _wall.transform.rotation = transform.rotation;
+        
+        // 3. Установим размеры стены
+        if (!Mathf.Approximately(_wallWidth, 0) && !Mathf.Approximately(_wallHeight, 0))
         {
-            // Get plane normal in world space
-            Vector3 planeNormal = _arPlane.transform.up;
-            
-            // Set the wall rotation to align with the plane's normal
-            // Wall's forward should match the plane's normal
-            Quaternion targetRotation = Quaternion.LookRotation(planeNormal);
-            _wall.transform.rotation = targetRotation;
-            
-            if (_debugMode)
-            {
-                Debug.Log($"Wall updated - Position: {_wall.transform.position}, Rotation based on normal: {planeNormal}");
-            }
+            // Применяем локальный масштаб к стене
+            _wall.transform.localScale = new Vector3(_wallWidth, _wallHeight, 0.1f);
         }
         else
         {
-            // If no AR plane, just use the anchor's rotation
-            _wall.transform.rotation = transform.rotation;
+            // Используем значения по умолчанию
+            _wall.transform.localScale = new Vector3(1.0f, 2.4f, 0.1f);
+        }
+        
+        // 4. Обновим свойство IsValid - стена действительна, даже если компоненты AR не назначены
+        _isValid = true;
+        
+        if (_debugMode)
+        {
+            Debug.Log($"Wall updated - Position: {_wall.transform.position}, Rotation: {_wall.transform.rotation.eulerAngles}");
+        }
+    }
+
+    /// <summary>
+    /// Creates a wall object if it doesn't exist
+    /// </summary>
+    private void CreateWallObject()
+    {
+        if (_wall != null) return;
+        
+        // Create a new wall object
+        _wall = new GameObject("Wall");
+        _wall.transform.parent = transform;
+        _wall.transform.localPosition = Vector3.zero;
+        _wall.transform.localRotation = Quaternion.identity;
+        
+        // Add mesh components for visualization
+        MeshFilter meshFilter = _wall.AddComponent<MeshFilter>();
+        MeshRenderer meshRenderer = _wall.AddComponent<MeshRenderer>();
+        
+        // Add a mesh collider
+        MeshCollider meshCollider = _wall.AddComponent<MeshCollider>();
+        
+        // Store references to the mesh components
+        _wallMeshFilter = meshFilter;
+        _wallMeshRenderer = meshRenderer;
+        
+        // Create a simple quad mesh
+        Mesh wallMesh = new Mesh();
+        
+        // Define vertices for a quad
+        Vector3[] vertices = new Vector3[4]
+        {
+            new Vector3(-0.5f, 0, 0),      // Bottom-left
+            new Vector3(0.5f, 0, 0),       // Bottom-right
+            new Vector3(-0.5f, 1, 0),      // Top-left
+            new Vector3(0.5f, 1, 0)        // Top-right
+        };
+        
+        // Define triangles
+        int[] triangles = new int[6]
+        {
+            0, 2, 1,    // First triangle
+            1, 2, 3     // Second triangle
+        };
+        
+        // Define UVs
+        Vector2[] uvs = new Vector2[4]
+        {
+            new Vector2(0, 0),   // Bottom-left
+            new Vector2(1, 0),   // Bottom-right
+            new Vector2(0, 1),   // Top-left
+            new Vector2(1, 1)    // Top-right
+        };
+        
+        // Set mesh data
+        wallMesh.vertices = vertices;
+        wallMesh.triangles = triangles;
+        wallMesh.uv = uvs;
+        
+        // Recalculate normals and bounds
+        wallMesh.RecalculateNormals();
+        wallMesh.RecalculateBounds();
+        
+        // Assign mesh to mesh filter
+        meshFilter.mesh = wallMesh;
+        
+        // Create a more noticeable material for the wall
+        if (_wallMaterial == null)
+        {
+            _wallMaterial = new Material(Shader.Find("Universal Render Pipeline/Lit"));
             
-            if (_debugMode)
+            // Используем яркий голубой цвет с прозрачностью
+            _wallMaterial.color = new Color(0.2f, 0.7f, 1.0f, 0.7f);
+            
+            // Настраиваем материал для прозрачности
+            _wallMaterial.SetFloat("_Surface", 1); // 1 = прозрачный
+            _wallMaterial.SetFloat("_Blend", 0);   // 0 = альфа-смешивание
+            _wallMaterial.EnableKeyword("_ALPHAPREMULTIPLY_ON");
+            _wallMaterial.renderQueue = 3000;      // Прозрачная очередь рендеринга
+        }
+        
+        // Assign material to mesh renderer
+        meshRenderer.material = _wallMaterial;
+        
+        // Применяем правильные размеры стены
+        if (!Mathf.Approximately(_wallWidth, 0) && !Mathf.Approximately(_wallHeight, 0))
+        {
+            _wall.transform.localScale = new Vector3(_wallWidth, _wallHeight, 0.1f);
+        }
+        else
+        {
+            _wall.transform.localScale = new Vector3(1.0f, 2.4f, 0.1f);
+        }
+        
+        if (_debugMode)
+        {
+            Debug.Log($"Created wall object: {_wall.name} with size {_wall.transform.localScale}");
+        }
+    }
+
+    /// <summary>
+    /// Explicitly sets the AR Anchor component and stores it
+    /// </summary>
+    public void SetARAnchor(ARAnchor anchor)
+    {
+        if (anchor == null)
+        {
+            if (_debugMode) Debug.LogWarning("Cannot set null AR Anchor");
+            return;
+        }
+        
+        _arAnchor = anchor;
+        
+        // Store anchor ID for future lookups
+        _anchorID = anchor.trackableId.ToString();
+        
+        if (_debugMode)
+        {
+            Debug.Log($"AR Anchor explicitly set: {anchor.name}, ID: {_anchorID}");
+        }
+    }
+
+    /// <summary>
+    /// Explicitly sets the AR Plane component and stores it
+    /// </summary>
+    public void SetARPlane(ARPlane plane)
+    {
+        if (plane == null)
+        {
+            if (_debugMode) Debug.LogWarning("Cannot set null AR Plane");
+            return;
+        }
+        
+        _arPlane = plane;
+        
+        // Store plane ID for future lookups
+        _planeID = plane.trackableId.ToString();
+        
+        if (_debugMode)
+        {
+            Debug.Log($"AR Plane explicitly set: {plane.trackableId}, Size: {plane.size}");
+        }
+    }
+
+    /// <summary>
+    /// Tries to restore AR components by saved IDs
+    /// </summary>
+    public void TryRestoreARComponents()
+    {
+        if (_debugMode)
+        {
+            Debug.Log($"Trying to restore AR components using IDs - Anchor: {_anchorID}, Plane: {_planeID}");
+        }
+        
+        // Try to restore AR Anchor if needed
+        if (_arAnchor == null && !string.IsNullOrEmpty(_anchorID))
+        {
+            // In case anchor is in parent
+            if (transform.parent != null)
             {
-                Debug.Log($"Wall updated with anchor rotation (no AR plane) - Position: {_wall.transform.position}");
+                _arAnchor = transform.parent.GetComponent<ARAnchor>();
+                if (_arAnchor != null && _debugMode)
+                    Debug.Log($"Restored AR Anchor from parent: {transform.parent.name}");
             }
         }
         
-        // Update dimensions if necessary
-        SetWallDimensions(_wallWidth, _wallHeight);
+        // Try to restore AR Plane if needed
+        if (_arPlane == null && !string.IsNullOrEmpty(_planeID))
+        {
+            var arPlaneManager = FindObjectOfType<ARPlaneManager>();
+            if (arPlaneManager != null)
+            {
+                foreach (var plane in arPlaneManager.trackables)
+                {
+                    if (plane.trackableId.ToString() == _planeID)
+                    {
+                        _arPlane = plane;
+                        if (_debugMode)
+                            Debug.Log($"Restored AR Plane with ID: {_planeID}");
+                        break;
+                    }
+                }
+            }
+        }
     }
 
     private void Update()
     {
+        // Try to restore AR components if needed
+        if ((_arAnchor == null || _arPlane == null) && (Time.frameCount % 30 == 0)) // Check every 30 frames
+        {
+            TryRestoreARComponents();
+        }
+        
+        // Create wall if not set
+        if (_wall == null)
+        {
+            CreateWallObject();
+        }
+        
         // Update wall position and dimensions
         UpdateWall();
+    }
+
+    private void OnEnable()
+    {
+        // Пытаемся восстановить компоненты при активации объекта
+        if (_arAnchor == null || _arPlane == null)
+        {
+            if (_debugMode) Debug.Log($"OnEnable: Trying to restore components");
+            TryRestoreARComponents();
+        }
+        
+        // Убеждаемся, что стена создана
+        if (_wall == null)
+        {
+            if (_debugMode) Debug.Log($"OnEnable: Creating wall object");
+            CreateWallObject();
+        }
     }
 } 
