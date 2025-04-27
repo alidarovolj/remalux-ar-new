@@ -8,246 +8,145 @@ using UnityEngine.XR.ARSubsystems;
 public class ARPlaneDebugVisualizer : MonoBehaviour
 {
     [SerializeField]
-    private bool drawBoundaries = true;
+    private Color horizontalLineColor = Color.blue;
     
     [SerializeField]
-    private Color verticalPlaneColor = Color.magenta;
+    private Color verticalLineColor = Color.red;
     
     [SerializeField]
-    private Color horizontalPlaneColor = Color.cyan;
+    private float lineWidth = 0.03f;
     
     [SerializeField]
-    private float outlineWidth = 0.05f;
+    private bool showCenterPoints = true;
     
     [SerializeField]
-    private bool draw3DIndicators = true;
+    private float centerPointSize = 0.1f;
     
     [SerializeField]
-    private GameObject indicatorPrefab;
+    private bool showArrows = true;
+    
+    [SerializeField]
+    private float arrowSize = 0.2f;
     
     private ARPlaneManager planeManager;
-    private Dictionary<TrackableId, List<GameObject>> planeIndicators = new Dictionary<TrackableId, List<GameObject>>();
+    private Dictionary<TrackableId, List<Vector3>> planeVertices = new Dictionary<TrackableId, List<Vector3>>();
     
     private void Awake()
     {
         planeManager = GetComponent<ARPlaneManager>();
-        
-        // Create indicator prefab if not assigned
-        if (indicatorPrefab == null && draw3DIndicators)
-        {
-            CreateDefaultIndicatorPrefab();
-        }
-    }
-    
-    private void CreateDefaultIndicatorPrefab()
-    {
-        indicatorPrefab = GameObject.CreatePrimitive(PrimitiveType.Sphere);
-        indicatorPrefab.transform.localScale = Vector3.one * 0.05f;
-        indicatorPrefab.name = "ARPlaneIndicator";
-        indicatorPrefab.SetActive(false);
     }
     
     private void OnEnable()
     {
-        planeManager.planesChanged += OnPlanesChanged;
+        if (planeManager != null)
+        {
+            planeManager.planesChanged += OnPlanesChanged;
+        }
     }
     
     private void OnDisable()
     {
-        planeManager.planesChanged -= OnPlanesChanged;
-        CleanupAllIndicators();
+        if (planeManager != null)
+        {
+            planeManager.planesChanged -= OnPlanesChanged;
+        }
     }
     
     private void OnPlanesChanged(ARPlanesChangedEventArgs args)
     {
-        // Handle added planes
+        // Store vertices for each added or updated plane
         foreach (ARPlane plane in args.added)
         {
-            if (draw3DIndicators)
-            {
-                CreateIndicatorsForPlane(plane);
-            }
+            UpdatePlaneVertices(plane);
         }
         
-        // Handle updated planes
         foreach (ARPlane plane in args.updated)
         {
-            // Update visualizers
-            if (draw3DIndicators)
-            {
-                UpdateIndicatorsForPlane(plane);
-            }
+            UpdatePlaneVertices(plane);
         }
         
-        // Handle removed planes
+        // Remove data for removed planes
         foreach (ARPlane plane in args.removed)
         {
-            if (draw3DIndicators)
+            if (planeVertices.ContainsKey(plane.trackableId))
             {
-                CleanupIndicatorsForPlane(plane.trackableId);
+                planeVertices.Remove(plane.trackableId);
             }
         }
     }
     
-    private void CreateIndicatorsForPlane(ARPlane plane)
+    private void UpdatePlaneVertices(ARPlane plane)
     {
-        if (plane == null || indicatorPrefab == null) return;
+        // Get the mesh vertices
+        Mesh mesh = plane.GetComponent<MeshFilter>()?.mesh;
+        if (mesh == null) return;
         
-        List<GameObject> indicators = new List<GameObject>();
+        Vector3[] vertices = mesh.vertices;
         
-        // Create indicators at plane boundary vertices
-        ARPlaneMeshVisualizer meshVisualizer = plane.GetComponent<ARPlaneMeshVisualizer>();
-        if (meshVisualizer != null && meshVisualizer.mesh != null)
+        // Transform vertices to world space
+        List<Vector3> worldVertices = new List<Vector3>();
+        foreach (Vector3 vertex in vertices)
         {
-            Vector3[] vertices = meshVisualizer.mesh.vertices;
-            
-            // Create a reasonable number of indicators (max 8)
-            int step = Mathf.Max(1, vertices.Length / 8);
-            for (int i = 0; i < vertices.Length; i += step)
-            {
-                GameObject indicator = Instantiate(indicatorPrefab, plane.transform);
-                indicator.SetActive(true);
-                indicator.transform.localPosition = vertices[i];
-                
-                // Set color based on plane alignment
-                Renderer renderer = indicator.GetComponent<Renderer>();
-                if (renderer != null)
-                {
-                    renderer.material.color = plane.alignment == UnityEngine.XR.ARSubsystems.PlaneAlignment.Vertical ? 
-                                             verticalPlaneColor : horizontalPlaneColor;
-                }
-                
-                indicators.Add(indicator);
-            }
-            
-            // Also add center indicator
-            GameObject centerIndicator = Instantiate(indicatorPrefab, plane.transform);
-            centerIndicator.SetActive(true);
-            centerIndicator.transform.localPosition = Vector3.zero;
-            centerIndicator.transform.localScale = Vector3.one * 0.08f;  // Make center indicator larger
-            
-            // Set center indicator color
-            Renderer centerRenderer = centerIndicator.GetComponent<Renderer>();
-            if (centerRenderer != null)
-            {
-                centerRenderer.material.color = Color.red;
-            }
-            
-            indicators.Add(centerIndicator);
+            worldVertices.Add(plane.transform.TransformPoint(vertex));
         }
         
-        planeIndicators[plane.trackableId] = indicators;
-    }
-    
-    private void UpdateIndicatorsForPlane(ARPlane plane)
-    {
-        // Remove old indicators and create new ones
-        if (planeIndicators.ContainsKey(plane.trackableId))
-        {
-            CleanupIndicatorsForPlane(plane.trackableId);
-        }
-        
-        CreateIndicatorsForPlane(plane);
-    }
-    
-    private void CleanupIndicatorsForPlane(TrackableId id)
-    {
-        if (planeIndicators.TryGetValue(id, out List<GameObject> indicators))
-        {
-            foreach (GameObject indicator in indicators)
-            {
-                if (indicator != null)
-                {
-                    Destroy(indicator);
-                }
-            }
-            
-            planeIndicators.Remove(id);
-        }
-    }
-    
-    private void CleanupAllIndicators()
-    {
-        foreach (var idAndIndicators in planeIndicators)
-        {
-            foreach (GameObject indicator in idAndIndicators.Value)
-            {
-                if (indicator != null)
-                {
-                    Destroy(indicator);
-                }
-            }
-        }
-        
-        planeIndicators.Clear();
+        // Store the vertices
+        planeVertices[plane.trackableId] = worldVertices;
     }
     
     private void OnDrawGizmos()
     {
-        if (!drawBoundaries || planeManager == null) return;
+        if (!Application.isPlaying || planeManager == null) return;
         
         foreach (ARPlane plane in planeManager.trackables)
         {
-            if (plane.subsumedBy != null) continue; // Skip subsumed planes
+            if (!planeVertices.TryGetValue(plane.trackableId, out List<Vector3> vertices) || vertices.Count == 0)
+                continue;
             
             // Set color based on plane alignment
-            Gizmos.color = plane.alignment == UnityEngine.XR.ARSubsystems.PlaneAlignment.Vertical ? 
-                          verticalPlaneColor : horizontalPlaneColor;
+            Gizmos.color = plane.alignment == PlaneAlignment.Vertical ? verticalLineColor : horizontalLineColor;
             
-            // Get mesh visualizer component
-            ARPlaneMeshVisualizer meshVisualizer = plane.GetComponent<ARPlaneMeshVisualizer>();
-            if (meshVisualizer != null && meshVisualizer.mesh != null)
+            // Draw boundary lines
+            for (int i = 0; i < vertices.Count; i++)
             {
-                // Draw outline
-                Vector3[] vertices = meshVisualizer.mesh.vertices;
-                int[] triangles = meshVisualizer.mesh.triangles;
+                Vector3 current = vertices[i];
+                Vector3 next = vertices[(i + 1) % vertices.Count];
                 
-                HashSet<Vector2Int> drawnEdges = new HashSet<Vector2Int>();
-                
-                for (int i = 0; i < triangles.Length; i += 3)
+                // Draw a thick line using multiple lines
+                for (float t = -lineWidth / 2; t <= lineWidth / 2; t += lineWidth / 3)
                 {
-                    DrawTriangleEdges(plane.transform, 
-                                      vertices[triangles[i]], 
-                                      vertices[triangles[i + 1]], 
-                                      vertices[triangles[i + 2]],
-                                      triangles[i],
-                                      triangles[i + 1],
-                                      triangles[i + 2],
-                                      drawnEdges);
+                    // Offset the line in a direction perpendicular to the plane's normal and the line
+                    Vector3 dir = Vector3.Cross(plane.normal, (next - current).normalized).normalized;
+                    Gizmos.DrawLine(current + dir * t, next + dir * t);
                 }
             }
-        }
-    }
-    
-    private void DrawTriangleEdges(Transform planeTransform, 
-                                  Vector3 v1, Vector3 v2, Vector3 v3,
-                                  int i1, int i2, int i3,
-                                  HashSet<Vector2Int> drawnEdges)
-    {
-        // Draw line between vertices if it's an outer edge
-        DrawEdgeIfNeeded(planeTransform, v1, v2, i1, i2, drawnEdges);
-        DrawEdgeIfNeeded(planeTransform, v2, v3, i2, i3, drawnEdges);
-        DrawEdgeIfNeeded(planeTransform, v3, v1, i3, i1, drawnEdges);
-    }
-    
-    private void DrawEdgeIfNeeded(Transform planeTransform, 
-                                 Vector3 start, Vector3 end, 
-                                 int startIndex, int endIndex,
-                                 HashSet<Vector2Int> drawnEdges)
-    {
-        // Create an edge identifier (always put smaller index first to avoid duplicates)
-        Vector2Int edge = startIndex < endIndex ? 
-                         new Vector2Int(startIndex, endIndex) : 
-                         new Vector2Int(endIndex, startIndex);
-                         
-        // Draw edge if not drawn already
-        if (!drawnEdges.Contains(edge))
-        {
-            Vector3 worldStart = planeTransform.TransformPoint(start);
-            Vector3 worldEnd = planeTransform.TransformPoint(end);
             
-            Gizmos.DrawLine(worldStart, worldEnd);
-            drawnEdges.Add(edge);
+            if (showCenterPoints)
+            {
+                // Draw center point
+                Vector3 center = plane.center;
+                Gizmos.DrawSphere(center, centerPointSize);
+            }
+            
+            if (showArrows)
+            {
+                // Draw normal direction arrow
+                Vector3 center = plane.center;
+                Gizmos.DrawLine(center, center + plane.normal * arrowSize);
+                
+                // Draw arrow head
+                Vector3 arrowTip = center + plane.normal * arrowSize;
+                Vector3 right = Vector3.Cross(plane.normal, Vector3.up).normalized;
+                if (right.magnitude < 0.1f)
+                    right = Vector3.Cross(plane.normal, Vector3.right).normalized;
+                    
+                Vector3 up = Vector3.Cross(right, plane.normal).normalized;
+                
+                Gizmos.DrawLine(arrowTip, arrowTip - plane.normal * (arrowSize * 0.3f) + right * (arrowSize * 0.3f));
+                Gizmos.DrawLine(arrowTip, arrowTip - plane.normal * (arrowSize * 0.3f) - right * (arrowSize * 0.3f));
+                Gizmos.DrawLine(arrowTip, arrowTip - plane.normal * (arrowSize * 0.3f) + up * (arrowSize * 0.3f));
+                Gizmos.DrawLine(arrowTip, arrowTip - plane.normal * (arrowSize * 0.3f) - up * (arrowSize * 0.3f));
+            }
         }
     }
 } 

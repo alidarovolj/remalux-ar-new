@@ -5,125 +5,104 @@ using UnityEngine.XR.ARFoundation;
 public class CreateARPlaneMaterialOnStart : MonoBehaviour
 {
     [SerializeField]
-    private Color verticalPlaneColor = new Color(0.9f, 0.3f, 0.8f, 0.8f);
+    private Color planeColor = new Color(1f, 1f, 1f, 0.7f); // White, semi-transparent
     
     [SerializeField]
-    private Color horizontalPlaneColor = new Color(0.2f, 0.6f, 0.9f, 0.8f);
+    private string shaderName = "Standard";
     
     [SerializeField]
-    private bool enhanceExistingPlanes = true;
+    private bool useUnlitShader = true;
     
     private ARPlaneManager planeManager;
     private Material planeMaterial;
     
     private void Awake()
     {
-        // Get the ARPlaneManager
         planeManager = GetComponent<ARPlaneManager>();
         
-        // Create plane material
+        // Create material at runtime
         CreatePlaneMaterial();
+        
+        // Apply to plane prefab if possible
+        ApplyMaterialToPlanePrefab();
     }
     
     private void CreatePlaneMaterial()
     {
-        // Create new material using Unlit/Transparent shader
-        planeMaterial = new Material(Shader.Find("Unlit/Transparent"));
+        // Try to find appropriate shader
+        Shader shader = null;
         
-        // Set base color
-        planeMaterial.color = horizontalPlaneColor;
-        
-        // Save the material as a field
-        if (planeMaterial != null)
+        if (useUnlitShader)
         {
-            Debug.Log("AR Plane material created successfully");
+            // Try multiple unlit shader variants for compatibility
+            shader = Shader.Find("Unlit/Color");
+            
+            if (shader == null)
+                shader = Shader.Find("Universal Render Pipeline/Unlit");
+            
+            if (shader == null)
+                shader = Shader.Find("Legacy Shaders/Unlit/Color");
+        }
+        
+        // Fall back to specified shader or Standard if unlit not found
+        if (shader == null)
+        {
+            shader = Shader.Find(shaderName);
+            
+            if (shader == null)
+                shader = Shader.Find("Standard");
+        }
+        
+        // Create the material
+        planeMaterial = new Material(shader);
+        planeMaterial.color = planeColor;
+        
+        // For standard shader setup transparency
+        if (shader.name.Contains("Standard"))
+        {
+            // Set to transparent mode
+            planeMaterial.SetFloat("_Mode", 3); // Transparent
+            planeMaterial.SetInt("_SrcBlend", (int)UnityEngine.Rendering.BlendMode.SrcAlpha);
+            planeMaterial.SetInt("_DstBlend", (int)UnityEngine.Rendering.BlendMode.OneMinusSrcAlpha);
+            planeMaterial.SetInt("_ZWrite", 0);
+            planeMaterial.DisableKeyword("_ALPHATEST_ON");
+            planeMaterial.EnableKeyword("_ALPHABLEND_ON");
+            planeMaterial.DisableKeyword("_ALPHAPREMULTIPLY_ON");
+            planeMaterial.renderQueue = 3000;
+        }
+        
+        Debug.Log($"Created AR Plane material with shader: {shader.name}");
+    }
+    
+    private void ApplyMaterialToPlanePrefab()
+    {
+        if (planeManager == null || planeMaterial == null)
+            return;
+            
+        // If plane prefab exists, update its material
+        if (planeManager.planePrefab != null)
+        {
+            MeshRenderer meshRenderer = planeManager.planePrefab.GetComponent<MeshRenderer>();
+            if (meshRenderer != null)
+            {
+                meshRenderer.sharedMaterial = planeMaterial;
+                Debug.Log("Applied material to plane prefab");
+            }
         }
         else
         {
-            Debug.LogError("Failed to create AR Plane material");
-        }
-    }
-    
-    private void OnEnable()
-    {
-        // Subscribe to planes changed event
-        if (planeManager != null)
-        {
-            planeManager.planesChanged += OnPlanesChanged;
+            Debug.LogWarning("No plane prefab assigned to ARPlaneManager");
             
-            // Process existing planes
-            if (enhanceExistingPlanes)
-            {
-                EnhanceExistingPlanes();
-            }
-        }
-    }
-    
-    private void OnDisable()
-    {
-        // Unsubscribe from planes changed event
-        if (planeManager != null)
-        {
-            planeManager.planesChanged -= OnPlanesChanged;
-        }
-    }
-    
-    private void OnPlanesChanged(ARPlanesChangedEventArgs args)
-    {
-        // Process added planes
-        foreach (ARPlane plane in args.added)
-        {
-            EnhancePlaneVisibility(plane);
-        }
-        
-        // Process updated planes
-        foreach (ARPlane plane in args.updated)
-        {
-            EnhancePlaneVisibility(plane);
-        }
-    }
-    
-    private void EnhancePlaneVisibility(ARPlane plane)
-    {
-        if (plane == null || planeMaterial == null) return;
-        
-        // Get mesh renderer component
-        MeshRenderer meshRenderer = plane.GetComponent<MeshRenderer>();
-        if (meshRenderer != null)
-        {
-            // Create an instance of the material to avoid affecting other planes
-            Material planeMaterialInstance = new Material(planeMaterial);
+            // Create a new plane prefab if none is assigned
+            GameObject newPlanePrefab = new GameObject("RuntimeARPlanePrefab");
+            newPlanePrefab.AddComponent<ARPlaneMeshVisualizer>();
+            newPlanePrefab.AddComponent<MeshFilter>();
+            MeshRenderer meshRenderer = newPlanePrefab.AddComponent<MeshRenderer>();
+            meshRenderer.material = planeMaterial;
             
-            // Set color based on plane alignment
-            if (plane.alignment == UnityEngine.XR.ARSubsystems.PlaneAlignment.Vertical)
-            {
-                planeMaterialInstance.color = verticalPlaneColor;
-                Debug.Log("Enhanced vertical plane visibility");
-            }
-            else
-            {
-                planeMaterialInstance.color = horizontalPlaneColor;
-                Debug.Log("Enhanced horizontal plane visibility");
-            }
-            
-            // Assign material
-            meshRenderer.material = planeMaterialInstance;
+            // Don't assign it directly as it would require prefab creation
+            // Just log the warning - user needs to assign a prefab in inspector
+            Debug.LogWarning("Created runtime plane prefab but it needs to be manually assigned in inspector");
         }
-    }
-    
-    private void EnhanceExistingPlanes()
-    {
-        if (planeManager == null) return;
-        
-        foreach (ARPlane plane in planeManager.trackables)
-        {
-            EnhancePlaneVisibility(plane);
-        }
-    }
-    
-    [ContextMenu("Enhance All Planes Now")]
-    public void EnhanceAllPlanesNow()
-    {
-        EnhanceExistingPlanes();
     }
 } 
