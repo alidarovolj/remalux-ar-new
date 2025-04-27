@@ -60,6 +60,19 @@ public class MLManagerAdapter : MonoBehaviour
     {
         cameraManager.frameReceived -= OnCameraFrameReceived;
         StopContinuousPrediction();
+        
+        // Clean up textures
+        if (_cameraTexture != null)
+        {
+            Destroy(_cameraTexture);
+            _cameraTexture = null;
+        }
+        
+        if (_currentFrameTexture != null)
+        {
+            Destroy(_currentFrameTexture);
+            _currentFrameTexture = null;
+        }
     }
     
     private void Start()
@@ -266,42 +279,17 @@ public class MLManagerAdapter : MonoBehaviour
     {
         while (_isPredicting)
         {
-            if (segmentationManager != null)
+            try
             {
-                try
-                {
-                    // Создаем текстуру подходящего размера если надо
-                    if (_currentFrameTexture == null || 
-                        _currentFrameTexture.width != segmentationManager.inputWidth || 
-                        _currentFrameTexture.height != segmentationManager.inputHeight)
-                    {
-                        int width = segmentationManager.inputWidth;
-                        int height = segmentationManager.inputHeight;
-                        
-                        if (_currentFrameTexture != null)
-                            Destroy(_currentFrameTexture);
-                        
-                        #if UNITY_2022_1_OR_NEWER
-                        _currentFrameTexture = new Texture2D(width, height, TextureFormat.RGBA32, false, false);
-                        #else
-                        _currentFrameTexture = new Texture2D(width, height, TextureFormat.RGBA32, false);
-                        #endif
-                    }
-                    
-                    // Получаем текстуру текущего кадра
-                    Texture2D cameraFrame = CaptureCurrentFrame();
-                    if (cameraFrame != null)
-                    {
-                        ProcessFrame(cameraFrame);
-                    }
-                }
-                catch (Exception e)
-                {
-                    Debug.LogError($"MLManagerAdapter: Error during prediction: {e.Message}");
-                }
+                // Attempt to capture frame and process it
+                CaptureCurrentFrame();
+            }
+            catch (System.Exception e)
+            {
+                Debug.LogError($"Error in prediction coroutine: {e.Message}");
             }
             
-            // Ждем следующего шага предсказания
+            // Wait for the specified interval
             yield return new WaitForSeconds(predictionInterval);
         }
     }
@@ -348,55 +336,110 @@ public class MLManagerAdapter : MonoBehaviour
     /// </summary>
     /// <param name="frame">The AR camera frame to process</param>
     /// <returns>True if processing started successfully</returns>
-    public bool ProcessCameraFrame(XRCameraFrame frame)
+    public bool ProcessCameraFrame(Texture2D frame, Vector2Int targetResolution)
     {
-        if (segmentationManager == null)
+        if (segmentationManager != null)
         {
-            Debug.LogWarning("No SegmentationManager assigned to MLManagerAdapter");
-            return false;
-        }
-
-        if (!processOnEveryFrame && Time.time - lastProcessingTime < processingInterval)
-        {
-            return false;
-        }
-
-        if (_cameraTexture == null)
-        {
-            _cameraTexture = new Texture2D(captureWidth, captureHeight, TextureFormat.RGBA32, false);
-        }
-        
-        UpdateCameraTextureFromFrame(frame);
-        
-        if (_cameraTexture != null)
-        {
-            // Process the camera texture with the segmentation manager
-            segmentationManager.ProcessTexture(_cameraTexture);
-        }
-        lastProcessingTime = Time.time;
-        return true;
-    }
-
-    private void OnCameraFrameReceived(ARCameraFrameEventArgs eventArgs)
-    {
-        if (!processOnEveryFrame && Time.time - lastProcessingTime < processingInterval)
-            return;
-            
-        lastProcessingTime = Time.time;
-        
-        // ARCameraFrameEventArgs doesn't have a cameraFrame property
-        // We need to use the camera manager to get the latest frame
-        if (arCameraManager != null && arCameraManager.TryAcquireLatestCpuImage(out XRCpuImage cpuImage))
-        {
-            using (cpuImage)
+            try
             {
-                ProcessCameraFrame(new XRCameraFrame());
+                Vector2Int targetRes = new Vector2Int(frame.width, frame.height);
+                return segmentationManager.ProcessCameraFrame(frame, targetRes);
+            }
+            catch (Exception e)
+            {
+                Debug.LogError($"MLManagerAdapter: Error processing frame: {e.Message}");
+                return false;
+            }
+        }
+        else if (deepLabPredictor != null)
+        {
+            try 
+            {
+                deepLabPredictor.PredictSegmentation(frame);
+                return true;
+            }
+            catch (Exception e)
+            {
+                Debug.LogError($"MLManagerAdapter: Error in deep lab prediction: {e.Message}");
+                return false;
             }
         }
         else
         {
-            // Fallback to texture-based processing
-            CaptureCurrentFrame();
+            Debug.LogWarning("MLManagerAdapter: Cannot process frame - missing both SegmentationManager and DeepLabPredictor");
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Обработчик события получения кадра от AR-камеры
+    /// </summary>
+    private void OnCameraFrameReceived(ARCameraFrameEventArgs args)
+    {
+        // Check if we should process this frame
+        if (processOnEveryFrame || (Time.time - lastProcessingTime) >= processingInterval)
+        {
+            // Only try to get the latest camera image when we're ready to process
+            if (cameraManager.TryAcquireLatestCpuImage(out XRCpuImage image))
+            {
+                using (image)
+                {
+                    // Convert to texture and process
+                    ProcessCPUImage(image);
+                }
+                
+                lastProcessingTime = Time.time;
+            }
+            else
+            {
+                // If we can't get CPU image, try using texture coordinates instead
+                // This is a fallback method
+                ProcessCameraTextureCoordinates();
+            }
+        }
+    }
+
+    /// <summary>
+    /// Processes CPU image from AR camera
+    /// </summary>
+    private void ProcessCPUImage(XRCpuImage image)
+    {
+        Texture2D cameraTexture = null;
+        try
+        {
+            cameraTexture = ConvertCpuImageToTexture(image);
+            if (cameraTexture != null)
+            {
+                // Define target resolution for processing
+                Vector2Int targetResolution = new Vector2Int(captureWidth, captureHeight);
+                
+                // Forward the texture to the SegmentationManager or DeepLabPredictor
+                if (segmentationManager != null)
+                {
+                    segmentationManager.ProcessCameraFrame(cameraTexture, targetResolution);
+                }
+                else if (deepLabPredictor != null)
+                {
+                    deepLabPredictor.PredictSegmentation(cameraTexture);
+                }
+                else
+                {
+                    Debug.LogWarning("MLManagerAdapter: Cannot process frame - missing both SegmentationManager and DeepLabPredictor");
+                }
+            }
+        }
+        catch (Exception e)
+        {
+            Debug.LogError($"MLManagerAdapter: Error processing CPU image: {e.Message}");
+        }
+        finally
+        {
+            // Always clean up the temporary texture to prevent memory leaks
+            if (cameraTexture != null && cameraTexture != _cameraTexture)
+            {
+                Destroy(cameraTexture);
+                cameraTexture = null;
+            }
         }
     }
 
@@ -434,51 +477,80 @@ public class MLManagerAdapter : MonoBehaviour
         }
     }
 
-    // Implement a proper conversion from XRCpuImage to Texture2D in a real application
-    // This would replace the placeholder implementation above
-    private bool TryConvertCpuImageToTexture(XRCpuImage cpuImage, ref Texture2D texture)
+    /// <summary>
+    /// Processes camera texture coordinates as a fallback when CPU image is not available
+    /// </summary>
+    private void ProcessCameraTextureCoordinates()
     {
-        if (cpuImage.format != XRCpuImage.Format.AndroidYuv420_888)
+        try
         {
-            Debug.LogError($"MLManagerAdapter: Unsupported image format: {cpuImage.format}");
-            return false;
+            // Create a texture using Unity's SafeTextureReader for proper timing
+            SafeTextureReader.Instance.CaptureFullScreenSafe((texture) => {
+                if (texture != null)
+                {
+                    // Resize the texture to match the expected dimensions
+                    Vector2Int targetResolution = new Vector2Int(captureWidth, captureHeight);
+                    
+                    // Process with SegmentationManager
+                    if (segmentationManager != null)
+                    {
+                        segmentationManager.ProcessCameraFrame(texture, targetResolution);
+                    }
+                    else if (deepLabPredictor != null)
+                    {
+                        deepLabPredictor.PredictSegmentation(texture);
+                    }
+                    else
+                    {
+                        Debug.LogWarning("MLManagerAdapter: Cannot process texture - missing both SegmentationManager and DeepLabPredictor");
+                        Destroy(texture);
+                    }
+                }
+            });
+            
+            lastProcessingTime = Time.time;
+        }
+        catch (Exception e)
+        {
+            Debug.LogError($"MLManagerAdapter: Error processing texture coordinates: {e.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Converts an XRCpuImage to a Texture2D for processing
+    /// </summary>
+    private Texture2D ConvertCpuImageToTexture(XRCpuImage image)
+    {
+        // Remove ARKit format which doesn't exist in some Unity versions
+        if (image.format != XRCpuImage.Format.AndroidYuv420_888 && 
+            image.format != XRCpuImage.Format.DepthFloat32)
+        {
+            Debug.LogWarning($"MLManagerAdapter: Potentially unsupported image format: {image.format}");
         }
 
         try
         {
-            // Check if we need to create a new texture
-            if (texture == null || texture.width != captureWidth || texture.height != captureHeight)
-            {
-                if (texture != null)
-                {
-                    Destroy(texture);
-                }
-                
-                #if UNITY_2022_1_OR_NEWER
-                texture = new Texture2D(captureWidth, captureHeight, TextureFormat.RGBA32, false, false);
-                #else
-                texture = new Texture2D(captureWidth, captureHeight, TextureFormat.RGBA32, false);
-                #endif
-            }
+            // Create a new texture with the target dimensions
+            Texture2D texture = new Texture2D(captureWidth, captureHeight, TextureFormat.RGBA32, false);
             
             // Configure conversion parameters
             var conversionParams = new XRCpuImage.ConversionParams
             {
-                inputRect = new RectInt(0, 0, cpuImage.width, cpuImage.height),
+                inputRect = new RectInt(0, 0, image.width, image.height),
                 outputDimensions = new Vector2Int(captureWidth, captureHeight),
                 outputFormat = TextureFormat.RGBA32,
                 transformation = XRCpuImage.Transformation.MirrorY
             };
             
             // Calculate buffer size and allocate memory
-            int bufferSize = cpuImage.GetConvertedDataSize(conversionParams);
+            int bufferSize = image.GetConvertedDataSize(conversionParams);
             byte[] buffer = new byte[bufferSize];
             
             // Pin the buffer in memory so it can't be moved
             var handle = GCHandle.Alloc(buffer, GCHandleType.Pinned);
             
             // Convert the image to RGBA format
-            cpuImage.Convert(conversionParams, handle.AddrOfPinnedObject(), buffer.Length);
+            image.Convert(conversionParams, handle.AddrOfPinnedObject(), buffer.Length);
             
             // Unpin the buffer
             handle.Free();
@@ -487,12 +559,34 @@ public class MLManagerAdapter : MonoBehaviour
             texture.LoadRawTextureData(buffer);
             texture.Apply();
             
-            return true;
+            return texture;
         }
         catch (Exception e)
         {
             Debug.LogError($"MLManagerAdapter: Error converting CPU image to texture: {e.Message}");
-            return false;
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Handles cleanup of resources to prevent memory leaks
+    /// </summary>
+    private void OnDestroy()
+    {
+        // Ensure we stop any ongoing processing
+        StopContinuousPrediction();
+        
+        // Clean up textures
+        if (_cameraTexture != null)
+        {
+            Destroy(_cameraTexture);
+            _cameraTexture = null;
+        }
+        
+        if (_currentFrameTexture != null)
+        {
+            Destroy(_currentFrameTexture);
+            _currentFrameTexture = null;
         }
     }
 } 

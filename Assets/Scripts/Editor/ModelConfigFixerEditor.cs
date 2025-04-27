@@ -1,5 +1,6 @@
 using UnityEngine;
 using UnityEditor;
+using ML;
 
 [CustomEditor(typeof(ModelConfigFixer))]
 public class ModelConfigFixerEditor : Editor

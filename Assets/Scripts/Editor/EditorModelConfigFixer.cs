@@ -9,7 +9,7 @@ using UnityEditor;
 #endif
 
 [ExecuteInEditMode]
-public class ModelConfigFixer : MonoBehaviour
+public class EditorModelConfigFixer : MonoBehaviour
 {
     [SerializeField, HideInInspector] private SegmentationManager segmentationManager;
     
@@ -178,14 +178,14 @@ public class ModelConfigFixer : MonoBehaviour
     }
     
 #if UNITY_EDITOR
-    [CustomEditor(typeof(ModelConfigFixer))]
-    public class ModelConfigFixerEditor : Editor
+    [CustomEditor(typeof(EditorModelConfigFixer))]
+    public class EditorModelConfigFixerEditor : Editor
     {
         public override void OnInspectorGUI()
         {
             DrawDefaultInspector();
             
-            ModelConfigFixer fixer = (ModelConfigFixer)target;
+            EditorModelConfigFixer fixer = (EditorModelConfigFixer)target;
             
             EditorGUILayout.Space();
             EditorGUILayout.LabelField("Configuration Fixes", EditorStyles.boldLabel);

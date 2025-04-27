@@ -1,5 +1,6 @@
 using UnityEngine;
 using Unity.Barracuda;
+using Unity.Barracuda.ONNX;
 using System.Threading;
 using System;
 using System.Collections.Generic;
@@ -60,9 +61,36 @@ public class SegmentationManager : MonoBehaviour
         InitializeModel();
     }
 
+    private void OnDisable()
+    {
+        // Make sure we dispose all resources when disabled
+        DisposeWorker();
+    }
+
     private void OnDestroy()
     {
-        _worker?.Dispose();
+        // Clean up worker
+        DisposeWorker();
+        
+        // Clean up textures
+        if (_inputTexture != null)
+        {
+            Destroy(_inputTexture);
+            _inputTexture = null;
+        }
+        
+        if (_segmentationTexture != null)
+        {
+            Destroy(_segmentationTexture);
+            _segmentationTexture = null;
+        }
+        
+        if (_maskTexture != null)
+        {
+            _maskTexture.Release();
+            Destroy(_maskTexture);
+            _maskTexture = null;
+        }
     }
 
     private void InitializeTextures()
@@ -254,6 +282,8 @@ public class SegmentationManager : MonoBehaviour
     /// Обрабатывает текстуру камеры, выполняя сегментацию с помощью модели машинного обучения
     /// (Texture2D overload for compatibility with existing code)
     /// </summary>
+    // Removing this duplicate method since we have a better implementation at line 1726
+    /* 
     public bool ProcessCameraFrame(Texture2D cameraTexture, Vector2Int targetResolution = default)
     {
         if (targetResolution == default)
@@ -316,6 +346,7 @@ public class SegmentationManager : MonoBehaviour
             return false;
         }
     }
+    */
     
     /// <summary>
     /// Resize source texture to target dimensions
@@ -542,20 +573,20 @@ public class SegmentationManager : MonoBehaviour
         Debug.Log("=== AVAILABLE OUTPUTS ===");
         
         // Create a dummy tensor with the currently configured dimensions
-        Tensor dummyInput;
+        Tensor dummyInput = null;
         
-        if (isModelNHWCFormat)
-        {
-            dummyInput = new Tensor(1, inputHeight, inputWidth, inputChannels);
-        }
-        else
-        {
-            dummyInput = new Tensor(1, inputChannels, inputHeight, inputWidth);
-        }
-        
-        // Execute model with dummy input to populate outputs
         try
         {
+            if (isModelNHWCFormat)
+            {
+                dummyInput = new Tensor(1, inputHeight, inputWidth, inputChannels);
+            }
+            else
+            {
+                dummyInput = new Tensor(1, inputChannels, inputHeight, inputWidth);
+            }
+            
+            // Execute model with dummy input to populate outputs
             _worker.Execute(dummyInput);
             
             // Log the available outputs
@@ -585,13 +616,17 @@ public class SegmentationManager : MonoBehaviour
                     Debug.LogWarning($"  Error peeking output tensor: {e.Message}");
                 }
             }
-            
-            dummyInput.Dispose();
         }
         catch (Exception e)
         {
-            Debug.LogError($"Error executing model with dummy input: {e.Message}");
-            dummyInput.Dispose();
+            Debug.LogError($"Error logging available outputs: {e.Message}");
+        }
+        finally
+        {
+            if (dummyInput != null)
+            {
+                dummyInput.Dispose();
+            }
         }
         
         Debug.Log("========================");
@@ -689,11 +724,11 @@ public class SegmentationManager : MonoBehaviour
 
     private Tensor PrepareInputTensor(XRCpuImage image, Vector2Int targetDims, bool normalizeInput = true)
     {
-        // Modified to check only for AndroidYuv420_888 format since IosYpCbCr420_8BiPlanar is not available
+        // Check only standard formats that exist in all Unity versions
         if (image.format != XRCpuImage.Format.AndroidYuv420_888)
         {
-            Debug.LogError($"Unsupported image format: {image.format}");
-            return null;
+            Debug.LogWarning($"Potentially unsupported image format: {image.format}, will attempt to convert anyway");
+            // Continue processing - we'll let the conversion try to handle it
         }
 
         try
@@ -882,6 +917,10 @@ public class SegmentationManager : MonoBehaviour
         }
     }
 
+    /// <summary>
+    /// Process a camera frame and run the segmentation model on it
+    /// </summary>
+    /// <param name="image">The camera image to process</param>
     public void ProcessCameraFrame(XRCpuImage image)
     {
         if (!IsModelInitialized())
@@ -893,60 +932,78 @@ public class SegmentationManager : MonoBehaviour
         try
         {
             // Create input tensor from the image
-            Tensor inputTensor = PrepareInputTensorFromXRCpuImage(image);
+            Tensor inputTensor = null;
+            Tensor outputTensor = null;
             
-            if (inputTensor == null)
-            {
-                Debug.LogError("Failed to prepare input tensor from camera frame.");
-                return;
-            }
-
-            if (!ValidateInputDimensions(inputTensor))
-            {
-                Debug.LogWarning("Input tensor dimensions don't match configuration. Attempting to continue anyway.");
-            }
-
-            // Execute the model with the input tensor
-            _worker.Execute(inputTensor);
-
-            // Retrieve the output tensor
-            Tensor outputTensor = _worker.PeekOutput(outputName);
-
-            if (outputTensor == null)
-            {
-                Debug.LogError($"Failed to retrieve output tensor '{outputName}'");
-                return;
-            }
-
             try
             {
+                inputTensor = PrepareInputTensorFromXRCpuImage(image);
+                
+                if (inputTensor == null)
+                {
+                    Debug.LogError("Failed to prepare input tensor from camera frame.");
+                    return;
+                }
+
+                if (!ValidateInputDimensions(inputTensor))
+                {
+                    Debug.LogWarning("Input tensor dimensions don't match configuration. Attempting to continue anyway.");
+                }
+
+                // Execute the model with the input tensor
+                _worker.Execute(inputTensor);
+
+                // Retrieve the output tensor
+                outputTensor = _worker.PeekOutput(outputName) as Tensor;
+
+                if (outputTensor == null)
+                {
+                    Debug.LogError($"Failed to retrieve output tensor '{outputName}'");
+                    return;
+                }
+
                 // Create a valid input shape for DetermineOutputShape
                 var inputShape = new TensorShape(1, inputHeight, inputWidth, inputChannels);
                 TensorShape outputShape = DetermineOutputShape(outputTensor, inputShape);
                 
                 // Convert the output tensor to a texture
-                ConvertTensorToTexture(outputTensor, outputShape);
+                bool success = ConvertTensorToTexture(outputTensor, outputShape);
+                
+                if (!success)
+                {
+                    Debug.LogError("Failed to convert output tensor to texture");
+                }
             }
             catch (Exception e)
             {
-                HandleTensorReshapeError(outputTensor, e, new int[] { inputHeight, inputWidth, inputChannels });
+                if (outputTensor != null)
+                {
+                    HandleTensorReshapeError(outputTensor, e, new int[] { inputHeight, inputWidth, inputChannels });
+                }
+                else
+                {
+                    Debug.LogError($"Error during model execution: {e.Message}");
+                }
             }
-            
-            // Clean up
-            inputTensor.Dispose();
+            finally
+            {
+                // Clean up tensor objects
+                if (inputTensor != null)
+                {
+                    inputTensor.Dispose();
+                    inputTensor = null;
+                }
+                
+                if (outputTensor != null)
+                {
+                    outputTensor.Dispose();
+                    outputTensor = null;
+                }
+            }
         }
         catch (Exception e)
         {
-            Debug.LogError($"Error processing camera frame: {e.Message}");
-            
-            // If it's a reshape error, provide more detailed diagnostics
-            if (e.Message.Contains("shape") || e.Message.Contains("reshape"))
-            {
-                // Use null for outputTensor since it might not be defined at this point
-                HandleTensorReshapeError(null, e, new int[] { inputHeight, inputWidth, segmentationClassCount });
-            }
-            
-            return;
+            Debug.LogError($"Error in ProcessCameraFrame: {e.Message}");
         }
     }
 
@@ -955,11 +1012,11 @@ public class SegmentationManager : MonoBehaviour
     {
         Vector2Int targetDims = new Vector2Int(inputWidth, inputHeight);
         
-        // Modified to check only for AndroidYuv420_888 format since IosYpCbCr420_8BiPlanar is not available
+        // Check only standard formats that exist in all Unity versions
         if (image.format != XRCpuImage.Format.AndroidYuv420_888)
         {
-            Debug.LogError($"Unsupported image format: {image.format}");
-            return null;
+            Debug.LogWarning($"Potentially unsupported image format: {image.format}, will attempt to convert anyway");
+            // Continue processing - we'll let the conversion try to handle it
         }
 
         try
@@ -1150,7 +1207,7 @@ public class SegmentationManager : MonoBehaviour
             _worker.Execute(dummyInput);
             
             // Check output tensor shape
-            Tensor outputTensor = _worker.PeekOutput(outputName);
+            Tensor outputTensor = _worker.PeekOutput(outputName) as Tensor;
             if (outputTensor != null)
             {
                 // Use GetSafeDimensions instead of direct access to shape.dimensions
@@ -1189,143 +1246,61 @@ public class SegmentationManager : MonoBehaviour
         return outputName;
     }
 
+    /// <summary>
+    /// Handles errors related to tensor reshaping by providing detailed diagnostic information
+    /// </summary>
+    private void HandleTensorReshapeError(Tensor tensor, Exception error, int[] expectedDimensions)
+    {
+        // Get tensor details if available
+        string tensorInfo = "Unknown tensor dimensions";
+        long tensorSize = 0;
+        
+        if (tensor != null)
+        {
+            tensorSize = tensor.length;
+            tensorInfo = $"Tensor dimensions: n:{tensor.batch}, h:{tensor.height}, w:{tensor.width}, c:{tensor.channels}";
+        }
+        
+        // Calculate expected total size
+        long expectedSize = 1;
+        foreach (int dim in expectedDimensions)
+        {
+            expectedSize *= dim;
+        }
+        
+        // Log detailed diagnostic information
+        Debug.LogError($"Tensor reshape error: {error.Message}\n" +
+                     $"Tensor size: {tensorSize}, Expected total: {expectedSize}\n" +
+                     $"Expected dimensions: n:1, h:{expectedDimensions[0]}, w:{expectedDimensions[1]}, c:{expectedDimensions[2]}\n" +
+                     $"{tensorInfo}\n" +
+                     $"This is likely due to a mismatch between the model's output shape and what the code is expecting.");
+                 
+        // Suggested fixes
+        Debug.LogWarning($"Try adjusting the input dimensions in SegmentationManager: inputWidth={inputWidth}, inputHeight={inputHeight}, " +
+                       $"or ensure the model's expected input dimensions match these values.");
+    }
+
+    /// <summary>
+    /// Validates input tensor dimensions against configured values
+    /// </summary>
     private bool ValidateInputDimensions(Tensor inputTensor)
     {
-        try
+        if (inputTensor == null) return false;
+        
+        bool dimensionsMatch = inputTensor.height == inputHeight && 
+                              inputTensor.width == inputWidth && 
+                              inputTensor.channels == inputChannels;
+                          
+        if (!dimensionsMatch && debugMode)
         {
-            if (inputTensor == null) return false;
-            
-            // Get safe dimensions
-            int[] dims = GetSafeDimensions(inputTensor.shape);
-            
-            if (dims.Length < 3)
-            {
-                Debug.LogError("Invalid input tensor dimensions for validation");
-                return false;
-            }
-            
-            // Log dimensions in both formats for debugging
-            if (debugMode)
-            {
-                // For NHWC format
-                if (dims.Length >= 4)
-                {
-                    Debug.Log($"If NHWC: Batch={dims[0]}, Height={dims[1]}, Width={dims[2]}, Channels={dims[3]}");
-                    
-                    // Check sample values at key positions using safe method
-                    float topLeft = GetValueFromTensor(inputTensor, 0, 0, 0, 0);
-                    float topRight = GetValueFromTensor(inputTensor, 0, 0, dims[2]-1, 0);
-                    float bottomLeft = GetValueFromTensor(inputTensor, 0, dims[1]-1, 0, 0);
-                    
-                    Debug.Log($"Sample values [NHWC] - TopLeft: {topLeft}, TopRight: {topRight}, BottomLeft: {bottomLeft}");
-                }
-                
-                // For NCHW format
-                if (dims.Length >= 4)
-                {
-                    Debug.Log($"If NCHW: Batch={dims[0]}, Channels={dims[1]}, Height={dims[2]}, Width={dims[3]}");
-                    
-                    // Check sample values at key positions using safe method
-                    float topLeft = GetValueFromTensor(inputTensor, 0, 0, 0, 0);
-                    float topRight = GetValueFromTensor(inputTensor, 0, 0, dims[3]-1, 0);
-                    float bottomLeft = GetValueFromTensor(inputTensor, 0, dims[2]-1, 0, 0);
-                    
-                    Debug.Log($"Sample values [NCHW] - TopLeft: {topLeft}, TopRight: {topRight}, BottomLeft: {bottomLeft}");
-                }
-            }
-            
-            return true;
+            Debug.LogWarning($"Input tensor dimensions (n:{inputTensor.batch}, h:{inputTensor.height}, " +
+                           $"w:{inputTensor.width}, c:{inputTensor.channels}) don't match expected " +
+                           $"dimensions (n:1, h:{inputHeight}, w:{inputWidth}, c:{inputChannels})");
         }
-        catch (Exception e)
-        {
-            Debug.LogError($"Error validating input dimensions: {e.Message}");
-            return false;
-        }
+        
+        return dimensionsMatch;
     }
-    
-    /// <summary>
-    /// Handles tensor reshape errors by providing detailed diagnostics and suggestions
-    /// </summary>
-    /// <param name="outputTensor">The tensor that failed to reshape</param>
-    /// <param name="ex">The exception that was thrown</param>
-    /// <param name="expectedShape">The expected shape for the tensor</param>
-    private void HandleTensorReshapeError(Tensor outputTensor, Exception ex, int[] expectedShape)
-    {
-        var sb = new StringBuilder();
-        sb.AppendLine($"[SegmentationManager] Tensor reshape error: {ex.Message}");
-        
-        // Log the expected shape
-        sb.AppendLine($"Expected shape: {string.Join("×", expectedShape)} ({string.Join(",", expectedShape)})");
-        
-        // Calculate total elements manually instead of using Aggregate
-        int expectedTotal = 1;
-        foreach (int dim in expectedShape)
-        {
-            expectedTotal *= dim;
-        }
-        sb.AppendLine($"Expected total elements: {expectedTotal}");
-        
-        if (outputTensor == null)
-        {
-            sb.AppendLine("Output tensor is null! This typically indicates a model execution failure.");
-        }
-        else
-        {
-            // Log actual shape if tensor is available
-            int[] actualShape = outputTensor.shape.ToArray();
-            sb.AppendLine($"Actual shape: {string.Join("×", actualShape)} ({string.Join(",", actualShape)})");
-            sb.AppendLine($"Actual total elements: {outputTensor.length}");
-            
-            // Check if the total number of elements match
-            // Calculate expected elements manually instead of using Aggregate
-            int expectedElements = 1;
-            foreach (int dim in expectedShape)
-            {
-                expectedElements *= dim;
-            }
-            
-            if (outputTensor.length == expectedElements)
-            {
-                sb.AppendLine("Total number of elements match but the shapes are different.");
-                sb.AppendLine("This could indicate a dimension ordering issue (NHWC vs NCHW).");
-            }
-        }
-        
-        // Add troubleshooting suggestions
-        sb.AppendLine("\nTroubleshooting suggestions:");
-        sb.AppendLine("1. Verify your model output format (NHWC vs NCHW)");
-        sb.AppendLine("2. Ensure your output dimensions match your configured dimensions");
-        sb.AppendLine($"3. Current isModelNHWCFormat setting: {isModelNHWCFormat}");
-        
-        // Try to use ModelConfigFixer for additional analysis if available
-        var modelConfigFixer = FindObjectOfType<ModelConfigFixer>();
-        if (modelConfigFixer != null)
-        {
-            sb.AppendLine("\nAnalyzing tensor shape possibilities...");
-            if (outputTensor != null)
-            {
-                modelConfigFixer.AnalyzeTensorShapePossibilities(outputTensor.length, segmentationClassCount);
-            }
-            else if (expectedShape != null && expectedShape.Length >= 3)
-            {
-                // Try to help even with null tensor by using expected shape
-                sb.AppendLine("Attempting analysis with expected dimensions...");
-                int h = expectedShape[0];
-                int w = expectedShape[1];
-                int c = expectedShape.Length > 2 ? expectedShape[2] : segmentationClassCount;
-                
-                int totalElements = h * w * c;
-                modelConfigFixer.AnalyzeTensorShapePossibilities(totalElements, c);
-            }
-        }
-        else
-        {
-            sb.AppendLine("\nAdd a ModelConfigFixer component to your scene for additional analysis.");
-        }
-        
-        Debug.LogError(sb.ToString());
-    }
-    
+
     /// <summary>
     /// Prepare input tensor from Texture2D
     /// </summary>
@@ -1335,85 +1310,30 @@ public class SegmentationManager : MonoBehaviour
     {
         if (texture == null)
         {
-            Debug.LogError("PrepareInputTensorFromTexture: Input texture is null");
+            Debug.LogError("Input texture is null");
             return null;
         }
-
+        
         try
         {
-            Texture2D resizedTexture = null;
+            // Resize texture if needed
+            Texture2D processTexture = null;
             
-            // Resize texture to match model input dimensions if needed
             if (texture.width != inputWidth || texture.height != inputHeight)
             {
-                if (debugMode)
-                {
-                    Debug.Log($"Resizing texture from {texture.width}x{texture.height} to {inputWidth}x{inputHeight}");
-                }
-                
-                resizedTexture = ResizeTexture(texture, inputWidth, inputHeight);
+                processTexture = ResizeTexture(texture, inputWidth, inputHeight);
             }
             else
             {
-                // Use the original texture
-                resizedTexture = texture;
+                processTexture = texture;
             }
             
-            if (resizedTexture == null)
-            {
-                Debug.LogError("PrepareInputTensorFromTexture: Failed to resize texture");
-                return null;
-            }
-
-            // Create input tensor with expected dimensions
-            Tensor inputTensor = null;
-            
-            if (isModelNHWCFormat)
-            {
-                // NHWC format: 1 x H x W x 3
-                inputTensor = new Tensor(1, inputHeight, inputWidth, 3);
-                
-                // Copy texture data to tensor
-                for (int y = 0; y < inputHeight; y++)
-                {
-                    for (int x = 0; x < inputWidth; x++)
-                    {
-                        Color pixel = resizedTexture.GetPixel(x, y);
-                        inputTensor[0, y, x, 0] = pixel.r;
-                        inputTensor[0, y, x, 1] = pixel.g;
-                        inputTensor[0, y, x, 2] = pixel.b;
-                    }
-                }
-            }
-            else
-            {
-                // NCHW format: 1 x 3 x H x W
-                inputTensor = new Tensor(1, 3, inputHeight, inputWidth);
-                
-                // Copy texture data to tensor
-                for (int y = 0; y < inputHeight; y++)
-                {
-                    for (int x = 0; x < inputWidth; x++)
-                    {
-                        Color pixel = resizedTexture.GetPixel(x, y);
-                        inputTensor[0, 0, y, x] = pixel.r;
-                        inputTensor[0, 1, y, x] = pixel.g;
-                        inputTensor[0, 2, y, x] = pixel.b;
-                    }
-                }
-            }
-            
-            // Clean up the resized texture if it's not the original
-            if (resizedTexture != texture)
-            {
-                Destroy(resizedTexture);
-            }
-            
-            return inputTensor;
+            // Convert texture to tensor
+            return CreateInputTensorFromTexture(processTexture);
         }
-        catch (System.Exception e)
+        catch (Exception e)
         {
-            Debug.LogError($"Error preparing input tensor from texture: {e.Message}\n{e.StackTrace}");
+            Debug.LogError($"Error preparing input tensor from texture: {e.Message}");
             return null;
         }
     }
@@ -1456,7 +1376,7 @@ public class SegmentationManager : MonoBehaviour
             
             // Execute the model with the input
             _worker.Execute(input);
-            Tensor output = _worker.PeekOutput(_runtimeModel.outputs[0]);
+            Tensor output = _worker.PeekOutput(outputName) as Tensor;
             
             if (output == null)
             {
@@ -1579,6 +1499,7 @@ public class SegmentationManager : MonoBehaviour
         
         // Create a test tensor with specified dimensions
         Tensor testInput = null;
+        IWorker testWorker = null;
         
         try
         {
@@ -1594,18 +1515,16 @@ public class SegmentationManager : MonoBehaviour
             
             // Create a temporary worker for testing
             Model testModel = ModelLoader.Load(ModelAsset);
-            IWorker testWorker = WorkerFactory.CreateWorker(_backend, testModel);
+            testWorker = WorkerFactory.CreateWorker(_backend, testModel);
             
             // Execute the test tensor
             testWorker.Execute(testInput);
             
             // Try to peek at the output tensor
-            Tensor output = testWorker.PeekOutput(testOutputName);
+            Tensor output = testWorker.PeekOutput(testOutputName) as Tensor;
             if (output == null)
             {
                 Debug.LogError("Output tensor is null");
-                testInput.Dispose();
-                testWorker.Dispose();
                 return false;
             }
             
@@ -1613,16 +1532,24 @@ public class SegmentationManager : MonoBehaviour
             Debug.Log($"Dimensions {width}x{height}x{channels} work with output '{testOutputName}'");
             Debug.Log($"Output tensor shape: {string.Join(" × ", GetSafeDimensions(output.shape))}");
             
-            // Clean up
-            testInput.Dispose();
-            testWorker.Dispose();
             return true;
         }
         catch (Exception e)
         {
             Debug.LogError($"Error testing dimensions: {e.Message}");
-            if (testInput != null) testInput.Dispose();
             return false;
+        }
+        finally
+        {
+            // Clean up resources
+            if (testInput != null)
+            {
+                testInput.Dispose();
+            }
+            if (testWorker != null)
+            {
+                testWorker.Dispose();
+            }
         }
     }
 
@@ -1703,294 +1630,251 @@ public class SegmentationManager : MonoBehaviour
     }
 
     /// <summary>
-    /// Обрабатывает кадр камеры, выполняя сегментацию с помощью модели машинного обучения
+    /// Process a camera frame for segmentation
     /// </summary>
-    public bool ProcessCameraFrame(Texture2D cameraTexture)
+    /// <param name="texture">Input camera texture</param>
+    /// <param name="targetResolution">Optional target resolution for processing</param>
+    /// <returns>True if processing succeeded</returns>
+    public bool ProcessCameraFrame(Texture2D texture, Vector2Int targetResolution)
     {
         try
         {
-            if (!IsModelInitialized())
+            // Resize texture to match expected input dimensions if needed
+            Texture2D resizedTexture = ResizeTextureIfNeeded(texture, targetResolution);
+            
+            // Create input tensor from the texture
+            Tensor inputTensor = null;
+            try
             {
-                Debug.LogWarning("ML model not initialized. Cannot process the camera frame.");
-                return false;
-            }
-
-            if (_isProcessing)
-            {
-                if (debugMode)
+                inputTensor = CreateInputTensorFromTexture(resizedTexture);
+                if (inputTensor == null)
                 {
-                    Debug.Log("Skipping frame processing - already processing another frame");
+                    Debug.LogError("Failed to create input tensor from texture");
+                    return false;
+                }
+                
+                // Validate tensor dimensions before reshaping
+                if (!ValidateTensorDimensions(inputTensor, inputWidth, inputHeight))
+                {
+                    return false;
+                }
+                
+                // Execute the model
+                ExecuteModel(inputTensor);
+                return true;
+            }
+            catch (Exception e)
+            {
+                Debug.LogError($"Error processing camera frame: {e.Message}");
+                if (e.Message.Contains("Cannot reshape"))
+                {
+                    HandleTensorReshapeError(inputTensor, e);
                 }
                 return false;
             }
-
-            _isProcessing = true;
-
-            // Create a dummy target resolution if needed
-            Vector2Int targetDims = new Vector2Int(inputWidth, inputHeight);
-            
-            // Prepare input tensor from camera texture
-            Tensor inputTensor = PrepareInputTensor(cameraTexture, targetDims);
-            if (inputTensor == null)
+            finally
             {
-                Debug.LogError("Failed to prepare input tensor from camera texture");
-                _isProcessing = false;
-                return false;
+                // Always dispose of tensors to prevent memory leaks
+                if (inputTensor != null)
+                {
+                    inputTensor.Dispose();
+                    inputTensor = null;
+                }
+                
+                // Clean up the resized texture if it's different from the input
+                if (resizedTexture != null && resizedTexture != texture)
+                {
+                    Destroy(resizedTexture);
+                }
             }
-
-            // Execute neural network
-            _worker.Execute(inputTensor);
-
-            // Get output tensor
-            Tensor output = _worker.PeekOutput(outputName);
-            
-            if (output == null)
-            {
-                Debug.LogError($"[SegmentationManager] Output tensor is null. Output layer name: {outputName}");
-                LogAvailableOutputs();
-                inputTensor.Dispose();
-                _isProcessing = false;
-                return false;
-            }
-            
-            // Get actual tensor shape for comparison
-            TensorShape outputShape = DetermineOutputShape(output, inputTensor.shape);
-            
-            // Get dimensions safely using GetSafeDimensions
-            int[] shapeDims = GetSafeDimensions(outputShape);
-            if (shapeDims.Length == 0 || shapeDims[0] == 0)
-            {
-                Debug.LogError("[SegmentationManager] Failed to determine valid output shape");
-                inputTensor.Dispose();
-                output.Dispose();
-                _isProcessing = false;
-                return false;
-            }
-            
-            // Convert tensor to texture with wall class highlighted
-            bool success = ConvertTensorToTexture(output, outputShape);
-            
-            // Clean up resources
-            inputTensor.Dispose();
-            output.Dispose();
-            
-            _isProcessing = false;
-            return success;
         }
         catch (Exception e)
         {
-            Debug.LogError($"[SegmentationManager] Error: {e.Message}");
-            _isProcessing = false;
+            Debug.LogError($"Error in ProcessCameraFrame: {e.Message}");
             return false;
         }
     }
 
-    private Texture2D ConvertOutputToTexture(Tensor outputTensor)
+    /// <summary>
+    /// Validates tensor dimensions to ensure they match expected values
+    /// </summary>
+    private bool ValidateTensorDimensions(Tensor tensor, int expectedWidth, int expectedHeight)
     {
-        if (outputTensor == null) return null;
+        if (tensor == null) return false;
         
-        // Create a texture to store the segmentation result with modern constructor
-        Texture2D texture = new Texture2D(
-            inputWidth, 
-            inputHeight, 
-            UnityEngine.Experimental.Rendering.GraphicsFormat.R8G8B8A8_UNorm,
-            UnityEngine.Experimental.Rendering.TextureCreationFlags.None);
+        int tensorSize = tensor.shape.length;
+        Debug.Log($"Tensor size: {tensorSize}, Expected size based on dimensions: {expectedWidth * expectedHeight * 3}");
         
-        // Safe way to get the tensor dimensions
-        int[] dims = GetSafeDimensions(outputTensor.shape);
-        
-        // Total size of the output data
-        int totalSize = outputTensor.length;
-        
-        // Get data from the tensor
-        float[] outputData = outputTensor.AsFloats();
-        
-        // Prepare pixel array for the texture
-        Color[] pixels = new Color[inputWidth * inputHeight];
-        
-        // Determine class for each pixel based on model format
-        for (int y = 0; y < inputHeight; y++)
+        if (tensorSize != expectedWidth * expectedHeight * 3)
         {
-            for (int x = 0; x < inputWidth; x++)
-            {
-                int pixelIndex = y * inputWidth + x;
-                
-                // Default pixel color (background)
-                pixels[pixelIndex] = Color.black;
-                
-                try
-                {
-                    // Determine if pixel belongs to wall class using GetValueFromTensor
-                    float wallClassValue = GetValueFromTensor(outputTensor, 0, y, x, wallClassId);
-                    
-                    // Set pixel color based on classification
-                    pixels[pixelIndex] = wallClassValue > classificationThreshold ? Color.white : Color.black;
-                }
-                catch (Exception e)
-                {
-                    Debug.LogError($"Error processing pixel at ({x},{y}): {e.Message}");
-                    pixels[pixelIndex] = Color.red; // Mark error pixels as red
-                }
-            }
+            Debug.LogWarning($"Tensor dimensions mismatch. Expected {expectedWidth}x{expectedHeight}x3 but got size {tensorSize}");
+            return false;
         }
         
-        // Set pixels and apply
-        texture.SetPixels(pixels);
-        texture.Apply();
+        return true;
+    }
+
+    /// <summary>
+    /// Handle tensor reshape errors with detailed diagnostics
+    /// </summary>
+    private void HandleTensorReshapeError(Tensor tensor, Exception error)
+    {
+        if (tensor == null)
+        {
+            Debug.LogError("Cannot diagnose reshape error: Tensor is null");
+            return;
+        }
+        
+        int tensorSize = tensor.length;
+        Debug.LogError($"Tensor reshape error! Tensor size: {tensorSize}");
+        Debug.LogError($"Expected dimensions: [n:1, h:{inputHeight}, w:{inputWidth}, c:3]");
+        Debug.LogError($"Expected total size: {1 * inputHeight * inputWidth * 3}");
+        Debug.LogError($"Actual size: {tensorSize}");
+        Debug.LogError("Suggestion: Check that input texture dimensions match the model's expected input dimensions");
+    }
+
+    /// <summary>
+    /// Resize texture to match the required input dimensions
+    /// </summary>
+    private Texture2D ResizeTextureIfNeeded(Texture2D texture, Vector2Int targetResolution)
+    {
+        // If target resolution is zero, use the default input dimensions
+        if (targetResolution == Vector2Int.zero)
+        {
+            targetResolution = new Vector2Int(inputWidth, inputHeight);
+        }
+        
+        // Check if we need to resize
+        if (texture.width != targetResolution.x || texture.height != targetResolution.y)
+        {
+            Texture2D resized = new Texture2D(targetResolution.x, targetResolution.y, TextureFormat.RGBA32, false);
+            Graphics.ConvertTexture(texture, resized);
+            return resized;
+        }
         
         return texture;
     }
 
-    private Tensor PrepareInputTensor(Texture2D texture, Vector2Int targetDims, bool normalizeInput = true)
+    /// <summary>
+    /// Create input tensor from texture
+    /// </summary>
+    private Tensor CreateInputTensorFromTexture(Texture2D texture)
     {
-        if (texture == null)
-        {
-            Debug.LogError("Cannot prepare input tensor from null texture");
-            return null;
-        }
-
+        if (texture == null) return null;
+        
         try
         {
-            // Resize texture if needed
-            Texture2D resizedTexture = null;
-            if (texture.width != targetDims.x || texture.height != targetDims.y)
-            {
-                resizedTexture = ResizeTexture(texture, targetDims.x, targetDims.y);
-            }
-            else
-            {
-                resizedTexture = texture;
-            }
-
-            if (resizedTexture == null)
-            {
-                Debug.LogError("Failed to prepare input texture");
-                return null;
-            }
-
-            // Create input tensor with expected dimensions
-            Tensor inputTensor = null;
+            // Create tensor with expected dimensions
+            Tensor tensor;
             
             if (isModelNHWCFormat)
             {
-                // NHWC format: 1 x H x W x 3
-                // Create a tensor with specified dimensions
-                TensorShape tensorShape = new TensorShape(1, targetDims.y, targetDims.x, inputChannels);
-                inputTensor = new Tensor(tensorShape);
-                
-                // Copy texture data to tensor
-                float[] tensorData = new float[targetDims.y * targetDims.x * inputChannels];
-                for (int y = 0; y < targetDims.y; y++)
-                {
-                    for (int x = 0; x < targetDims.x; x++)
-                    {
-                        Color pixel = resizedTexture.GetPixel(x, y);
-                        float r = normalizeInput ? pixel.r : pixel.r / 255.0f;
-                        float g = normalizeInput ? pixel.g : pixel.g / 255.0f;
-                        float b = normalizeInput ? pixel.b : pixel.b / 255.0f;
-                        
-                        int pixelBase = (y * targetDims.x + x) * inputChannels;
-                        tensorData[pixelBase] = r;
-                        tensorData[pixelBase + 1] = g;
-                        tensorData[pixelBase + 2] = b;
-                    }
-                }
-                
-                // Upload tensor data with shape
-                inputTensor.data.Upload(tensorData, tensorShape);
+                // NHWC format: [batch, height, width, channels]
+                tensor = new Tensor(1, inputHeight, inputWidth, inputChannels);
             }
             else
             {
-                // NCHW format: 1 x 3 x H x W
-                // Create a tensor with specified dimensions
-                TensorShape tensorShape = new TensorShape(1, inputChannels, targetDims.y, targetDims.x);
-                inputTensor = new Tensor(tensorShape);
-                
-                // Copy texture data to tensor
-                float[] tensorData = new float[inputChannels * targetDims.y * targetDims.x];
-                int channelSize = targetDims.y * targetDims.x;
-                for (int y = 0; y < targetDims.y; y++)
+                // NCHW format: [batch, channels, height, width]
+                tensor = new Tensor(1, inputChannels, inputHeight, inputWidth);
+            }
+            
+            // Get pixel data from texture (assumes RGBA texture)
+            Color32[] pixels = texture.GetPixels32();
+            
+            // Copy pixels to tensor
+            for (int y = 0; y < inputHeight; y++)
+            {
+                for (int x = 0; x < inputWidth; x++)
                 {
-                    for (int x = 0; x < targetDims.x; x++)
+                    int pixelIndex = y * inputWidth + x;
+                    
+                    if (pixelIndex < pixels.Length)
                     {
-                        Color pixel = resizedTexture.GetPixel(x, y);
-                        float r = normalizeInput ? pixel.r : pixel.r / 255.0f;
-                        float g = normalizeInput ? pixel.g : pixel.g / 255.0f;
-                        float b = normalizeInput ? pixel.b : pixel.b / 255.0f;
+                        Color32 pixel = pixels[pixelIndex];
                         
-                        int pixelIndex = y * targetDims.x + x;
-                        tensorData[pixelIndex] = r;
-                        tensorData[channelSize + pixelIndex] = g;
-                        tensorData[channelSize * 2 + pixelIndex] = b;
+                        if (isModelNHWCFormat)
+                        {
+                            // NHWC format
+                            tensor[0, y, x, 0] = pixel.r / 255.0f;
+                            if (inputChannels > 1) tensor[0, y, x, 1] = pixel.g / 255.0f;
+                            if (inputChannels > 2) tensor[0, y, x, 2] = pixel.b / 255.0f;
+                        }
+                        else
+                        {
+                            // NCHW format
+                            tensor[0, 0, y, x] = pixel.r / 255.0f;
+                            if (inputChannels > 1) tensor[0, 1, y, x] = pixel.g / 255.0f;
+                            if (inputChannels > 2) tensor[0, 2, y, x] = pixel.b / 255.0f;
+                        }
                     }
                 }
-                
-                // Upload tensor data with shape
-                inputTensor.data.Upload(tensorData, tensorShape);
             }
             
-            // Clean up if we created a new texture
-            if (resizedTexture != texture)
-            {
-                Destroy(resizedTexture);
-            }
-            
-            return inputTensor;
+            return tensor;
         }
         catch (Exception e)
         {
-            Debug.LogError($"Error preparing input tensor from texture: {e.Message}");
+            Debug.LogError($"Error creating tensor from texture: {e.Message}");
             return null;
         }
     }
 
-    // Helper method to safely get tensor values
-    private float GetValueFromTensor(Tensor tensor, int n, int h, int w, int c)
+    /// <summary>
+    /// Execute the ML model with the given input tensor
+    /// </summary>
+    private void ExecuteModel(Tensor inputTensor)
     {
-        if (tensor == null) return 0f;
+        if (_worker == null || inputTensor == null) return;
         
-        // Get tensor data as float array
-        float[] data = tensor.AsFloats();
+        Tensor outputTensor = null;
         
-        // Calculate index based on format
-        int index;
-        int[] dims = GetSafeDimensions(tensor.shape);
-        
-        if (dims.Length < 4) return 0f;
-        
-        if (isModelNHWCFormat)
+        try
         {
-            // NHWC format
-            int height = dims[1];
-            int width = dims[2];
-            int channels = dims[3];
+            // Execute the model
+            _worker.Execute(inputTensor);
             
-            index = n * (height * width * channels) + 
-                    h * (width * channels) + 
-                    w * channels + 
-                    c;
-        }
-        else
-        {
-            // NCHW format
-            int channels = dims[1];
-            int height = dims[2];
-            int width = dims[3];
+            // Get output
+            outputTensor = _worker.PeekOutput(GetOutputTensorName()) as Tensor;
             
-            index = n * (channels * height * width) + 
-                    c * (height * width) + 
-                    h * width + 
-                    w;
+            if (outputTensor != null)
+            {
+                try
+                {
+                    // Process output tensor
+                    ProcessOutputTensor(outputTensor);
+                }
+                catch (Exception e)
+                {
+                    Debug.LogError($"Error processing output tensor: {e.Message}");
+                }
+            }
         }
-        
-        if (index >= 0 && index < data.Length)
+        catch (Exception e)
         {
-            return data[index];
+            Debug.LogError($"Error executing model: {e.Message}");
         }
-        
-        return 0f;
+        finally
+        {
+            // Always dispose of the output tensor
+            if (outputTensor != null)
+            {
+                outputTensor.Dispose();
+            }
+        }
     }
 
+    /// <summary>
+    /// Clean up resources when the component is destroyed
+    /// </summary>
+    private void DisposeWorker()
+    {
+        if (_worker != null)
+        {
+            _worker.Dispose();
+            _worker = null;
+        }
+    }
+    
     private string FormatIntArray(int[] array)
     {
         if (array == null || array.Length == 0)
@@ -1998,5 +1882,173 @@ public class SegmentationManager : MonoBehaviour
             return "[]";
         }
         return "[" + string.Join(", ", array) + "]";
+    }
+
+    /// <summary>
+    /// Scales a texture to the target dimensions
+    /// </summary>
+    private Texture2D ScaleTexture(Texture2D source, int targetWidth, int targetHeight)
+    {
+        if (source == null) return null;
+        
+        // Create a temporary render texture
+        RenderTexture rt = RenderTexture.GetTemporary(targetWidth, targetHeight, 0);
+        
+        // Copy source to render texture
+        Graphics.Blit(source, rt);
+        
+        // Store active render texture
+        RenderTexture prevRT = RenderTexture.active;
+        RenderTexture.active = rt;
+        
+        // Create new texture with target dimensions
+        Texture2D result = new Texture2D(targetWidth, targetHeight, TextureFormat.RGBA32, false);
+        
+        // Read pixels from render texture
+        result.ReadPixels(new Rect(0, 0, targetWidth, targetHeight), 0, 0);
+        result.Apply();
+        
+        // Restore previous active render texture
+        RenderTexture.active = prevRT;
+        
+        // Release temporary render texture
+        RenderTexture.ReleaseTemporary(rt);
+        
+        return result;
+    }
+
+    /// <summary>
+    /// Process segmentation output and generate texture
+    /// </summary>
+    private void ProcessSegmentationOutput(Tensor outputTensor)
+    {
+        if (outputTensor == null) return;
+        
+        try
+        {
+            // Get dimensions safely
+            int[] shapeDims = GetSafeDimensions(outputTensor.shape);
+            
+            if (shapeDims.Length < 3)
+            {
+                Debug.LogError("Invalid tensor shape for segmentation output");
+                return;
+            }
+            
+            // Extract dimensions based on format
+            int height, width, channelCount;
+            
+            if (isModelNHWCFormat)
+            {
+                // NHWC: [N, H, W, C]
+                height = shapeDims[1];
+                width = shapeDims[2];
+                channelCount = shapeDims.Length > 3 ? shapeDims[3] : 1;
+            }
+            else
+            {
+                // NCHW: [N, C, H, W]
+                channelCount = shapeDims[1];
+                height = shapeDims[2];
+                width = shapeDims[3];
+            }
+            
+            // Create or resize segmentation texture if needed
+            if (_segmentationTexture == null || 
+                _segmentationTexture.width != width || 
+                _segmentationTexture.height != height)
+            {
+                if (_segmentationTexture != null)
+                {
+                    Destroy(_segmentationTexture);
+                }
+                
+                #if UNITY_2022_1_OR_NEWER
+                // For newer Unity versions (2022.1+)
+                _segmentationTexture = new Texture2D(
+                    width, 
+                    height, 
+                    UnityEngine.Experimental.Rendering.GraphicsFormat.R8_UNorm,
+                    UnityEngine.Experimental.Rendering.TextureCreationFlags.None);
+                #else
+                // For older Unity versions
+                _segmentationTexture = new Texture2D(
+                    width, 
+                    height, 
+                    TextureFormat.R8, 
+                    false);
+                #endif
+            }
+            
+            // Create pixel data array
+            Color32[] pixelData = new Color32[width * height];
+            
+            // Process each pixel
+            for (int y = 0; y < height; y++)
+            {
+                for (int x = 0; x < width; x++)
+                {
+                    int pixelIndex = y * width + x;
+                    
+                    // Get the classification value for wall class using safe method
+                    float classValue = GetValueFromTensor(outputTensor, 0, y, x, wallClassId);
+                    
+                    // Apply threshold for classification (0 or 255)
+                    byte intensity = classValue >= classificationThreshold ? (byte)255 : (byte)0;
+                    
+                    // Set pixel data
+                    pixelData[pixelIndex] = new Color32(intensity, intensity, intensity, 255);
+                }
+            }
+            
+            // Apply pixel data to texture
+            _segmentationTexture.SetPixels32(pixelData);
+            _segmentationTexture.Apply();
+            
+            // Invoke the completion callback
+            onProcessingComplete?.Invoke(_segmentationTexture);
+            OnSegmentationCompleted?.Invoke(_segmentationTexture);
+        }
+        catch (Exception e)
+        {
+            Debug.LogError($"Error processing segmentation output: {e.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Get value from tensor at specified coordinates
+    /// </summary>
+    private float GetValueFromTensor(Tensor tensor, int batch, int y, int x, int channel)
+    {
+        if (tensor == null) return 0f;
+        
+        try
+        {
+            int[] dims = GetSafeDimensions(tensor.shape);
+            
+            if (isModelNHWCFormat)
+            {
+                // NHWC format: [batch, height, width, channels]
+                return tensor[batch, y, x, channel];
+            }
+            else
+            {
+                // NCHW format: [batch, channels, height, width]
+                return tensor[batch, channel, y, x];
+            }
+        }
+        catch (Exception e)
+        {
+            Debug.LogError($"Error getting value from tensor: {e.Message}");
+            return 0f;
+        }
+    }
+
+    /// <summary>
+    /// Process output tensor from the model
+    /// </summary>
+    private void ProcessOutputTensor(Tensor outputTensor)
+    {
+        ProcessSegmentationOutput(outputTensor);
     }
 } 
