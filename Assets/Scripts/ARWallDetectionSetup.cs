@@ -199,6 +199,12 @@ public class RemaluxARWallSetup : MonoBehaviour
                 connectorObj.AddComponent<ARRaycastManager>();
             }
             
+            // Add ARAnchorManager if needed
+            if (!connectorObj.TryGetComponent<ARAnchorManager>(out _))
+            {
+                connectorObj.AddComponent<ARAnchorManager>();
+            }
+            
             _anchorConnector = connectorObj.AddComponent<WallAnchorConnector>();
             
             Debug.Log("RemaluxARWallSetup: Created WallAnchorConnector component");
@@ -211,6 +217,20 @@ public class RemaluxARWallSetup : MonoBehaviour
             _anchorConnector.Predictor = _predictor;
             _anchorConnector.WallAnchor = _wallAnchor;
             _anchorConnector.ARCamera = _arCameraManager.GetComponent<Camera>();
+            _anchorConnector.ARPlaneManager = _arPlaneManager;
+            
+            // Find and assign ARAnchorManager
+            ARAnchorManager anchorManager = connectorObj.GetComponent<ARAnchorManager>();
+            if (anchorManager == null)
+            {
+                anchorManager = FindObjectOfType<ARAnchorManager>();
+            }
+            
+            if (anchorManager != null)
+            {
+                _anchorConnector.AnchorManager = anchorManager;
+                Debug.Log("RemaluxARWallSetup: Connected WallAnchorConnector with ARAnchorManager");
+            }
         }
     }
 } 

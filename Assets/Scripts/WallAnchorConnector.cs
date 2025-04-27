@@ -16,6 +16,8 @@ public class WallAnchorConnector : MonoBehaviour
     [SerializeField] private EnhancedDeepLabPredictor _predictor;
     [SerializeField] private ARWallAnchor _wallAnchor;
     [SerializeField] private Camera _arCamera;
+    [SerializeField] private ARAnchorManager _anchorManager;
+    [SerializeField] private ARPlaneManager _arPlaneManager;
     
     [Header("Settings")]
     [SerializeField] private int _samplesPerWall = 5;
@@ -45,6 +47,16 @@ public class WallAnchorConnector : MonoBehaviour
         set { _arCamera = value; }
     }
     
+    public ARAnchorManager AnchorManager {
+        get { return _anchorManager; }
+        set { _anchorManager = value; }
+    }
+    
+    public ARPlaneManager ARPlaneManager {
+        get { return _arPlaneManager; }
+        set { _arPlaneManager = value; }
+    }
+    
     // Components
     private ARRaycastManager _raycastManager;
     
@@ -58,7 +70,12 @@ public class WallAnchorConnector : MonoBehaviour
     
     private void Awake()
     {
-        _raycastManager = GetComponent<ARRaycastManager>();
+        _raycastManager = GetComponent<ARRaycastManager>() 
+                        ?? FindObjectOfType<ARRaycastManager>();
+        _anchorManager = GetComponent<ARAnchorManager>() 
+                        ?? FindObjectOfType<ARAnchorManager>();
+        _arPlaneManager = GetComponent<ARPlaneManager>()
+                        ?? FindObjectOfType<ARPlaneManager>();
         
         // Get references if not assigned
         if (_arCameraManager == null)
@@ -122,7 +139,7 @@ public class WallAnchorConnector : MonoBehaviour
     /// </summary>
     private void ProcessSegmentationForAnchors()
     {
-        if (_latestSegmentation == null || _arCamera == null || _raycastManager == null)
+        if (_latestSegmentation == null || _arCamera == null || _raycastManager == null || _anchorManager == null)
             return;
             
         if (_debugMode)
@@ -158,21 +175,39 @@ public class WallAnchorConnector : MonoBehaviour
                     // Try AR raycast to find planes
                     if (_raycastManager.Raycast(screenPos, _raycastHits, TrackableType.PlaneWithinPolygon))
                     {
-                        // Found a plane - use the first hit
+                        // берём первый результат и сразу точную позу
                         ARRaycastHit hit = _raycastHits[0];
+                        Pose hitPose = hit.pose;
                         
-                        // Get the hit plane
+                        // Получаем AR-плоскость, по которой произошло попадание
                         TrackableId planeId = hit.trackableId;
+                        ARPlane hitPlane = null;
                         
-                        // Tell the Wall Anchor system to anchor this plane
-                        if (_wallAnchor != null)
+                        // Находим плоскость среди отслеживаемых
+                        if (_arPlaneManager != null) {
+                            hitPlane = _arPlaneManager.GetPlane(planeId);
+                        }
+                        
+                        // создаём якорь в этой позе используя плоскость или позу
+                        ARAnchor anchor = null;
+                        if (hitPlane != null) {
+                            // Используем привязку к плоскости
+                            anchor = _anchorManager.AttachAnchor(hitPlane, hitPose);
+                        } else {
+                            // Если не удалось найти плоскость, создаем обычный якорь
+                            GameObject anchorGO = new GameObject("Wall Anchor");
+                            anchorGO.transform.position = hitPose.position;
+                            anchorGO.transform.rotation = hitPose.rotation;
+                            anchor = anchorGO.AddComponent<ARAnchor>();
+                        }
+                        
+                        if (anchor != null)
                         {
-                            _wallAnchor.AnchorWallPlane(planeId);
-                            
-                            if (_debugMode)
-                                Debug.Log($"WallAnchorConnector: Anchored wall at screen position {screenPos} to plane {planeId}");
-                                
-                            // Skip to next region to avoid too many anchors in the same area
+                            // «приклеиваем» ваш wall-представитель к якорю,
+                            // сохраняя его текущие мировые координаты
+                            var wallGO = _wallAnchor.gameObject;
+                            wallGO.transform.SetParent(anchor.transform, worldPositionStays: true);
+                            if (_debugMode) Debug.Log($"WallAnchorConnector: Anchored wall at {hitPose.position}");
                             break;
                         }
                     }
@@ -181,17 +216,24 @@ public class WallAnchorConnector : MonoBehaviour
                         // Fallback to physics raycast if AR raycast failed
                         if (Physics.Raycast(ray, out RaycastHit physicsHit, _raycastDistance, _raycastLayers))
                         {
-                            // Create an anchor at this world position
-                            GameObject anchorObj = new GameObject("Wall Anchor");
-                            anchorObj.transform.position = physicsHit.point;
-                            // Orient the anchor to face the normal of the hit surface
-                            anchorObj.transform.rotation = Quaternion.LookRotation(-physicsHit.normal);
+                            // Create an anchor at this world position using gameObject + component
+                            Pose hitPose = new Pose(physicsHit.point, Quaternion.LookRotation(-physicsHit.normal));
                             
-                            // Add AR anchor component
-                            ARAnchor anchor = anchorObj.AddComponent<ARAnchor>();
+                            GameObject anchorGO = new GameObject("Wall Anchor (Physics)");
+                            anchorGO.transform.position = hitPose.position;
+                            anchorGO.transform.rotation = hitPose.rotation;
                             
-                            if (_debugMode)
-                                Debug.Log($"WallAnchorConnector: Created standalone anchor at {physicsHit.point}");
+                            ARAnchor anchor = anchorGO.AddComponent<ARAnchor>();
+                            
+                            if (anchor != null && _wallAnchor != null)
+                            {
+                                // Attach wall to the anchor
+                                var wallGO = _wallAnchor.gameObject;
+                                wallGO.transform.SetParent(anchor.transform, worldPositionStays: true);
+                                
+                                if (_debugMode)
+                                    Debug.Log($"WallAnchorConnector: Created anchor using physics raycast at {hitPose.position}");
+                            }
                         }
                     }
                 }

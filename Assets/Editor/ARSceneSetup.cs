@@ -236,6 +236,10 @@ public class ARSceneSetup : EditorWindow
 
             // Add Raycast Manager for surface detection
             ARRaycastManager raycastManager = xrOriginObj.AddComponent<ARRaycastManager>();
+            
+            // Add Anchor Manager for creating and managing anchors
+            ARAnchorManager anchorManager = xrOriginObj.AddComponent<ARAnchorManager>();
+            Debug.Log("Added ARAnchorManager for creating and managing AR anchors");
 
             // Create and configure ARManager
             GameObject arManagerObj = new GameObject("AR Manager");
@@ -866,6 +870,22 @@ public class ARSceneSetup : EditorWindow
                 if (mainCamera != null)
                 {
                     wallAnchorConnector.ARCamera = mainCamera;
+                }
+                
+                // Set ARPlaneManager reference
+                ARPlaneManager planeManager = GameObject.FindObjectOfType<ARPlaneManager>();
+                if (planeManager != null)
+                {
+                    wallAnchorConnector.ARPlaneManager = planeManager;
+                    Debug.Log("Connected WallAnchorConnector with ARPlaneManager");
+                }
+                
+                // Set ARAnchorManager reference
+                ARAnchorManager anchorManager = GameObject.FindObjectOfType<ARAnchorManager>();
+                if (anchorManager != null)
+                {
+                    wallAnchorConnector.AnchorManager = anchorManager;
+                    Debug.Log("Connected WallAnchorConnector with ARAnchorManager");
                 }
                 
                 Debug.Log("Connected WallAnchorConnector with ARWallAnchor and EnhancedDeepLabPredictor");
