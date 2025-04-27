@@ -203,20 +203,20 @@ public class ARSceneSetup : EditorWindow
             WallAligner wallAligner = SafeAddComponent<WallAligner>(meshManagerObj);
             
             // Load wall material
-            Material wallMaterial = AssetDatabase.LoadAssetAtPath<Material>("Assets/Materials/SimpleWallMaterial.mat");
-            if (wallMaterial == null)
+            Material simpleWallMaterial = AssetDatabase.LoadAssetAtPath<Material>("Assets/Materials/SimpleWallMaterial.mat");
+            if (simpleWallMaterial == null)
             {
-                wallMaterial = AssetDatabase.LoadAssetAtPath<Material>("Assets/Materials/WallMaterial.mat");
+                simpleWallMaterial = AssetDatabase.LoadAssetAtPath<Material>("Assets/Materials/WallMaterial.mat");
             }
             
-            if (wallMaterial != null)
+            if (simpleWallMaterial != null)
             {
                 // Set material for WallAligner
                 SerializedObject serializedWallAligner = new SerializedObject(wallAligner);
                 var wallMaterialProp = serializedWallAligner.FindProperty("wallMaterial");
                 if (wallMaterialProp != null)
                 {
-                    wallMaterialProp.objectReferenceValue = wallMaterial;
+                    wallMaterialProp.objectReferenceValue = simpleWallMaterial;
                 }
                 serializedWallAligner.ApplyModifiedProperties();
                 Debug.Log("Added WallAligner with material assigned for automatic wall mesh processing");
@@ -429,6 +429,43 @@ public class ARSceneSetup : EditorWindow
             
             Debug.Log("Wall Detection System added to scene with enhanced recognition");
 
+            // Add our new AR-aware wall anchoring system
+            GameObject remaluxWallSystemObj = new GameObject("Remalux AR Wall System");
+            remaluxWallSystemObj.transform.SetParent(mlSystem.transform);
+            
+            // Add RemaluxARWallSetup component for automatic configuration
+            RemaluxARWallSetup arWallSetup = remaluxWallSystemObj.AddComponent<RemaluxARWallSetup>();
+            // Set public properties using SerializedObject to avoid direct access to private fields
+            SerializedObject serializedArWallSetup = new SerializedObject(arWallSetup);
+            serializedArWallSetup.FindProperty("_autoSetup").boolValue = true;
+            serializedArWallSetup.FindProperty("_predictor").objectReferenceValue = enhancedPredictor;
+            
+            // Find needed AR components
+            ARSession arSession = GameObject.FindObjectOfType<ARSession>();
+            ARCameraManager arCameraManager = GameObject.FindObjectOfType<ARCameraManager>();
+            ARPlaneManager arPlaneManager = GameObject.FindObjectOfType<ARPlaneManager>();
+            ARRaycastManager arRaycastManager = GameObject.FindObjectOfType<ARRaycastManager>();
+            
+            serializedArWallSetup.FindProperty("_arSession").objectReferenceValue = arSession;
+            serializedArWallSetup.FindProperty("_arCameraManager").objectReferenceValue = arCameraManager;
+            serializedArWallSetup.FindProperty("_arPlaneManager").objectReferenceValue = arPlaneManager;
+            serializedArWallSetup.FindProperty("_arRaycastManager").objectReferenceValue = arRaycastManager;
+            
+            // Set wall color
+            serializedArWallSetup.FindProperty("_wallColor").colorValue = new Color(0.2f, 0.8f, 1.0f, 0.7f);
+            
+            // Try to load wall material if it exists
+            Material existingWallMaterial = AssetDatabase.LoadAssetAtPath<Material>("Assets/Materials/WallMaterial.mat");
+            if (existingWallMaterial != null)
+            {
+                serializedArWallSetup.FindProperty("_wallMaterial").objectReferenceValue = existingWallMaterial;
+            }
+            
+            // Apply all changes
+            serializedArWallSetup.ApplyModifiedProperties();
+            
+            Debug.Log("Added Remalux AR Wall anchoring system for fixing walls in AR space");
+
             // We won't add WallMeshRenderer here - it needs to be on an XROrigin
             // We'll create a reference for it in SetupComponentReferences instead
             
@@ -454,17 +491,18 @@ public class ARSceneSetup : EditorWindow
                 AssetDatabase.CreateFolder("Assets", "Materials");
             }
                 
-            Material wallMaterial;
+            // Rename variable to avoid name conflict
+            Material newWallMaterial;
             if (wallShader != null)
             {
-                wallMaterial = new Material(wallShader);
-                wallMaterial.SetColor("_Color", new Color(0.5f, 0.8f, 1f, 0.7f));
+                newWallMaterial = new Material(wallShader);
+                newWallMaterial.SetColor("_Color", new Color(0.5f, 0.8f, 1f, 0.7f));
                 
                 // Use try-catch to avoid errors with missing properties
-                try { wallMaterial.SetFloat("_Opacity", 0.7f); } catch { }
-                try { wallMaterial.SetFloat("_Threshold", 0.03f); } catch { }
-                try { wallMaterial.SetFloat("_SmoothFactor", 0.01f); } catch { }
-                try { wallMaterial.SetFloat("_EdgeEnhance", 1.2f); } catch { }
+                try { newWallMaterial.SetFloat("_Opacity", 0.7f); } catch { }
+                try { newWallMaterial.SetFloat("_Threshold", 0.03f); } catch { }
+                try { newWallMaterial.SetFloat("_SmoothFactor", 0.01f); } catch { }
+                try { newWallMaterial.SetFloat("_EdgeEnhance", 1.2f); } catch { }
             }
             else
             {
@@ -473,24 +511,24 @@ public class ARSceneSetup : EditorWindow
                 if (wallShader == null)
                 {
                     // Ultimate fallback - create a default material
-                    wallMaterial = new Material(Shader.Find("Diffuse"));
-                    wallMaterial.color = new Color(0.5f, 0.8f, 1f, 0.7f);
+                    newWallMaterial = new Material(Shader.Find("Diffuse"));
+                    newWallMaterial.color = new Color(0.5f, 0.8f, 1f, 0.7f);
                 }
                 else
                 {
-                    wallMaterial = new Material(wallShader);
-                    wallMaterial.color = new Color(0.5f, 0.8f, 1f, 0.7f);
+                    newWallMaterial = new Material(wallShader);
+                    newWallMaterial.color = new Color(0.5f, 0.8f, 1f, 0.7f);
                     
                     try
                     {
-                        wallMaterial.SetFloat("_Mode", 3); // Transparent mode
-                        wallMaterial.SetInt("_SrcBlend", (int)UnityEngine.Rendering.BlendMode.SrcAlpha);
-                        wallMaterial.SetInt("_DstBlend", (int)UnityEngine.Rendering.BlendMode.OneMinusSrcAlpha);
-                        wallMaterial.SetInt("_ZWrite", 0);
-                        wallMaterial.DisableKeyword("_ALPHATEST_ON");
-                        wallMaterial.EnableKeyword("_ALPHABLEND_ON");
-                        wallMaterial.DisableKeyword("_ALPHAPREMULTIPLY_ON");
-                        wallMaterial.renderQueue = 3000;
+                        newWallMaterial.SetFloat("_Mode", 3); // Transparent mode
+                        newWallMaterial.SetInt("_SrcBlend", (int)UnityEngine.Rendering.BlendMode.SrcAlpha);
+                        newWallMaterial.SetInt("_DstBlend", (int)UnityEngine.Rendering.BlendMode.OneMinusSrcAlpha);
+                        newWallMaterial.SetInt("_ZWrite", 0);
+                        newWallMaterial.DisableKeyword("_ALPHATEST_ON");
+                        newWallMaterial.EnableKeyword("_ALPHABLEND_ON");
+                        newWallMaterial.DisableKeyword("_ALPHAPREMULTIPLY_ON");
+                        newWallMaterial.renderQueue = 3000;
                     }
                     catch (Exception e)
                     {
@@ -502,7 +540,7 @@ public class ARSceneSetup : EditorWindow
             // Save the material as an asset
             try
             {
-                AssetDatabase.CreateAsset(wallMaterial, "Assets/Materials/WallMaterial.mat");
+                AssetDatabase.CreateAsset(newWallMaterial, "Assets/Materials/WallMaterial.mat");
                 AssetDatabase.SaveAssets();
             }
             catch (Exception e)
@@ -770,6 +808,12 @@ public class ARSceneSetup : EditorWindow
             WallColorizer wallColorizer = GameObject.Find("Wall Colorizer")?.GetComponent<WallColorizer>();
             ARSession arSession = GameObject.Find("AR Session")?.GetComponent<ARSession>();
             
+            // Find our new AR wall anchoring components
+            RemaluxARWallSetup arWallSetup = GameObject.Find("Remalux AR Wall System")?.GetComponent<RemaluxARWallSetup>();
+            ARAwareWallMeshRenderer arWallRenderer = GameObject.FindObjectOfType<ARAwareWallMeshRenderer>();
+            WallAnchorConnector wallAnchorConnector = GameObject.FindObjectOfType<WallAnchorConnector>();
+            ARWallAnchor arWallAnchor = GameObject.FindObjectOfType<ARWallAnchor>();
+            
             // Find UI elements - make this more robust
             RawImage displayImage = null;
             
@@ -790,7 +834,7 @@ public class ARSceneSetup : EditorWindow
             }
             
             // Find the material asset
-            Material wallMaterial = AssetDatabase.LoadAssetAtPath<Material>("Assets/Materials/WallMaterial.mat");
+            Material existingWallMaterial = AssetDatabase.LoadAssetAtPath<Material>("Assets/Materials/WallMaterial.mat");
             
             // Set up ARMLController references to ARManager
             if (armlController != null && arManager != null)
@@ -803,6 +847,64 @@ public class ARSceneSetup : EditorWindow
                     Debug.Log("Set ARManager reference in ARMLController");
                 }
                 serializedArmlController.ApplyModifiedProperties();
+            }
+            
+            // Connect ARWallAnchor with our WallAnchorConnector
+            if (arWallAnchor != null && wallAnchorConnector != null && enhancedPredictor != null)
+            {
+                wallAnchorConnector.WallAnchor = arWallAnchor;
+                wallAnchorConnector.Predictor = enhancedPredictor;
+                
+                // Get camera reference
+                Camera mainCamera = Camera.main;
+                if (mainCamera == null)
+                {
+                    mainCamera = GameObject.Find("AR Camera")?.GetComponent<Camera>();
+                }
+                
+                // Set camera reference
+                if (mainCamera != null)
+                {
+                    wallAnchorConnector.ARCamera = mainCamera;
+                }
+                
+                Debug.Log("Connected WallAnchorConnector with ARWallAnchor and EnhancedDeepLabPredictor");
+            }
+            
+            // Connect ARAwareWallMeshRenderer with our system
+            if (arWallRenderer != null && enhancedPredictor != null && existingWallMaterial != null)
+            {
+                arWallRenderer.Predictor = enhancedPredictor;
+                arWallRenderer.WallMaterial = existingWallMaterial;
+                
+                // Connect with AR components
+                if (arWallAnchor != null)
+                {
+                    arWallRenderer.WallAnchor = arWallAnchor;
+                }
+                
+                // Get camera manager
+                ARCameraManager cameraManager = GameObject.FindObjectOfType<ARCameraManager>();
+                if (cameraManager != null)
+                {
+                    arWallRenderer.CameraManager = cameraManager;
+                }
+                
+                // Get raycast manager
+                ARRaycastManager raycastManager = GameObject.FindObjectOfType<ARRaycastManager>();
+                if (raycastManager != null)
+                {
+                    arWallRenderer.RaycastManager = raycastManager;
+                }
+                
+                // Get plane manager
+                ARPlaneManager planeManager = GameObject.FindObjectOfType<ARPlaneManager>();
+                if (planeManager != null)
+                {
+                    arWallRenderer.PlaneManager = planeManager;
+                }
+                
+                Debug.Log("Connected ARAwareWallMeshRenderer with all required AR components");
             }
             
             // Set up WallColorizer references
@@ -837,9 +939,9 @@ public class ARSceneSetup : EditorWindow
                 
                 // Set material reference
                 var materialProp = serializedColorizer.FindProperty("wallMaterial");
-                if (materialProp != null && wallMaterial != null)
+                if (materialProp != null && existingWallMaterial != null)
                 {
-                    materialProp.objectReferenceValue = wallMaterial;
+                    materialProp.objectReferenceValue = existingWallMaterial;
                 }
                 
                 // Set color and opacity
@@ -860,6 +962,14 @@ public class ARSceneSetup : EditorWindow
                 EditorUtility.SetDirty(wallColorizer);
             }
             
+            // Connect ARWallAnchor to our wall detection system so it can properly anchor
+            // wall meshes created by ARAwareWallMeshRenderer
+            if (arWallAnchor != null && arWallRenderer != null && arWallRenderer.WallAnchor == null)
+            {
+                arWallRenderer.WallAnchor = arWallAnchor;
+                Debug.Log("Connected ARWallAnchor to ARAwareWallMeshRenderer for proper anchoring");
+            }
+                        
             // Set up color buttons to change wall color
             Transform colorPalette = null;
             Transform colorPanel = uiCanvas.transform.Find("Color Panel");
@@ -873,7 +983,8 @@ public class ARSceneSetup : EditorWindow
                 colorPalette = GameObject.Find("Color Palette")?.transform;
             }
             
-            if (colorPalette != null && armlController != null)
+            // Connect color buttons to both our wall rendering systems (old and new)
+            if (colorPalette != null)
             {
                 foreach (Transform child in colorPalette)
                 {
@@ -892,48 +1003,60 @@ public class ARSceneSetup : EditorWindow
                                 {
                                     Color buttonColor = new Color(r, g, b, 1f);
                                     
-                                    // Add color selection action - fix method signature
-                                    SerializedObject serializedButton = new SerializedObject(colorButton);
-                                    if (serializedButton == null) continue;
-                                    
-                                    SerializedProperty onClick = serializedButton.FindProperty("m_OnClick");
-                                    if (onClick == null) continue;
-                                    
-                                    // Clear any existing listeners
-                                    SerializedProperty calls = onClick.FindPropertyRelative("m_PersistentCalls.m_Calls");
-                                    if (calls == null) continue;
-                                    
-                                    calls.ClearArray();
-                                    
-                                    // Add a new persistent call
-                                    calls.arraySize = 1;
-                                    SerializedProperty call = calls.GetArrayElementAtIndex(0);
-                                    if (call == null) continue;
-                                    
-                                    var targetProp = call.FindPropertyRelative("m_Target");
-                                    var methodNameProp = call.FindPropertyRelative("m_MethodName");
-                                    var modeProp = call.FindPropertyRelative("m_Mode");
-                                    
-                                    if (targetProp == null || methodNameProp == null || modeProp == null) continue;
-                                    
-                                    targetProp.objectReferenceValue = armlController;
-                                    methodNameProp.stringValue = "SetWallColor";
-                                    modeProp.enumValueIndex = 2; // ColorArgument mode
-                                    
-                                    // Set up argument object
-                                    SerializedProperty arguments = call.FindPropertyRelative("m_Arguments");
-                                    if (arguments == null) continue;
-                                    
-                                    var typeProp = arguments.FindPropertyRelative("m_ObjectArgumentAssemblyTypeName");
-                                    var colorProp = arguments.FindPropertyRelative("m_ColorArgument");
-                                    
-                                    if (typeProp == null || colorProp == null) continue;
-                                    
-                                    typeProp.stringValue = "UnityEngine.Color, UnityEngine";
-                                    colorProp.colorValue = buttonColor;
-                                    
-                                    serializedButton.ApplyModifiedProperties();
-                                    EditorUtility.SetDirty(colorButton);
+                                    // Add color selection action to ARML controller for old system
+                                    if (armlController != null)
+                                    {
+                                        SerializedObject serializedButton = new SerializedObject(colorButton);
+                                        if (serializedButton == null) continue;
+                                        
+                                        SerializedProperty onClick = serializedButton.FindProperty("m_OnClick");
+                                        if (onClick == null) continue;
+                                        
+                                        // Clear any existing listeners
+                                        SerializedProperty calls = onClick.FindPropertyRelative("m_PersistentCalls.m_Calls");
+                                        if (calls == null) continue;
+                                        
+                                        calls.ClearArray();
+                                        
+                                        // Add a new persistent call
+                                        calls.arraySize = 1;
+                                        SerializedProperty call = calls.GetArrayElementAtIndex(0);
+                                        if (call == null) continue;
+                                        
+                                        var targetProp = call.FindPropertyRelative("m_Target");
+                                        var methodNameProp = call.FindPropertyRelative("m_MethodName");
+                                        var modeProp = call.FindPropertyRelative("m_Mode");
+                                        
+                                        if (targetProp == null || methodNameProp == null || modeProp == null) continue;
+                                        
+                                        targetProp.objectReferenceValue = armlController;
+                                        methodNameProp.stringValue = "SetWallColor";
+                                        modeProp.enumValueIndex = 2; // ColorArgument mode
+                                        
+                                        // Set up argument object
+                                        SerializedProperty arguments = call.FindPropertyRelative("m_Arguments");
+                                        if (arguments == null) continue;
+                                        
+                                        var typeProp = arguments.FindPropertyRelative("m_ObjectArgumentAssemblyTypeName");
+                                        var colorProp = arguments.FindPropertyRelative("m_ColorArgument");
+                                        
+                                        if (typeProp == null || colorProp == null) continue;
+                                        
+                                        typeProp.stringValue = "UnityEngine.Color, UnityEngine";
+                                        colorProp.colorValue = buttonColor;
+                                        
+                                        serializedButton.ApplyModifiedProperties();
+                                        EditorUtility.SetDirty(colorButton);
+                                        
+                                        // Also connect to ARAwareWallMeshRenderer for the new system
+                                        if (arWallRenderer != null)
+                                        {
+                                            // Create a UnityEvent that will call SetWallColor on arWallRenderer
+                                            colorButton.onClick.AddListener(() => {
+                                                arWallRenderer.SetWallColor(buttonColor);
+                                            });
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -983,20 +1106,20 @@ public class ARSceneSetup : EditorWindow
                     // Set wall material
                     SerializedObject serializedWallAligner = new SerializedObject(wallAligner);
                     var wallMaterialProp = serializedWallAligner.FindProperty("wallMaterial");
-                    if (wallMaterialProp != null && wallMaterial != null)
+                    if (wallMaterialProp != null && existingWallMaterial != null)
                     {
-                        wallMaterialProp.objectReferenceValue = wallMaterial;
+                        wallMaterialProp.objectReferenceValue = existingWallMaterial;
                         Debug.Log("Set wall material for WallAligner component");
                     }
                     serializedWallAligner.ApplyModifiedProperties();
                 }
                 
-                // Disable WallMeshRenderer if it exists (we'll use WallAligner instead)
+                // Disable WallMeshRenderer if it exists (we'll use ARAwareWallMeshRenderer instead)
                 WallMeshRenderer wallMeshRenderer = meshManagerObj.GetComponent<WallMeshRenderer>();
                 if (wallMeshRenderer != null)
                 {
                     wallMeshRenderer.enabled = false;
-                    Debug.Log("Disabled WallMeshRenderer to avoid conflicts with WallAligner");
+                    Debug.Log("Disabled WallMeshRenderer to avoid conflicts with ARAwareWallMeshRenderer");
                 }
             }
         }
