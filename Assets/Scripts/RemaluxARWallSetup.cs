@@ -261,43 +261,6 @@ public class RemaluxARWallSetup : MonoBehaviour
     {
         if (!_isTracking) return;
         
-        // Check for new vertical planes
-        foreach (ARPlane plane in args.added)
-        {
-            if (IsVerticalPlane(plane))
-            {
-                CreateWallAnchorForPlane(plane);
-            }
-        }
-        
-        // Check for updated planes
-        foreach (ARPlane plane in args.updated)
-        {
-            if (IsVerticalPlane(plane))
-            {
-                // Update wall anchor if it exists, or create new one
-                bool found = false;
-                foreach (ARWallAnchor wallAnchor in _wallAnchors)
-                {
-                    if (wallAnchor != null && wallAnchor.GetComponent<ARAnchor>() != null)
-                    {
-                        ARAnchor anchor = wallAnchor.GetComponent<ARAnchor>();
-                        if (anchor.trackableId == plane.trackableId)
-                        {
-                            // Found existing anchor, update it
-                            found = true;
-                            break;
-                        }
-                    }
-                }
-                
-                if (!found)
-                {
-                    CreateWallAnchorForPlane(plane);
-                }
-            }
-        }
-        
         // Remove wall anchors for removed planes
         foreach (ARPlane plane in args.removed)
         {
@@ -316,6 +279,9 @@ public class RemaluxARWallSetup : MonoBehaviour
                 }
             }
         }
+        
+        // NOTE: We no longer automatically create wall anchors for every vertical plane
+        // Wall anchors will be created only after successful segmentation
     }
     
     /// <summary>
@@ -329,7 +295,203 @@ public class RemaluxARWallSetup : MonoBehaviour
         if (_wallAnchorConnector != null)
         {
             _wallAnchorConnector.ProcessSegmentationForAnchors();
+            
+            // After processing segmentation, create wall anchors based on detected wall regions
+            CreateWallAnchorsFromSegmentation();
         }
+    }
+    
+    /// <summary>
+    /// Создает привязки стен на основе сегментации
+    /// </summary>
+    private void CreateWallAnchorsFromSegmentation()
+    {
+        if (_arRaycastManager == null)
+            return;
+        
+        // Get segmentation data - EnhancedDeepLabPredictor exposes GetSegmentationTexture()
+        // while regular DeepLabPredictor uses PredictSegmentation()
+        Texture2D segmentationTexture = null;
+        
+        if (_predictor != null)
+        {
+            // Try to get the texture from EnhancedDeepLabPredictor
+            // EnhancedDeepLabPredictor has a GetSegmentationTexture method
+            try {
+                // Use reflection to access the method since it might not be directly accessible
+                var method = _predictor.GetType().GetMethod("GetSegmentationTexture");
+                if (method != null)
+                {
+                    segmentationTexture = method.Invoke(_predictor, null) as Texture2D;
+                }
+            }
+            catch (System.Exception e)
+            {
+                Debug.LogWarning($"RemaluxARWallSetup: Error getting segmentation texture: {e.Message}");
+            }
+        }
+        else if (_deepLabPredictor != null)
+        {
+            // For standard DeepLabPredictor, we need to use PredictSegmentation
+            // Create a temporary texture from the camera
+            Texture2D tempInput = new Texture2D(Screen.width, Screen.height);
+            tempInput.ReadPixels(new Rect(0, 0, Screen.width, Screen.height), 0, 0);
+            tempInput.Apply();
+            
+            // Use PredictSegmentation to get a RenderTexture
+            RenderTexture renderTexture = _deepLabPredictor.PredictSegmentation(tempInput);
+            
+            // Convert RenderTexture to Texture2D
+            if (renderTexture != null)
+            {
+                segmentationTexture = ConvertRenderTextureToTexture2D(renderTexture);
+                Destroy(tempInput); // Clean up temporary texture
+            }
+        }
+        
+        if (segmentationTexture == null)
+        {
+            if (_debugMode)
+                Debug.Log("RemaluxARWallSetup: No segmentation texture available");
+            return;
+        }
+        
+        // Check that we have all required components
+        if (_arPlaneManager == null || _arRaycastManager == null)
+        {
+            Debug.LogError("RemaluxARWallSetup: Missing AR components required for wall anchor creation");
+            return;
+        }
+        
+        // Find all vertical planes to consider
+        List<ARPlane> verticalPlanes = new List<ARPlane>();
+        foreach (ARPlane plane in _arPlaneManager.trackables)
+        {
+            if (IsVerticalPlane(plane))
+            {
+                verticalPlanes.Add(plane);
+            }
+        }
+        
+        if (verticalPlanes.Count == 0)
+        {
+            if (_debugMode)
+                Debug.Log("RemaluxARWallSetup: No vertical planes found for wall anchoring");
+            return;
+        }
+        
+        // Sample points from the screen where walls might be located
+        int sampleCount = 5; // Number of samples across screen width and height
+        List<ARRaycastHit> hits = new List<ARRaycastHit>();
+        
+        for (int x = 0; x < sampleCount; x++)
+        {
+            for (int y = 0; y < sampleCount; y++)
+            {
+                // Calculate screen position
+                Vector2 screenPos = new Vector2(
+                    Screen.width * ((float)x / (sampleCount - 1)),
+                    Screen.height * ((float)y / (sampleCount - 1))
+                );
+                
+                // Check if this point contains wall segmentation
+                bool isWallSegment = IsWallSegmentAtScreenPos(screenPos, segmentationTexture);
+                
+                if (isWallSegment && _arRaycastManager.Raycast(screenPos, hits, TrackableType.PlaneWithinPolygon))
+                {
+                    var hit = hits[0];
+                    
+                    // Check if this plane is vertical
+                    ARPlane hitPlane = _arPlaneManager.GetPlane(hit.trackableId);
+                    if (hitPlane != null && IsVerticalPlane(hitPlane))
+                    {
+                        // Check if we already have an anchor for this plane
+                        bool anchorExists = false;
+                        foreach (ARWallAnchor wallAnchor in _wallAnchors)
+                        {
+                            if (wallAnchor != null && wallAnchor.ARPlane != null && 
+                                wallAnchor.ARPlane.trackableId == hitPlane.trackableId)
+                            {
+                                anchorExists = true;
+                                break;
+                            }
+                        }
+                        
+                        if (!anchorExists)
+                        {
+                            // Create a wall anchor at this position
+                            CreateWallAnchorForPlane(hitPlane);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    /// <summary>
+    /// Проверяет, присутствует ли сегментация стены в указанной точке экрана
+    /// </summary>
+    private bool IsWallSegmentAtScreenPos(Vector2 screenPos, Texture2D segmentationTexture)
+    {
+        if (segmentationTexture == null)
+            return false;
+        
+        // Find proper wall class ID - make sure to use the correct ID for your model!
+        int wallClassId = 9; // Default for many models, but check documentation for your specific model
+        
+        if (_predictor != null)
+        {
+            // Use the predictor's wall class ID
+            wallClassId = _predictor.WallClassId;
+        }
+        else if (_deepLabPredictor != null)
+        {
+            // Use the DeepLabPredictor's wall class ID
+            wallClassId = _deepLabPredictor.WallClassId;
+        }
+        
+        try
+        {
+            // Convert screen position to texture coordinates
+            int textureX = Mathf.FloorToInt((screenPos.x / Screen.width) * segmentationTexture.width);
+            int textureY = Mathf.FloorToInt((screenPos.y / Screen.height) * segmentationTexture.height);
+            
+            // Ensure we're within bounds
+            textureX = Mathf.Clamp(textureX, 0, segmentationTexture.width - 1);
+            textureY = Mathf.Clamp(textureY, 0, segmentationTexture.height - 1);
+            
+            // Get the pixel at this position
+            Color pixel = segmentationTexture.GetPixel(textureX, textureY);
+            int classId = Mathf.RoundToInt(pixel.r * 255);
+            
+            return classId == wallClassId;
+        }
+        catch (System.Exception e)
+        {
+            // Texture might not be readable
+            Debug.LogWarning($"RemaluxARWallSetup: Could not read segmentation texture: {e.Message}");
+            return false;
+        }
+    }
+    
+    /// <summary>
+    /// Converts a RenderTexture to a Texture2D
+    /// </summary>
+    private Texture2D ConvertRenderTextureToTexture2D(RenderTexture renderTexture)
+    {
+        if (renderTexture == null)
+            return null;
+        
+        // Create a new Texture2D with the dimensions of the RenderTexture
+        Texture2D texture2D = new Texture2D(renderTexture.width, renderTexture.height, TextureFormat.RGBA32, false);
+        
+        // Read pixels from the RenderTexture
+        RenderTexture.active = renderTexture;
+        texture2D.ReadPixels(new Rect(0, 0, renderTexture.width, renderTexture.height), 0, 0);
+        texture2D.Apply();
+        RenderTexture.active = null;
+        
+        return texture2D;
     }
     
     /// <summary>
@@ -347,16 +509,27 @@ public class RemaluxARWallSetup : MonoBehaviour
             return;
         }
 
-        // Create a new wall anchor for the plane
-        GameObject wallAnchorObject = Instantiate(_wallAnchorPrefab, plane.transform.position, plane.transform.rotation);
+        // Create a new wall anchor as a child of the plane
+        GameObject wallAnchorObject = Instantiate(_wallAnchorPrefab, plane.transform);
         wallAnchorObject.name = $"Wall Anchor ({plane.trackableId})";
         wallAnchorObject.SetActive(true);
+        
+        // Set position and rotation relative to the plane
+        wallAnchorObject.transform.localPosition = plane.center;
+        wallAnchorObject.transform.localRotation = Quaternion.identity;
+        
+        // Scale according to plane dimensions
+        wallAnchorObject.transform.localScale = new Vector3(plane.size.x, _minWallHeight, plane.size.y);
         
         // Get or add required components
         ARWallAnchor wallAnchor = wallAnchorObject.GetComponent<ARWallAnchor>();
         if (wallAnchor == null)
             wallAnchor = wallAnchorObject.AddComponent<ARWallAnchor>();
-            
+        
+        // Set wall anchor properties
+        wallAnchor.ARPlane = plane;
+        wallAnchor.SetWallDimensions(plane.size.x, _minWallHeight);
+        
         ARAnchor anchor = wallAnchorObject.GetComponent<ARAnchor>();
         if (anchor == null)
             anchor = wallAnchorObject.AddComponent<ARAnchor>();
@@ -365,7 +538,7 @@ public class RemaluxARWallSetup : MonoBehaviour
         _wallAnchors.Add(wallAnchor);
         
         if (_debugMode)
-            Debug.Log($"RemaluxARWallSetup: Created wall anchor for plane {plane.trackableId}");
+            Debug.Log($"RemaluxARWallSetup: Created wall anchor for plane {plane.trackableId} with size {plane.size}");
     }
     
     /// <summary>
