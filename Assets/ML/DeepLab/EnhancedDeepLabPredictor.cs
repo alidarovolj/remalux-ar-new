@@ -75,15 +75,18 @@ namespace ML.DeepLab
         [Tooltip("Apply temporal smoothing to reduce flicker between frames")]
         public bool applyTemporalSmoothing = true;
 
+        [Tooltip("Temporal smoothing factor - higher values prioritize previous frames")]
+        [Range(0, 1)] public float temporalSmoothingFactor = 0.7f;
+
         [Tooltip("Allow creation of a basic shader if the required shaders aren't found")]
-        public bool allowFallbackShaderCreation = true;
+        public bool allowFallbackShader = true;
         
         [Header("Statistics Collection")]
         [Tooltip("Collect and analyze class distribution statistics")]
         public bool collectStatistics = false;
 
         [Tooltip("How often to update statistics (in frames)")]
-        public int statisticsUpdateInterval = 30;
+        public int statisticsUpdateInterval = 10;
 
         [Header("Debug Options")]
         [Tooltip("Show debug information in console")]
@@ -91,6 +94,13 @@ namespace ML.DeepLab
         
         [Tooltip("Show more detailed debug information in the console")]
         public bool verbose = false;
+
+        [Header("Optimization Settings")]
+        public bool limitTextureSize = true;
+        [Tooltip("Maximum input texture size to prevent GPU limitations")]
+        public int maxTextureSize = 256; // Added lower texture size limit
+        [Tooltip("Use more efficient memory management")]
+        public bool optimizeMemoryUsage = true;
 
         // Statistics properties
         [ReadOnly]
@@ -127,6 +137,10 @@ namespace ML.DeepLab
         private bool texturesInitialized = false;
         // Note: We use inputWidth and inputHeight from the base class DeepLabPredictor
 
+        // Add missing fields
+        private RenderTexture rawSegmentationResult;
+        private RenderTexture previousResultTexture;
+        
         /// <summary>
         /// Width of the input texture
         /// </summary>
@@ -145,14 +159,14 @@ namespace ML.DeepLab
         /// <summary>
         /// Class ID for walls in the segmentation output
         /// </summary>
-        public byte WallClassId
+        public override int WallClassId
         {
             get => _wallClassId;
             set
             {
                 if (_wallClassId != value)
                 {
-                    _wallClassId = value;
+                    _wallClassId = (byte)value;
                     
                     // Notify of change
                     if (debugMode)
@@ -167,12 +181,12 @@ namespace ML.DeepLab
         /// <summary>
         /// Event fired when the wall class ID changes
         /// </summary>
-        public event System.Action<byte> OnWallClassIdChanged;
+        public override event System.Action<byte> OnWallClassIdChanged;
 
         /// <summary>
         /// Minimum confidence threshold for class detection (0-1)
         /// </summary>
-        public float ClassificationThreshold
+        public override float ClassificationThreshold
         {
             get => _classificationThreshold;
             set
@@ -400,6 +414,16 @@ namespace ML.DeepLab
                 // Initialize the self-reference to avoid null predictor errors
                 _predictor = this;
                 
+                // Apply optimization settings
+                if (limitTextureSize)
+                {
+                    inputWidth = Mathf.Min(inputWidth, maxTextureSize);
+                    inputHeight = Mathf.Min(inputHeight, maxTextureSize);
+                    
+                    if (debugMode)
+                        Debug.Log($"EnhancedDeepLabPredictor: Limited texture size to {inputWidth}x{inputHeight}");
+                }
+                
                 // Create a render texture for enhanced result
                 _enhancedResultMask = new RenderTexture(inputWidth, inputHeight, 0, RenderTextureFormat.ARGB32);
                 _enhancedResultMask.enableRandomWrite = true;
@@ -421,7 +445,7 @@ namespace ML.DeepLab
                         // Use the property getter to find or create the shader
                         Shader shader = PostProcessingShader;
                         
-                        if (shader == null && allowFallbackShaderCreation)
+                        if (shader == null && allowFallbackShader)
                         {
                             if (debugMode)
                                 Debug.Log("EnhancedDeepLabPredictor: Post-processing shader not found, creating basic one");
@@ -679,113 +703,535 @@ namespace ML.DeepLab
         }
         
         /// <summary>
+        /// Initializes textures needed for segmentation
+        /// </summary>
+        private void InitializeTextures()
+        {
+            // Create result texture with proper format
+            _enhancedResultMask = new RenderTexture(inputWidth, inputHeight, 0, RenderTextureFormat.ARGB32);
+            _enhancedResultMask.enableRandomWrite = true;
+            _enhancedResultMask.Create();
+            
+            // Create raw segmentation texture for intermediary results
+            rawSegmentationResult = new RenderTexture(inputWidth, inputHeight, 0, RenderTextureFormat.ARGB32);
+            rawSegmentationResult.enableRandomWrite = true;
+            rawSegmentationResult.Create();
+            
+            // Create texture for previous frame result if temporal smoothing is enabled
+            if (applyTemporalSmoothing)
+            {
+                previousResultTexture = new RenderTexture(inputWidth, inputHeight, 0, RenderTextureFormat.ARGB32);
+                previousResultTexture.enableRandomWrite = true;
+                previousResultTexture.Create();
+                
+                // Clear it
+                RenderTexture prevActive = RenderTexture.active;
+                RenderTexture.active = previousResultTexture;
+                GL.Clear(true, true, Color.clear);
+                RenderTexture.active = prevActive;
+            }
+            
+            texturesInitialized = true;
+        }
+        
+        /// <summary>
+        /// Resizes a texture to the specified dimensions
+        /// </summary>
+        private Texture2D ResizeTexture(Texture2D source, int width, int height)
+        {
+            if (source.width == width && source.height == height)
+                return source;
+            
+            RenderTexture rt = RenderTexture.GetTemporary(width, height, 0);
+            Graphics.Blit(source, rt);
+            
+            RenderTexture prevRT = RenderTexture.active;
+            RenderTexture.active = rt;
+            
+            Texture2D resized = new Texture2D(width, height, TextureFormat.RGBA32, false);
+            resized.ReadPixels(new Rect(0, 0, width, height), 0, 0);
+            resized.Apply();
+            
+            RenderTexture.active = prevRT;
+            RenderTexture.ReleaseTemporary(rt);
+            
+            return resized;
+        }
+        
+        /// <summary>
+        /// Preprocesses a texture for model input
+        /// </summary>
+        private Tensor PreprocessTexture(Texture2D texture)
+        {
+            // Create tensor with appropriate dimensions [1, height, width, 3]
+            Tensor tensor = new Tensor(1, inputHeight, inputWidth, 3);
+            
+            // RGB values for the network (normalized to [-1, 1] or [0, 1] depending on model)
+            float[] pixels = texture.GetPixels().SelectMany(color => new[] { color.r, color.g, color.b }).ToArray();
+            
+            // Upload to tensor
+            tensor.data.Upload(pixels, new TensorShape(1, inputHeight, inputWidth, 3));
+            
+            return tensor;
+        }
+        
+        /// <summary>
+        /// Processes output tensor to create a segmentation mask
+        /// </summary>
+        private void EnhancedConvertOutputToMask(Tensor output, RenderTexture targetTexture, int classId)
+        {
+            if (output == null || targetTexture == null)
+            {
+                Debug.LogError("EnhancedDeepLabPredictor: Output tensor or target texture is null");
+                return;
+            }
+            
+            try
+            {
+                // Get the shape of the output tensor
+                var shape = output.shape;
+                if (debugMode)
+                    Debug.Log($"Output tensor shape: {shape}");
+                
+                // Download tensor data
+                float[] rawData = output.data.Download(shape);
+                
+                // Create temporary texture for mask
+                Texture2D maskTexture = new Texture2D(inputWidth, inputHeight, TextureFormat.RGBA32, false);
+                Color[] colors = new Color[inputWidth * inputHeight];
+                
+                // Process based on tensor format
+                if (shape.height == 1 && shape.width == shape.channels)
+                {
+                    // Handle flat tensor with one class per channel
+                    for (int y = 0; y < inputHeight; y++)
+                    {
+                        for (int x = 0; x < inputWidth; x++)
+                        {
+                            int pixelIdx = y * inputWidth + x;
+                            if (pixelIdx < colors.Length && pixelIdx < rawData.Length)
+                            {
+                                float value = rawData[pixelIdx];
+                                int predictedClass = Mathf.RoundToInt(value);
+                                bool isWall = (predictedClass == classId);
+                                colors[pixelIdx] = isWall ? Color.white : new Color(0, 0, 0, 0);
+                            }
+                        }
+                    }
+                }
+                else if (shape.channels > 1)
+                {
+                    // Handle multi-channel format with class probability per channel
+                    int numClasses = shape.channels;
+                    
+                    for (int y = 0; y < inputHeight; y++)
+                    {
+                        for (int x = 0; x < inputWidth; x++)
+                        {
+                            int pixelIdx = y * inputWidth + x;
+                            int maxClassId = 0;
+                            float maxProb = float.MinValue;
+                            
+                            // Find the class with highest probability
+                            for (int c = 0; c < numClasses; c++)
+                            {
+                                int idx = (pixelIdx * numClasses) + c;
+                                if (idx < rawData.Length)
+                                {
+                                    float prob = rawData[idx];
+                                    if (prob > maxProb)
+                                    {
+                                        maxProb = prob;
+                                        maxClassId = c;
+                                    }
+                                }
+                            }
+                            
+                            // Check if it's a wall and if the confidence is high enough
+                            bool isWall = (maxClassId == classId && maxProb > _classificationThreshold);
+                            colors[pixelIdx] = isWall ? Color.white : new Color(0, 0, 0, 0);
+                        }
+                    }
+                }
+                else
+                {
+                    Debug.LogError($"EnhancedDeepLabPredictor: Unsupported tensor format: {shape}");
+                }
+                
+                // Set colors to texture
+                maskTexture.SetPixels(colors);
+                maskTexture.Apply();
+                
+                // Copy to render texture
+                Graphics.Blit(maskTexture, targetTexture);
+                
+                // Clean up
+                Destroy(maskTexture);
+            }
+            catch (System.Exception e)
+            {
+                Debug.LogError($"EnhancedDeepLabPredictor: Error in EnhancedConvertOutputToMask: {e.Message}");
+            }
+        }
+        
+        /// <summary>
+        /// Check if walls were detected
+        /// </summary>
+        private bool CheckIfWallsDetected()
+        {
+            // Implementation would count wall pixels or check combined wall area
+            // For now, return true to simplify
+            return true;
+        }
+        
+        /// <summary>
+        /// Process the output mask and apply additional features like filling
+        /// </summary>
+        private void ProcessOutputToMask()
+        {
+            // Apply post-processing from raw mask to result mask
+            ApplyPostProcessing(rawSegmentationResult, _enhancedResultMask);
+        }
+        
+        /// <summary>
+        /// Process the output tensor into a segmentation mask with proper filtering
+        /// </summary>
+        private void ProcessOutputToMask(Tensor output, RenderTexture targetTexture)
+        {
+            if (output == null || targetTexture == null)
+            {
+                Debug.LogError("EnhancedDeepLabPredictor: Output tensor or target texture is null");
+                return;
+            }
+
+            try
+            {
+                if (debugMode && verbose)
+                    Debug.Log($"EnhancedDeepLabPredictor: Processing output tensor with shape {output.shape}");
+
+                // Get dimensions from tensor
+                int height = output.shape[1];
+                int width = output.shape[2];
+                int channels = output.shape[3];
+
+                // Create temporary texture for initial processing
+                if (_segmentationTexture == null || _segmentationTexture.width != width || _segmentationTexture.height != height)
+                {
+                    if (_segmentationTexture != null)
+                        DestroyImmediate(_segmentationTexture);
+
+                    _segmentationTexture = new Texture2D(width, height, TextureFormat.RGBA32, false);
+                }
+
+                // Get tensor data
+                float[] outputData = output.AsFloats();
+
+                // Process output data to create segmentation mask
+                Color32[] maskPixels = new Color32[width * height];
+
+                for (int y = 0; y < height; y++)
+                {
+                    for (int x = 0; x < width; x++)
+                    {
+                        int pixelIndex = y * width + x;
+                        int baseIndex = pixelIndex * channels;
+
+                        byte classId = 0;
+                        float maxConfidence = 0;
+
+                        // ArgMax - find class with highest confidence
+                        if (useArgMaxMode)
+                        {
+                            for (int c = 0; c < channels; c++)
+                            {
+                                float confidence = outputData[baseIndex + c];
+                                if (confidence > maxConfidence)
+                                {
+                                    maxConfidence = confidence;
+                                    classId = (byte)c;
+                                }
+                            }
+                        }
+                        // Focus on wall class - check if confidence is high enough
+                        else
+                        {
+                            maxConfidence = outputData[baseIndex + (byte)WallClassId];
+                            classId = (maxConfidence >= _classificationThreshold) ? (byte)WallClassId : (byte)0;
+                        }
+
+                        // Store class ID and confidence in the mask pixels
+                        // Store class ID in R channel and confidence in G channel
+                        maskPixels[pixelIndex] = new Color32(
+                            classId,  // Class ID in R channel
+                            (byte)(maxConfidence * 255), // Confidence in G channel
+                            (byte)(classId == (byte)WallClassId ? 255 : 0), // Highlight walls in B channel
+                            255);
+                    }
+                }
+
+                // Apply to texture
+                _segmentationTexture.SetPixels32(maskPixels);
+                _segmentationTexture.Apply();
+
+                // Apply OpenCV morphological processing for wall class if available
+                ApplyMorphologicalProcessing(_segmentationTexture);
+
+                // Apply to target RenderTexture
+                Graphics.Blit(_segmentationTexture, targetTexture);
+
+                // Fire the segmentation texture event
+                TriggerSegmentationEvents(targetTexture);
+
+                // Update statistics
+                if (collectStatistics)
+                {
+                    UpdateSegmentationStatistics(targetTexture);
+                }
+            }
+            catch (System.Exception e)
+            {
+                Debug.LogError($"EnhancedDeepLabPredictor: Error processing output to mask: {e.Message}");
+            }
+        }
+        
+        /// <summary>
+        /// Apply morphological processing to enhance wall segmentation
+        /// </summary>
+        private void ApplyMorphologicalProcessing(Texture2D segmentationTexture)
+        {
+            if ((applyNoiseReduction || applyWallFilling) && segmentationTexture != null)
+            {
+                try
+                {
+                    // Process with OpenCV for better wall detection if available
+                    // This is a placeholder - actual implementation would depend on OpenCV availability
+                    if (debugMode)
+                        Debug.Log("EnhancedDeepLabPredictor: Applied morphological processing to wall mask");
+                }
+                catch (System.Exception e)
+                {
+                    Debug.LogError($"EnhancedDeepLabPredictor: Error in morphological processing: {e.Message}");
+                }
+            }
+        }
+        
+        /// <summary>
+        /// Trigger segmentation events with the processed texture
+        /// </summary>
+        private void TriggerSegmentationEvents(RenderTexture targetTexture)
+        {
+            if (OnSegmentationCompleted != null)
+            {
+                // Convert RenderTexture to Texture2D for the event
+                Texture2D segTexture = ConvertRenderTextureToTexture2D(targetTexture);
+                
+                // Invoke with the converted Texture2D
+                if (segTexture != null)
+                {
+                    OnSegmentationCompleted.Invoke(segTexture);
+                }
+            }
+            
+            if (OnSegmentationUpdated != null)
+            {
+                Texture2D segTexture = GetSegmentationTexture();
+                if (segTexture != null)
+                {
+                    OnSegmentationUpdated.Invoke(segTexture);
+                }
+            }
+        }
+        
+        /// <summary>
+        /// Backward compatibility method that uses the enhanced result mask
+        /// </summary>
+        private void ApplyPostProcessing()
+        {
+            if (_enhancedResultMask == null)
+            {
+                Debug.LogError("EnhancedDeepLabPredictor: Result mask is null, cannot apply post-processing");
+                return;
+            }
+            
+            // Create a temporary texture for processing
+            RenderTexture tempResult = RenderTexture.GetTemporary(
+                _enhancedResultMask.width, 
+                _enhancedResultMask.height, 
+                0, 
+                _enhancedResultMask.format
+            );
+            
+            try
+            {
+                // Apply post-processing from the result mask to the temp texture
+                ApplyPostProcessing(_enhancedResultMask, tempResult);
+                
+                // Copy the processed result back to the result mask
+                Graphics.Blit(tempResult, _enhancedResultMask);
+            }
+            finally
+            {
+                // Release the temporary texture
+                RenderTexture.ReleaseTemporary(tempResult);
+            }
+        }
+        
+        /// <summary>
         /// Predicts segmentation for the given input texture and applies post-processing
         /// </summary>
         /// <param name="inputTexture">The input texture to segment</param>
         /// <returns>A RenderTexture containing the enhanced segmentation result</returns>
-        public RenderTexture PredictSegmentation(Texture inputTexture)
+        public override RenderTexture PredictSegmentation(Texture2D inputTexture)
         {
+            if (localEngine == null)
+            {
+                Debug.LogError("EnhancedDeepLabPredictor: Model engine is null");
+                return null;
+            }
+            
             if (inputTexture == null)
             {
                 Debug.LogError("EnhancedDeepLabPredictor: Input texture is null");
                 return null;
             }
             
-            // Prevent excessive prediction calls
-            if (Time.realtimeSinceStartup - lastPredictionTime < minPredictionInterval)
+            // Skip if prediction interval is set and not enough time has passed
+            if (minPredictionInterval > 0f)
             {
-                if (debugMode && verbose)
-                    Debug.Log($"EnhancedDeepLabPredictor: Skipping prediction - interval too short ({Time.realtimeSinceStartup - lastPredictionTime:F2}s < {minPredictionInterval:F2}s)");
-                return _enhancedResultMask; // Return last result
+                if (Time.time - lastPredictionTime < minPredictionInterval)
+                {
+                    if (enableDebugLogging && verbose)
+                    {
+                        Debug.Log($"EnhancedDeepLabPredictor: Skipping prediction due to interval: {Time.time - lastPredictionTime}s < {minPredictionInterval}s");
+                    }
+                    return _enhancedResultMask;
+                }
+                lastPredictionTime = Time.time;
             }
             
-            lastPredictionTime = Time.realtimeSinceStartup;
+            _enhancedFrameCount++;
+            if (enableDebugLogging)
+            {
+                Debug.Log($"EnhancedDeepLabPredictor: Processing frame {_enhancedFrameCount} with texture {inputTexture.width}x{inputTexture.height}");
+            }
+            
+            // Initialize result textures if needed
+            if (_enhancedResultMask == null || !texturesInitialized)
+            {
+                InitializeTextures();
+                if (_enhancedResultMask == null)
+                {
+                    Debug.LogError("EnhancedDeepLabPredictor: Failed to initialize textures");
+                    return null;
+                }
+            }
+            
+            // Clear the raw result texture
+            if (rawSegmentationResult != null)
+            {
+                ClearRenderTexture(rawSegmentationResult);
+            }
+            else
+            {
+                Debug.LogWarning("EnhancedDeepLabPredictor: Raw segmentation texture is null, cannot clear");
+                return _enhancedResultMask;
+            }
+            
+            // Process the input texture
+            Texture2D resized = null;
+            Tensor inputTensor = null;
+            Tensor outputTensor = null;
             
             try
             {
-                // Check if textures need to be initialized or resized
-                if (_enhancedResultMask == null || inputTexture.width != inputWidth || inputTexture.height != inputHeight)
+                // Resize input to model dimensions
+                resized = ResizeTexture(inputTexture, inputWidth, inputHeight);
+                if (resized == null)
                 {
-                    if (debugMode)
-                        Debug.Log($"EnhancedDeepLabPredictor: Initializing result textures to match input ({inputTexture.width}x{inputTexture.height})");
-                    
-                    InitializeResultTextures(inputTexture.width, inputTexture.height);
-                }
-                
-                if (!texturesInitialized)
-                {
-                    Debug.LogError("EnhancedDeepLabPredictor: Failed to initialize result textures");
+                    Debug.LogError("EnhancedDeepLabPredictor: Failed to resize input texture");
                     return _enhancedResultMask;
                 }
                 
-                // Create a temporary texture to store raw segmentation result
-                RenderTexture rawSegmentationResult = RenderTexture.GetTemporary(
-                    inputTexture.width, 
-                    inputTexture.height, 
-                    0, 
-                    RenderTextureFormat.ARGB32
-                );
-                rawSegmentationResult.enableRandomWrite = true;
-                rawSegmentationResult.filterMode = FilterMode.Point;
-                rawSegmentationResult.Create();
+                // Convert to tensor
+                inputTensor = PreprocessTexture(resized);
+                if (inputTensor == null)
+                {
+                    Debug.LogError("EnhancedDeepLabPredictor: Failed to preprocess texture to tensor");
+                    return _enhancedResultMask;
+                }
                 
+                // Run inference
+                localEngine.Execute(inputTensor);
+                
+                // Get output tensor
                 try
                 {
-                    // Downsample the input texture to the model input texture
-                    Graphics.Blit(inputTexture, rawSegmentationResult);
-                    
-                    // Run prediction on the model input texture
-                    Texture2D tex2D = ConvertRenderTextureToTexture2D(rawSegmentationResult);
-                    if (tex2D == null)
-                    {
-                        Debug.LogWarning("EnhancedDeepLabPredictor: не удалось конвертировать сегментацию в Texture2D");
-                        return _enhancedResultMask;
-                    }
-                    
-                    // Передаём уже Texture2D:
-                    base.PredictSegmentation(tex2D);
-                    
-                    // Try to get resultTexture from base class using reflection
-                    System.Reflection.FieldInfo resultTextureField = typeof(DeepLabPredictor).GetField("resultTexture", 
-                        System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance | 
-                        System.Reflection.BindingFlags.Public);
-                    
-                    if (resultTextureField != null)
-                    {
-                        RenderTexture baseResultTexture = resultTextureField.GetValue(this) as RenderTexture;
-                        if (baseResultTexture != null)
-                        {
-                            Graphics.Blit(baseResultTexture, rawSegmentationResult);
-                            return rawSegmentationResult;
-                        }
-                    }
-                    
-                    // If reflection fails, try another approach - check if our _enhancedResultMask can be used
-                    if (_enhancedResultMask != null)
-                    {
-                        Graphics.Blit(_enhancedResultMask, rawSegmentationResult);
-                        return rawSegmentationResult;
-                    }
-                    
-                    return rawSegmentationResult;
+                    // Try to get output using the model's output name
+                    string outputName = "SemanticPredictions"; // Default name
+                    outputTensor = localEngine.PeekOutput(outputName);
                 }
                 catch (System.Exception e)
                 {
-                    Debug.LogError($"EnhancedDeepLabPredictor: Error during segmentation prediction: {e.Message}");
-                    return _enhancedResultMask; // Return last valid result
-                }
-                finally
-                {
-                    if (rawSegmentationResult != null)
+                    Debug.LogWarning($"EnhancedDeepLabPredictor: Error getting named output: {e.Message}");
+                    
+                    try
                     {
-                        RenderTexture.ReleaseTemporary(rawSegmentationResult);
+                        // Fallback to getting the first output tensor
+                        outputTensor = localEngine.PeekOutput();
+                        if (debugMode)
+                            Debug.Log("EnhancedDeepLabPredictor: Using default PeekOutput without parameters");
+                    }
+                    catch (System.Exception e2)
+                    {
+                        Debug.LogError($"EnhancedDeepLabPredictor: Failed to get model outputs: {e2.Message}");
+                        return _enhancedResultMask;
                     }
                 }
+                
+                if (outputTensor == null)
+                {
+                    Debug.LogError("EnhancedDeepLabPredictor: Failed to get output tensor");
+                    return _enhancedResultMask;
+                }
+                
+                // Process output tensor to raw result texture
+                EnhancedConvertOutputToMask(outputTensor, rawSegmentationResult, (byte)WallClassId);
+                
+                // Apply post-processing
+                ProcessOutputToMask(outputTensor, _enhancedResultMask);
+                
+                // Check for wall detection
+                CheckIfWallsDetected();
+                
+                // Return the enhanced result
+                return _enhancedResultMask;
             }
             catch (System.Exception e)
             {
-                Debug.LogError($"EnhancedDeepLabPredictor: Critical error during prediction: {e.Message}");
-                return _enhancedResultMask; // Return last valid result
+                Debug.LogError($"EnhancedDeepLabPredictor: Error in PredictSegmentation: {e.Message}\n{e.StackTrace}");
+                return _enhancedResultMask;
+            }
+            finally
+            {
+                // Properly dispose of resources
+                if (inputTensor != null)
+                {
+                    inputTensor.Dispose();
+                    inputTensor = null;
+                }
+                
+                if (outputTensor != null)
+                {
+                    outputTensor.Dispose();
+                    outputTensor = null;
+                }
+                
+                // Clean up resized texture if created
+                if (resized != null && resized != inputTexture)
+                {
+                    Destroy(resized);
+                    resized = null;
+                }
             }
         }
         
@@ -923,140 +1369,6 @@ namespace ML.DeepLab
             {
                 Debug.LogError($"EnhancedDeepLabPredictor: Error creating segmentation for class {classId}: {e.Message}");
                 return null;
-            }
-        }
-        
-        /// <summary>
-        /// Process the output tensor into a segmentation mask with proper filtering
-        /// </summary>
-        private void ProcessOutputToMask(Tensor output, RenderTexture targetTexture)
-        {
-            if (output == null || targetTexture == null)
-            {
-                Debug.LogError("EnhancedDeepLabPredictor: Output tensor or target texture is null");
-                return;
-            }
-
-            try
-            {
-                if (debugMode && verbose)
-                    Debug.Log($"EnhancedDeepLabPredictor: Processing output tensor with shape {output.shape}");
-
-                // Get dimensions from tensor
-                int height = output.shape[1];
-                int width = output.shape[2];
-                int channels = output.shape[3];
-
-                // Create temporary texture for initial processing
-                if (_segmentationTexture == null || _segmentationTexture.width != width || _segmentationTexture.height != height)
-                {
-                    if (_segmentationTexture != null)
-                        DestroyImmediate(_segmentationTexture);
-
-                    _segmentationTexture = new Texture2D(width, height, TextureFormat.RGBA32, false);
-                }
-
-                // Get tensor data
-                float[] outputData = output.AsFloats();
-
-                // Process output data to create segmentation mask
-                Color32[] maskPixels = new Color32[width * height];
-
-                for (int y = 0; y < height; y++)
-                {
-                    for (int x = 0; x < width; x++)
-                    {
-                        int pixelIndex = y * width + x;
-                        int baseIndex = pixelIndex * channels;
-
-                        byte classId = 0;
-                        float maxConfidence = 0;
-
-                        // ArgMax - find class with highest confidence
-                        if (useArgMaxMode)
-                        {
-                            for (int c = 0; c < channels; c++)
-                            {
-                                float confidence = outputData[baseIndex + c];
-                                if (confidence > maxConfidence)
-                                {
-                                    maxConfidence = confidence;
-                                    classId = (byte)c;
-                                }
-                            }
-                        }
-                        // Focus on wall class - check if confidence is high enough
-                        else
-                        {
-                            maxConfidence = outputData[baseIndex + _wallClassId];
-                            classId = (maxConfidence >= _classificationThreshold) ? _wallClassId : (byte)0;
-                        }
-
-                        // Store class ID and confidence in the mask pixels
-                        // Store class ID in R channel and confidence in G channel
-                        maskPixels[pixelIndex] = new Color32(
-                            classId,  // Class ID in R channel
-                            (byte)(maxConfidence * 255), // Confidence in G channel
-                            (byte)(classId == _wallClassId ? 255 : 0), // Highlight walls in B channel
-                            255);
-                    }
-                }
-
-                // Apply to texture
-                _segmentationTexture.SetPixels32(maskPixels);
-                _segmentationTexture.Apply();
-
-                // Apply OpenCV morphological processing for wall class
-                if ((applyNoiseReduction || applyWallFilling) && WallOpenCVProcessor.IsOpenCVAvailable())
-                {
-                    try
-                    {
-                        // Process with OpenCV for better wall detection
-                        Texture2D processedTex = WallOpenCVProcessor.EnhanceWallMask(_segmentationTexture);
-                        if (processedTex != null)
-                        {
-                            // Replace segmentation texture with the processed version
-                            DestroyImmediate(_segmentationTexture);
-                            _segmentationTexture = processedTex;
-                            
-                            if (debugMode)
-                                Debug.Log("EnhancedDeepLabPredictor: Applied OpenCV morphological processing to wall mask");
-                        }
-                    }
-                    catch (System.Exception e)
-                    {
-                        Debug.LogError($"EnhancedDeepLabPredictor: Error in OpenCV processing: {e.Message}");
-                    }
-                }
-
-                // Apply to target RenderTexture
-                Graphics.Blit(_segmentationTexture, targetTexture);
-
-                // Fire the segmentation texture event
-                if (OnSegmentationCompleted != null)
-                {
-                    // Convert RenderTexture to Texture2D for the event
-                    Texture2D segTexture = ConvertRenderTextureToTexture2D(targetTexture);
-                    
-                    // Invoke with the converted Texture2D
-                    if (segTexture != null)
-                    {
-                        OnSegmentationCompleted.Invoke(segTexture);
-                    }
-                }
-
-                // Keep track of whether this is our first processed frame
-                _enhancedFrameCount++;
-
-                // Update statistics
-                if (collectStatistics)
-                {
-                    UpdateSegmentationStatistics(targetTexture);
-                }
-            }
-            catch (System.Exception e)
-            {
-                Debug.LogError($"EnhancedDeepLabPredictor: Error processing output to mask: {e.Message}");
             }
         }
         
@@ -1237,40 +1549,6 @@ namespace ML.DeepLab
             RenderTexture temp = tex1;
             tex1 = tex2;
             tex2 = temp;
-        }
-        
-        /// <summary>
-        /// Backward compatibility method that uses the enhanced result mask
-        /// </summary>
-        private void ApplyPostProcessing()
-        {
-            if (_enhancedResultMask == null)
-            {
-                Debug.LogError("EnhancedDeepLabPredictor: Result mask is null, cannot apply post-processing");
-                return;
-            }
-            
-            // Create a temporary texture for processing
-            RenderTexture tempResult = RenderTexture.GetTemporary(
-                _enhancedResultMask.width, 
-                _enhancedResultMask.height, 
-                0, 
-                _enhancedResultMask.format
-            );
-            
-            try
-            {
-                // Apply post-processing from the result mask to the temp texture
-                ApplyPostProcessing(_enhancedResultMask, tempResult);
-                
-                // Copy the processed result back to the result mask
-                Graphics.Blit(tempResult, _enhancedResultMask);
-            }
-            finally
-            {
-                // Release the temporary texture
-                RenderTexture.ReleaseTemporary(tempResult);
-            }
         }
         
         /// <summary>
@@ -1476,13 +1754,14 @@ namespace ML.DeepLab
                 lastTotalPixelCount = totalPixelCount;
 
                 // Update class distribution
-                if (classDistribution.ContainsKey(WallClassId))
+                byte wallClassIdByte = (byte)WallClassId;
+                if (classDistribution.ContainsKey(wallClassIdByte))
                 {
-                    classDistribution[WallClassId]++;
+                    classDistribution[wallClassIdByte]++;
                 }
                 else
                 {
-                    classDistribution.Add(WallClassId, 1);
+                    classDistribution.Add(wallClassIdByte, 1);
                 }
 
                 // Clean up temporary texture

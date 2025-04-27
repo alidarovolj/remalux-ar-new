@@ -125,7 +125,13 @@ public class EnhancedWallRenderer : MonoBehaviour
     {
         if (wallOptimizer != null)
         {
-            wallOptimizer.wallClassId = WallClassId;
+            // Always use the ADE20K wall class ID (9) regardless of what's set in the inspector
+            if (WallClassId != 9)
+            {
+                WallClassId = 9; // Update our own value to match
+            }
+            
+            wallOptimizer.wallClassId = 9; // Force correct wall class ID
             wallOptimizer.confidenceThreshold = WallConfidenceThreshold;
             wallOptimizer.minWallArea = MinWallArea;
             wallOptimizer.showDebugInfo = ShowDebugInfo;

@@ -14,7 +14,7 @@ public class MLManager : MonoBehaviour
     [Header("Prediction Settings")]
     public float predictionInterval = 0.5f;
     public bool runPredictionOnStart = true;
-    public int downsampleFactor = 2;
+    public int downsampleFactor = 4;
     public bool useEnhancedPredictor = true;
     
     [Header("Wall Detection")]
@@ -29,6 +29,8 @@ public class MLManager : MonoBehaviour
     
     // Event for segmentation completion - matches signature required by ARMLController
     public event Action<RenderTexture> OnSegmentationComplete;
+    
+    private float _lastWarningTime = 0.0f;
     
     private void Awake()
     {
@@ -184,13 +186,10 @@ public class MLManager : MonoBehaviour
     
     private Texture2D CaptureCurrentFrame()
     {
-        // Get the current camera texture
-        WebCamTexture camTexture = null;
-        
-        // Find AR Camera's texture
+        // First try to find AR Camera's texture
         if (Camera.main != null && Camera.main.targetTexture != null)
         {
-            // Calculate appropriate dimensions based on the downsample factor
+            // Use the existing code path for targetTexture
             int width = Camera.main.targetTexture.width / downsampleFactor;
             int height = Camera.main.targetTexture.height / downsampleFactor;
             
@@ -203,7 +202,6 @@ public class MLManager : MonoBehaviour
                     float scale = Mathf.Min((float)maxSize / width, (float)maxSize / height);
                     width = Mathf.FloorToInt(width * scale);
                     height = Mathf.FloorToInt(height * scale);
-                    Debug.Log($"MLManager: Texture size limited to {width}x{height} for mobile compatibility");
                 }
             }
             
@@ -228,8 +226,75 @@ public class MLManager : MonoBehaviour
             
             return _frameTexture;
         }
+        else if (Camera.main != null)
+        {
+            // Alternative approach when targetTexture is not available
+            // Create a temporary RenderTexture
+            int width = Screen.width / downsampleFactor;
+            int height = Screen.height / downsampleFactor;
+            
+            // Ensure texture dimensions don't exceed GPU limits on mobile
+            if (Application.isMobilePlatform)
+            {
+                int maxSize = Application.platform == RuntimePlatform.IPhonePlayer ? 224 : 384;
+                if (width > maxSize || height > maxSize)
+                {
+                    float scale = Mathf.Min((float)maxSize / width, (float)maxSize / height);
+                    width = Mathf.FloorToInt(width * scale);
+                    height = Mathf.FloorToInt(height * scale);
+                }
+            }
+            
+            // Create or reuse a temporary RenderTexture
+            RenderTexture tempRT = RenderTexture.GetTemporary(width, height, 24);
+            
+            // Remember the camera's original targetTexture
+            RenderTexture originalTargetTexture = Camera.main.targetTexture;
+            
+            try
+            {
+                // Set the camera to render to our temporary texture
+                Camera.main.targetTexture = tempRT;
+                
+                // Render the camera view
+                Camera.main.Render();
+                
+                // Create texture if needed or if dimensions changed
+                if (_frameTexture == null || _frameTexture.width != width || _frameTexture.height != height)
+                {
+                    if (_frameTexture != null)
+                        Destroy(_frameTexture);
+                        
+                    _frameTexture = new Texture2D(width, height, TextureFormat.RGBA32, false);
+                }
+                
+                // Read pixels from the temporary render texture
+                RenderTexture currentRT = RenderTexture.active;
+                RenderTexture.active = tempRT;
+                
+                _frameTexture.ReadPixels(new Rect(0, 0, width, height), 0, 0, false);
+                _frameTexture.Apply();
+                
+                RenderTexture.active = currentRT;
+                
+                return _frameTexture;
+            }
+            finally
+            {
+                // Restore the camera's original targetTexture
+                Camera.main.targetTexture = originalTargetTexture;
+                
+                // Release the temporary RenderTexture
+                RenderTexture.ReleaseTemporary(tempRT);
+            }
+        }
         
-        Debug.LogWarning("MLManager: Unable to capture frame - no camera target texture found");
+        // If we get here, log a warning but only once per second to reduce spam
+        if (Time.time - _lastWarningTime > 1.0f)
+        {
+            Debug.LogWarning("MLManager: Unable to capture frame - no main camera found");
+            _lastWarningTime = Time.time;
+        }
         return null;
     }
     

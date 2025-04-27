@@ -21,11 +21,14 @@ public class ARSetupMenu : Editor
         }
 
         // Check if XR Origin exists
-        if (Object.FindFirstObjectByType<XROrigin>() == null)
+        GameObject xrOrigin = null;
+        XROrigin origin = Object.FindFirstObjectByType<XROrigin>();
+        
+        if (origin == null)
         {
             // Create XR Origin with Camera
-            GameObject xrOrigin = new GameObject("XR Origin");
-            XROrigin origin = xrOrigin.AddComponent<XROrigin>();
+            xrOrigin = new GameObject("XR Origin");
+            origin = xrOrigin.AddComponent<XROrigin>();
             
             // Create Camera Offset
             GameObject cameraOffset = new GameObject("Camera Offset");
@@ -46,26 +49,47 @@ public class ARSetupMenu : Editor
         }
         else
         {
+            xrOrigin = origin.gameObject;
             Debug.Log("XR Origin already exists in the scene");
         }
         
         // Add AR Ray Manager
         if (Object.FindFirstObjectByType<ARRaycastManager>() == null)
         {
-            GameObject xrOrigin = Object.FindFirstObjectByType<XROrigin>().gameObject;
             xrOrigin.AddComponent<ARRaycastManager>();
             Debug.Log("AR Raycast Manager added to XR Origin");
         }
         
         // Add AR Plane Manager
-        if (Object.FindFirstObjectByType<ARPlaneManager>() == null)
+        ARPlaneManager planeManager = xrOrigin.GetComponent<ARPlaneManager>();
+        if (planeManager == null)
         {
-            GameObject xrOrigin = Object.FindFirstObjectByType<XROrigin>().gameObject;
-            xrOrigin.AddComponent<ARPlaneManager>();
+            planeManager = xrOrigin.AddComponent<ARPlaneManager>();
             Debug.Log("AR Plane Manager added to XR Origin");
         }
         
-        Debug.Log("AR components setup complete!");
+        // Добавление компонентов для якорей стен
+        // Add ARAnchorManager for wall anchoring
+        ARAnchorManager anchorManager = xrOrigin.GetComponent<ARAnchorManager>();
+        if (anchorManager == null)
+        {
+            anchorManager = xrOrigin.AddComponent<ARAnchorManager>();
+            Debug.Log($"Added ARAnchorManager component to {xrOrigin.name}");
+        }
+        
+        // Add ARWallAnchor component for wall anchoring
+        ARWallAnchor wallAnchor = xrOrigin.GetComponent<ARWallAnchor>();
+        if (wallAnchor == null)
+        {
+            wallAnchor = xrOrigin.AddComponent<ARWallAnchor>();
+            Debug.Log($"Added ARWallAnchor component to {xrOrigin.name}");
+        }
+        
+        // Select the XR Origin
+        Selection.activeGameObject = xrOrigin;
+        EditorGUIUtility.PingObject(xrOrigin);
+        
+        Debug.Log("AR components setup complete with wall anchoring!");
     }
 
     [MenuItem("AR Wall Detection/Fix AR Components", false, 10)]
@@ -413,5 +437,28 @@ public class ARSetupMenu : Editor
         listener.FindPropertyRelative("m_Mode").enumValueIndex = 1; // No arguments
         
         serializedButton.ApplyModifiedProperties();
+    }
+
+    [MenuItem("AR/Setup AR Scene")]
+    public static void SetupARScene()
+    {
+        ARSceneSetup.SetupARScene();
+        
+        // Выбираем созданный объект ARScene в иерархии
+        GameObject arSceneObj = GameObject.Find("ARScene*");
+        if (arSceneObj == null)
+            arSceneObj = GameObject.Find("ARScene");
+        
+        if (arSceneObj != null)
+        {
+            Selection.activeGameObject = arSceneObj;
+            EditorGUIUtility.PingObject(arSceneObj);
+        }
+        
+        EditorUtility.DisplayDialog("Установка завершена", 
+            "Все компоненты для AR сцены добавлены, включая систему якорения стен.\n\n" +
+            "Добавлена кнопка 'Закрепить стены' для ручного обновления якорей.\n\n" +
+            "Стены теперь будут оставаться на месте в реальном мире, а не следовать за камерой.", 
+            "OK");
     }
 } 

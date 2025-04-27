@@ -11,8 +11,8 @@ public class DeepLabPredictor : MonoBehaviour
     private IWorker engine;
 
     [Header("Input/Output Settings")]
-    public int inputWidth = 512;
-    public int inputHeight = 512;
+    public int inputWidth = 256;
+    public int inputHeight = 256;
     
     [Tooltip("Name of input tensor in the ONNX model")]
     public string inputName = "ImageTensor";
@@ -183,7 +183,7 @@ public class DeepLabPredictor : MonoBehaviour
         return "SemanticPredictions";
     }
 
-    public RenderTexture PredictSegmentation(Texture2D inputTexture)
+    public virtual RenderTexture PredictSegmentation(Texture2D inputTexture)
     {
         if (engine == null || inputTexture == null)
         {
@@ -213,87 +213,108 @@ public class DeepLabPredictor : MonoBehaviour
         }
         
         // Convert to Tensor
-        Tensor inputTensor = PreprocessTexture(resized);
-        
-        // Run inference
-        engine.Execute(inputTensor);
-        
-        // Get output tensor
+        Tensor inputTensor = null;
         Tensor outputTensor = null;
         
         try
         {
-            // Try to get tensor by working name
-            outputTensor = engine.PeekOutput(workingOutputName);
+            // Create input tensor
+            inputTensor = PreprocessTexture(resized);
+            
+            // Run inference
+            engine.Execute(inputTensor);
+            
+            // Get output tensor
+            try
+            {
+                // Try to get tensor by working name
+                outputTensor = engine.PeekOutput(workingOutputName);
+            }
+            catch (System.Exception e)
+            {
+                Debug.LogWarning($"Error getting output tensor '{workingOutputName}': {e.Message}");
+                
+                // Try to get first output tensor
+                try
+                {
+                    // Log available model outputs
+                    Debug.Log("Available model outputs:");
+                    foreach (var output in runtimeModel.outputs)
+                    {
+                        Debug.Log($"  - {output}");
+                    }
+                    
+                    // Just get first output without specifying name
+                    outputTensor = engine.PeekOutput();
+                    Debug.Log("Using PeekOutput without parameters");
+                }
+                catch (System.Exception e2)
+                {
+                    Debug.LogError($"Failed to get model outputs: {e2.Message}");
+                    return null;
+                }
+            }
+            
+            if (outputTensor == null)
+            {
+                Debug.LogError("Failed to get output tensor!");
+                return null;
+            }
+            
+            // Process output tensor to mask
+            ConvertOutputToMask(outputTensor, resultMask, selectedWallClassId);
+            
+            // If we're struggling to detect walls, try rotating through different class IDs
+            if (!hasDetectedWalls && alternateWallClassIds.Length > 0 && frameCount % 60 == 0)
+            {
+                // Try next class ID in the list
+                int currentIndex = System.Array.IndexOf(alternateWallClassIds, selectedWallClassId);
+                if (currentIndex == -1 || currentIndex >= alternateWallClassIds.Length - 1)
+                    selectedWallClassId = alternateWallClassIds[0];
+                else
+                    selectedWallClassId = alternateWallClassIds[currentIndex + 1];
+                    
+                Debug.Log($"Trying alternate wall class ID: {selectedWallClassId}");
+                
+                // Reprocess the tensor with new class ID
+                ConvertOutputToMask(outputTensor, resultMask, selectedWallClassId);
+            }
+            
+            // Save output for debugging
+            if (saveDebugImages && frameCount % 30 == 0)
+            {
+                SaveRenderTextureToFile(resultMask, $"wall_mask_{frameCount}.png");
+            }
+            
+            return resultMask;
         }
         catch (System.Exception e)
         {
-            Debug.LogWarning($"Error getting output tensor '{workingOutputName}': {e.Message}");
-            
-            // Try to get first output tensor
-            try
-            {
-                // Log available model outputs
-                Debug.Log("Available model outputs:");
-                foreach (var output in runtimeModel.outputs)
-                {
-                    Debug.Log($"  - {output}");
-                }
-                
-                // Just get first output without specifying name
-                outputTensor = engine.PeekOutput();
-                Debug.Log("Using PeekOutput without parameters");
-            }
-            catch (System.Exception e2)
-            {
-                Debug.LogError($"Failed to get model outputs: {e2.Message}");
-                inputTensor.Dispose();
-                return null;
-            }
-        }
-        
-        if (outputTensor == null)
-        {
-            Debug.LogError("Failed to get output tensor!");
-            inputTensor.Dispose();
+            Debug.LogError($"Error in PredictSegmentation: {e.Message}");
             return null;
         }
-        
-        // Process output tensor to mask
-        ConvertOutputToMask(outputTensor, resultMask, selectedWallClassId);
-        
-        // If we're struggling to detect walls, try rotating through different class IDs
-        if (!hasDetectedWalls && alternateWallClassIds.Length > 0 && frameCount % 60 == 0)
+        finally
         {
-            // Try next class ID in the list
-            int currentIndex = System.Array.IndexOf(alternateWallClassIds, selectedWallClassId);
-            if (currentIndex == -1 || currentIndex >= alternateWallClassIds.Length - 1)
-                selectedWallClassId = alternateWallClassIds[0];
-            else
-                selectedWallClassId = alternateWallClassIds[currentIndex + 1];
-                
-            Debug.Log($"Trying alternate wall class ID: {selectedWallClassId}");
+            // Ensure tensors are always disposed to prevent memory leaks
+            if (inputTensor != null)
+            {
+                inputTensor.Dispose();
+                inputTensor = null;
+            }
             
-            // Reprocess the tensor with new class ID
-            ConvertOutputToMask(outputTensor, resultMask, selectedWallClassId);
+            if (outputTensor != null)
+            {
+                outputTensor.Dispose();
+                outputTensor = null;
+            }
+            
+            // Clean up resized texture if it's not the input
+            if (resized != null && resized != inputTexture)
+            {
+                Destroy(resized);
+                resized = null;
+            }
         }
-        
-        // Save output for debugging
-        if (saveDebugImages && frameCount % 30 == 0)
-        {
-            SaveRenderTextureToFile(resultMask, $"wall_mask_{frameCount}.png");
-        }
-        
-        // Cleanup
-        inputTensor.Dispose();
-        outputTensor.Dispose();
-        
-        if (resized != inputTexture)
-        {
-            Destroy(resized);
-        }
-        
-        return resultMask;
     }
     
     private Tensor PreprocessTexture(Texture2D texture)

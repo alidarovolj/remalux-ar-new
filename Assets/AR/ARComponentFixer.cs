@@ -13,7 +13,7 @@ using UnityEditor;
 public class ARComponentFixer : MonoBehaviour
 {
     [Header("References")]
-    public ARSessionOrigin arSessionOrigin;
+    public XROrigin xrOrigin;
     public Material wallMaterial;
 
     [Header("AR Components")]
@@ -53,12 +53,20 @@ public class ARComponentFixer : MonoBehaviour
 
     public void FixAllComponents()
     {
-        if (arSessionOrigin == null)
+        if (xrOrigin == null)
         {
-            arSessionOrigin = FindObjectOfType<ARSessionOrigin>();
-            if (arSessionOrigin == null)
+            xrOrigin = FindObjectOfType<XROrigin>();
+            if (xrOrigin == null)
             {
-                Debug.LogError("ARComponentFixer: ARSessionOrigin not found in scene.");
+                // Fallback to check for the deprecated ARSessionOrigin if XROrigin isn't found
+                ARSessionOrigin oldSessionOrigin = FindObjectOfType<ARSessionOrigin>();
+                if (oldSessionOrigin != null)
+                {
+                    Debug.LogWarning("ARComponentFixer: Found deprecated ARSessionOrigin. Consider upgrading to XROrigin.");
+                    // We could add code here to automatically upgrade from ARSessionOrigin to XROrigin if needed
+                }
+                
+                Debug.LogError("ARComponentFixer: XROrigin not found in scene.");
                 return;
             }
         }
@@ -82,7 +90,7 @@ public class ARComponentFixer : MonoBehaviour
 
     private void EnsureARComponents()
     {
-        GameObject arCamera = arSessionOrigin.camera.gameObject;
+        GameObject arCamera = xrOrigin.Camera.gameObject;
 
         // Ensure AR Camera Manager
         if (ensureARCameraManager)
@@ -102,11 +110,11 @@ public class ARComponentFixer : MonoBehaviour
         // Ensure AR Plane Manager
         if (ensureARPlaneManager)
         {
-            _planeManager = arSessionOrigin.gameObject.GetComponent<ARPlaneManager>();
+            _planeManager = xrOrigin.gameObject.GetComponent<ARPlaneManager>();
             if (_planeManager == null)
             {
-                _planeManager = arSessionOrigin.gameObject.AddComponent<ARPlaneManager>();
-                Log("Added ARPlaneManager to AR Session Origin");
+                _planeManager = xrOrigin.gameObject.AddComponent<ARPlaneManager>();
+                Log("Added ARPlaneManager to XR Origin");
             }
             
             // Configure the plane manager for vertical surfaces
@@ -117,11 +125,11 @@ public class ARComponentFixer : MonoBehaviour
         // Ensure AR Mesh Manager
         if (ensureARMeshManager)
         {
-            _meshManager = arSessionOrigin.gameObject.GetComponent<ARMeshManager>();
+            _meshManager = xrOrigin.gameObject.GetComponent<ARMeshManager>();
             if (_meshManager == null)
             {
-                _meshManager = arSessionOrigin.gameObject.AddComponent<ARMeshManager>();
-                Log("Added ARMeshManager to AR Session Origin");
+                _meshManager = xrOrigin.gameObject.AddComponent<ARMeshManager>();
+                Log("Added ARMeshManager to XR Origin");
             }
             
             // Configure mesh manager
@@ -155,11 +163,11 @@ public class ARComponentFixer : MonoBehaviour
         // Ensure AR Raycast Manager
         if (ensureARRaycastManager)
         {
-            _raycastManager = arSessionOrigin.gameObject.GetComponent<ARRaycastManager>();
+            _raycastManager = xrOrigin.gameObject.GetComponent<ARRaycastManager>();
             if (_raycastManager == null)
             {
-                _raycastManager = arSessionOrigin.gameObject.AddComponent<ARRaycastManager>();
-                Log("Added ARRaycastManager to AR Session Origin");
+                _raycastManager = xrOrigin.gameObject.AddComponent<ARRaycastManager>();
+                Log("Added ARRaycastManager to XR Origin");
             }
             else
             {
@@ -170,11 +178,11 @@ public class ARComponentFixer : MonoBehaviour
         // Ensure AR Point Cloud Manager (Optional)
         if (ensureARPointCloudManager)
         {
-            _pointCloudManager = arSessionOrigin.gameObject.GetComponent<ARPointCloudManager>();
+            _pointCloudManager = xrOrigin.gameObject.GetComponent<ARPointCloudManager>();
             if (_pointCloudManager == null)
             {
-                _pointCloudManager = arSessionOrigin.gameObject.AddComponent<ARPointCloudManager>();
-                Log("Added ARPointCloudManager to AR Session Origin");
+                _pointCloudManager = xrOrigin.gameObject.AddComponent<ARPointCloudManager>();
+                Log("Added ARPointCloudManager to XR Origin");
             }
             else
             {
@@ -313,14 +321,14 @@ public class ARComponentFixer : MonoBehaviour
             EditorGUILayout.LabelField("Component Status", EditorStyles.boldLabel);
             
             // Check component statuses
-            ARSessionOrigin origin = fixer.arSessionOrigin != null ? fixer.arSessionOrigin : FindObjectOfType<ARSessionOrigin>();
+            XROrigin origin = fixer.xrOrigin != null ? fixer.xrOrigin : FindObjectOfType<XROrigin>();
             if (origin == null)
             {
-                EditorGUILayout.HelpBox("No ARSessionOrigin found in scene", MessageType.Error);
+                EditorGUILayout.HelpBox("No XROrigin found in scene", MessageType.Error);
                 return;
             }
 
-            GameObject arCamera = origin.camera.gameObject;
+            GameObject arCamera = origin.Camera.gameObject;
             EditorGUILayout.LabelField("AR Camera: ", arCamera != null ? "Found" : "Missing");
             
             ARCameraManager cameraManager = arCamera.GetComponent<ARCameraManager>();

@@ -14,6 +14,8 @@ using OpenCvSharpSize = OpenCvSharp.Size;
 using OpenCvSharpMoments = OpenCvSharp.Moments;
 using OpenCvSharpHierarchyIndex = OpenCvSharp.HierarchyIndex;
 using ML.DeepLab; // Add namespace for EnhancedDeepLabPredictor
+using System.Collections;
+using UnityEngine.XR.ARFoundation; // Add AR Foundation namespace for AR components
 
 // Add standard warning disables
 #pragma warning disable 0169, 0649
@@ -198,6 +200,8 @@ public unsafe class WallOptimizer : MonoBehaviour
     private float lastUpdateTime = 0f;
     private GameObject wallParent;
     private EnhancedDeepLabPredictor enhancedPredictor;
+    private bool _wallClassIdCorrected = false;
+    private byte _previousWallClassId = 0;
 
     private void Awake()
     {
@@ -241,7 +245,7 @@ public unsafe class WallOptimizer : MonoBehaviour
             if (predictor.WallClassId != wallClassId)
             {
                 Debug.LogWarning($"WallOptimizer: Synchronizing wallClassId from {wallClassId} to predictor's value {predictor.WallClassId}");
-                wallClassId = predictor.WallClassId;
+                wallClassId = (byte)predictor.WallClassId;
             }
             
             Debug.Log($"WallOptimizer: Using wallClassId: {wallClassId} for wall detection");
@@ -255,15 +259,134 @@ public unsafe class WallOptimizer : MonoBehaviour
         else
         {
             Debug.LogError("WallOptimizer: EnhancedDeepLabPredictor not found!");
+            StartCoroutine(TryFindPredictorDelayed());
         }
         
         if (meshRenderer == null)
         {
-            Debug.LogError("WallOptimizer: WallMeshRenderer not found!");
+            Debug.LogWarning("WallOptimizer: WallMeshRenderer not found! Creating one...");
+            
+            // In older versions, it was ARSessionOrigin; in newer versions, it's XROrigin
+            // Let's try to find the AR session root object
+            GameObject arSessionRoot = null;
+            
+            // Find ARSessionOrigin first (more common)
+            ARSessionOrigin sessionOrigin = FindObjectOfType<ARSessionOrigin>();
+            if (sessionOrigin != null)
+            {
+                arSessionRoot = sessionOrigin.gameObject;
+                Debug.Log("WallOptimizer: Found ARSessionOrigin for WallMeshRenderer parent");
+            }
+            else
+            {
+                // Try to find any GameObject that might be an XROrigin
+                // (looking for common names since we don't have direct access to XROrigin type)
+                arSessionRoot = GameObject.Find("XR Origin");
+                if (arSessionRoot == null) arSessionRoot = GameObject.Find("XROrigin");
+                if (arSessionRoot == null) arSessionRoot = GameObject.Find("AR Session Origin");
+                
+                if (arSessionRoot != null)
+                {
+                    Debug.Log($"WallOptimizer: Found {arSessionRoot.name} for WallMeshRenderer parent");
+                }
+                else
+                {
+                    // Last resort - find the AR Session and check its children
+                    ARSession arSession = FindObjectOfType<ARSession>();
+                    if (arSession != null && arSession.transform.parent != null)
+                    {
+                        // Try to find a suitable container in the same hierarchy
+                        arSessionRoot = arSession.transform.parent.gameObject;
+                        Debug.Log($"WallOptimizer: Using {arSessionRoot.name} as parent based on AR Session location");
+                    }
+                    else
+                    {
+                        Debug.LogError("WallOptimizer: No suitable AR session root found. Cannot create WallMeshRenderer.");
+                        Debug.LogError("Please add an AR Session Origin to the scene first or use the AR setup menu.");
+                        return;
+                    }
+                }
+            }
+            
+            // Create WallMeshRenderer as child of the AR session root
+            GameObject wallMeshRendererObj = new GameObject("WallMeshRenderer");
+            wallMeshRendererObj.transform.SetParent(arSessionRoot.transform);
+            
+            // Add required components
+            meshRenderer = wallMeshRendererObj.AddComponent<WallMeshRenderer>();
+            
+            // Try to find AR components in the scene
+            ARMeshManager arMeshManager = FindObjectOfType<ARMeshManager>();
+            if (arMeshManager == null)
+            {
+                arMeshManager = wallMeshRendererObj.AddComponent<ARMeshManager>();
+                Debug.Log("WallOptimizer: Added new ARMeshManager to WallMeshRenderer");
+            }
+            else
+            {
+                Debug.Log($"WallOptimizer: Found existing ARMeshManager on {arMeshManager.gameObject.name}");
+                // Do not add another ARMeshManager, just let WallMeshRenderer use the existing one
+            }
+            
+            // Configure the renderer
+            if (predictor != null)
+            {
+                meshRenderer.Predictor = predictor;
+                meshRenderer._wallClassId = (byte)wallClassId;
+            }
+            
+            // Try to find camera manager
+            ARCameraManager cameraManager = FindObjectOfType<ARCameraManager>();
+            if (cameraManager != null)
+            {
+                meshRenderer.ARCameraManager = cameraManager;
+                Debug.Log($"WallOptimizer: Connected ARCameraManager to WallMeshRenderer");
+            }
+            
+            Debug.Log("WallOptimizer: Created WallMeshRenderer component");
         }
         
         // Initialize walls
         Initialize();
+    }
+    
+    /// <summary>
+    /// Try to find the predictor after a delay, in case it's initialized later
+    /// </summary>
+    private IEnumerator TryFindPredictorDelayed()
+    {
+        // Wait a few seconds to give other components time to initialize
+        yield return new WaitForSeconds(2.0f);
+        
+        if (predictor == null)
+        {
+            predictor = FindObjectOfType<EnhancedDeepLabPredictor>();
+            
+            if (predictor != null)
+            {
+                Debug.Log("WallOptimizer: Found EnhancedDeepLabPredictor after delay");
+                
+                // Update wall class ID and dimensions
+                wallClassId = (byte)predictor.WallClassId;
+                segmentationWidth = predictor.TextureWidth;
+                segmentationHeight = predictor.TextureHeight;
+                
+                // Connect predictor to mesh renderer if it exists
+                if (meshRenderer != null)
+                {
+                    meshRenderer.Predictor = predictor;
+                    meshRenderer._wallClassId = (byte)wallClassId;
+                    Debug.Log("WallOptimizer: Connected EnhancedDeepLabPredictor to WallMeshRenderer");
+                }
+                
+                // Subscribe to segmentation updates
+                predictor.OnSegmentationUpdated.AddListener(OnSegmentationUpdated);
+            }
+            else
+            {
+                Debug.LogError("WallOptimizer: Failed to find EnhancedDeepLabPredictor even after delay");
+            }
+        }
     }
     
     private void OnEnable()
@@ -380,7 +503,7 @@ public unsafe class WallOptimizer : MonoBehaviour
                                 byte classId = segmentationMask[index].r;
                                 
                                 // Проверяем, принадлежит ли этот пиксель классу стены
-                                bool isWall = (classId == wallClassId); 
+                                bool isWall = (classId == (byte)wallClassId);
                                 
                                 // Устанавливаем значение маски стены (255 для стены, 0 для не-стены)
                                 // Используем правильный формат для однокального изображения
@@ -565,8 +688,14 @@ public unsafe class WallOptimizer : MonoBehaviour
             // Ensure we're using the correct wall class ID (9 for ADE20K)
             if (wallClassId != 9)
             {
-                Debug.LogWarning($"WallOptimizer: Correcting wall class ID from {wallClassId} to 9 (ADE20K wall class)");
-                wallClassId = 9;
+                // Only log this warning once per change, not every frame
+                if (!_wallClassIdCorrected || _previousWallClassId != wallClassId) 
+                {
+                    Debug.LogWarning($"WallOptimizer: Correcting wall class ID from {wallClassId} to 9 (ADE20K wall class)");
+                    _previousWallClassId = wallClassId;
+                    _wallClassIdCorrected = true;
+                }
+                wallClassId = (byte)9;
             }
             
             Texture2D segmentationResult = predictor.GetSegmentationForClass(wallClassId);

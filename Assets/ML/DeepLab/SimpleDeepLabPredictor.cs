@@ -6,7 +6,7 @@ using UnityEngine;
 /// </summary>
 public class SimpleDeepLabPredictor : DeepLabPredictor
 {
-    [SerializeField] private int wallClassId = 9;  // Updated default to 9
+    [SerializeField] private new int wallClassId = 9;  // Updated default to 9
     
     public override int WallClassId 
     { 
