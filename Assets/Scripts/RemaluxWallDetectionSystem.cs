@@ -18,6 +18,7 @@ public class RemaluxWallDetectionSystem : MonoBehaviour
     [SerializeField] private ARCameraManager _arCameraManager;
     [SerializeField] private ARPlaneManager _arPlaneManager;
     [SerializeField] private ARRaycastManager _arRaycastManager;
+    [SerializeField] private ARAnchorManager _arAnchorManager;
     
     [Header("Wall Configuration")]
     [SerializeField] private Material _wallMaterial;
@@ -65,6 +66,9 @@ public class RemaluxWallDetectionSystem : MonoBehaviour
             
         if (_arRaycastManager == null)
             _arRaycastManager = FindObjectOfType<ARRaycastManager>();
+            
+        if (_arAnchorManager == null)
+            _arAnchorManager = FindObjectOfType<ARAnchorManager>();
             
         if (_deepLabPredictor == null)
             _deepLabPredictor = FindObjectOfType<DeepLabPredictor>();
@@ -142,6 +146,12 @@ public class RemaluxWallDetectionSystem : MonoBehaviour
             allValid = false;
         }
         
+        if (_arAnchorManager == null)
+        {
+            Debug.LogError("RemaluxWallDetectionSystem: Missing ARAnchorManager component");
+            allValid = false;
+        }
+        
         if (_deepLabPredictor == null)
         {
             Debug.LogWarning("RemaluxWallDetectionSystem: DeepLabPredictor not found, wall detection will be limited");
@@ -169,10 +179,10 @@ public class RemaluxWallDetectionSystem : MonoBehaviour
         {
             Debug.LogWarning("RemaluxWallDetectionSystem: Wall anchor prefab not set, will create one dynamically");
             
-            // Create a basic wall anchor prefab
+            // Create a basic wall anchor prefab - WITHOUT ARAnchor component
             _wallAnchorPrefab = new GameObject("Wall Anchor Template");
             _wallAnchorPrefab.AddComponent<ARWallAnchor>();
-            _wallAnchorPrefab.AddComponent<ARAnchor>();
+            // No longer adding ARAnchor component here
             
             // Hide the template
             _wallAnchorPrefab.SetActive(false);
@@ -602,35 +612,53 @@ public class RemaluxWallDetectionSystem : MonoBehaviour
             Debug.LogError("RemaluxWallDetectionSystem: _wallAnchorPrefab всё ещё не задан — пропускаем создание якоря");
             return;
         }
+        
+        if (_arAnchorManager == null)
+        {
+            Debug.LogError("RemaluxWallDetectionSystem: Missing ARAnchorManager - cannot create proper AR anchors");
+            return;
+        }
 
-        // Create wall anchor as a child of the plane
-        GameObject wallAnchorObject = Instantiate(_wallAnchorPrefab, plane.transform);
+        // Create a pose for attaching to the plane
+        Pose anchorPose = new Pose(plane.center, plane.transform.rotation);
+        
+        // Create an AR Anchor properly through ARAnchorManager
+        ARAnchor arAnchor = _arAnchorManager.AttachAnchor(plane, anchorPose);
+        
+        if (arAnchor == null)
+        {
+            Debug.LogWarning($"RemaluxWallDetectionSystem: Failed to attach anchor to plane {plane.trackableId}");
+            return;
+        }
+        
+        // Now instantiate wall anchor as a child of the AR anchor
+        GameObject wallAnchorObject = Instantiate(_wallAnchorPrefab, arAnchor.transform);
         wallAnchorObject.name = $"Wall Anchor ({plane.trackableId})";
         wallAnchorObject.SetActive(true);
         
-        // Set proper position, rotation, and scale relative to the plane
-        wallAnchorObject.transform.localPosition = plane.center;
+        // Set local transform properties
+        wallAnchorObject.transform.localPosition = Vector3.zero;
         wallAnchorObject.transform.localRotation = Quaternion.identity;
-        wallAnchorObject.transform.localScale = new Vector3(plane.size.x, _minWallHeight, plane.size.y);
         
-        // Get or add required components
+        // Scale according to plane dimensions
+        // Assuming quad is in XY plane with Z as normal
+        wallAnchorObject.transform.localScale = new Vector3(plane.size.x, plane.size.y, 1f);
+        
+        // Get or add ARWallAnchor component
         ARWallAnchor wallAnchor = wallAnchorObject.GetComponent<ARWallAnchor>();
         if (wallAnchor == null)
             wallAnchor = wallAnchorObject.AddComponent<ARWallAnchor>();
         
-        // Set properties on the wall anchor
+        // Set wall anchor properties
         wallAnchor.ARPlane = plane;
+        wallAnchor.ARAnchor = arAnchor;
         wallAnchor.SetWallDimensions(plane.size.x, _minWallHeight);
-        
-        ARAnchor anchor = wallAnchorObject.GetComponent<ARAnchor>();
-        if (anchor == null)
-            anchor = wallAnchorObject.AddComponent<ARAnchor>();
         
         // Add the wall anchor to the list
         _wallAnchors.Add(wallAnchor);
         
         if (_debugMode)
-            Debug.Log($"RemaluxWallDetectionSystem: Created wall anchor for plane {plane.trackableId} with size {plane.size}");
+            Debug.Log($"RemaluxWallDetectionSystem: Created properly attached wall anchor for plane {plane.trackableId} with size {plane.size}");
     }
     
     /// <summary>
