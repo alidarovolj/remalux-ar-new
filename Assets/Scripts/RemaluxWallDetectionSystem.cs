@@ -71,6 +71,9 @@ public class RemaluxWallDetectionSystem : MonoBehaviour
             
         if (_wallAnchorConnector == null)
             _wallAnchorConnector = FindObjectOfType<WallAnchorConnector>();
+            
+        // Validate components in Awake instead of Start
+        _isInitialized = ValidateComponents();
     }
     
     private void Start()
@@ -82,8 +85,7 @@ public class RemaluxWallDetectionSystem : MonoBehaviour
             _legacySetup.enabled = false;
         }
         
-        // Validate required components
-        _isInitialized = ValidateComponents();
+        // Components are already validated in Awake
         
         if (_isInitialized)
         {
@@ -404,6 +406,16 @@ public class RemaluxWallDetectionSystem : MonoBehaviour
     /// </summary>
     private void CreateWallAnchorForPlane(ARPlane plane)
     {
+        // если вдруг шаблон не создан — создаём на лету
+        if (_wallAnchorPrefab == null)
+            ValidateComponents();
+
+        if (_wallAnchorPrefab == null)
+        {
+            Debug.LogError("RemaluxWallDetectionSystem: _wallAnchorPrefab всё ещё не задан — пропускаем создание якоря");
+            return;
+        }
+
         // Create a new wall anchor for the plane
         GameObject wallAnchorObject = Instantiate(_wallAnchorPrefab, plane.transform.position, plane.transform.rotation);
         wallAnchorObject.name = $"Wall Anchor ({plane.trackableId})";
@@ -481,6 +493,9 @@ public class RemaluxWallDetectionSystem : MonoBehaviour
         }
         
         _wallAnchors.Clear();
+        
+        // IMPORTANT: Do not destroy the prefab template!
+        // This ensures _wallAnchorPrefab always remains valid for Instantiate
         
         if (_debugMode)
             Debug.Log("RemaluxWallDetectionSystem: Cleared all wall anchors");
