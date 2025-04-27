@@ -141,39 +141,110 @@ public class RemaluxARWallSetup : MonoBehaviour
     }
     
     /// <summary>
-    /// Находит основной ARSessionOrigin в сцене
+    /// Находит основной ARSessionOrigin или XROrigin в сцене
     /// </summary>
     private ARSessionOrigin FindMainARSessionOrigin()
     {
-        // Ищем ARSessionOrigin, у которого есть компоненты AR
+        // Поддержка как традиционного ARSessionOrigin, так и нового XROrigin
         ARSessionOrigin[] sessionOrigins = FindObjectsOfType<ARSessionOrigin>();
         
-        if (sessionOrigins.Length == 0)
+        // Сначала пытаемся найти ARSessionOrigin (для обратной совместимости)
+        if (sessionOrigins.Length > 0)
         {
-            Debug.LogError("RemaluxARWallSetup: No ARSessionOrigin found in the scene");
+            if (sessionOrigins.Length == 1)
+            {
+                return sessionOrigins[0]; // Единственный экземпляр
+            }
+            
+            // Если есть несколько, находим тот, у которого есть активная AR камера
+            foreach (ARSessionOrigin origin in sessionOrigins)
+            {
+                Camera arCamera = origin.camera;
+                if (arCamera != null && arCamera.gameObject.activeSelf && arCamera == Camera.main)
+                {
+                    Debug.Log($"RemaluxARWallSetup: Using ARSessionOrigin with the main camera: {origin.name}");
+                    return origin;
+                }
+            }
+            
+            // Если не можем найти по камере, берем первый
+            Debug.LogWarning("RemaluxARWallSetup: Multiple ARSessionOrigin found. Using the first one.");
+            return sessionOrigins[0];
+        }
+        
+        // Если ARSessionOrigin не найден, ищем новый XROrigin
+        var xrOrigins = FindObjectsOfType<UnityEngine.XR.ARFoundation.ARSessionOrigin>();
+        if (xrOrigins.Length == 0)
+        {
+            // Попытка найти XROrigin через полное имя типа, чтобы избежать проблем с пространством имен
+            var xrOriginType = System.Type.GetType("Unity.XR.CoreUtils.XROrigin, Unity.XR.CoreUtils");
+            if (xrOriginType != null)
+            {
+                var newXROrigins = FindObjectsOfType(xrOriginType);
+                if (newXROrigins.Length > 0)
+                {
+                    Debug.Log("RemaluxARWallSetup: Found new XROrigin, creating compatibility wrapper");
+                    
+                    // Получаем объект XROrigin
+                    var xrOrigin = newXROrigins[0] as Component;
+                    
+                    // Проверяем, есть ли у него уже компонент ARSessionOrigin
+                    var existingWrapper = xrOrigin.GetComponent<ARSessionOrigin>();
+                    if (existingWrapper != null)
+                    {
+                        return existingWrapper;
+                    }
+                    
+                    // Создаем ARSessionOrigin на том же GameObject
+                    var wrapper = xrOrigin.gameObject.AddComponent<ARSessionOrigin>();
+                    
+                    // Получаем камеру из XROrigin через рефлексию
+                    var cameraProperty = xrOriginType.GetProperty("Camera");
+                    if (cameraProperty != null)
+                    {
+                        wrapper.camera = cameraProperty.GetValue(xrOrigin) as Camera;
+                    }
+                    else
+                    {
+                        // Пытаемся найти камеру в дочерних объектах
+                        var cameraObj = xrOrigin.transform.Find("Camera Offset/Main Camera");
+                        if (cameraObj != null)
+                        {
+                            wrapper.camera = cameraObj.GetComponent<Camera>();
+                        }
+                        else
+                        {
+                            // Последний вариант - просто используем камеру из дочерних объектов
+                            wrapper.camera = xrOrigin.GetComponentInChildren<Camera>();
+                        }
+                    }
+                    
+                    Debug.Log($"RemaluxARWallSetup: Created ARSessionOrigin wrapper for XROrigin, camera: {wrapper.camera?.name ?? "null"}");
+                    return wrapper;
+                }
+            }
+            
+            Debug.LogError("RemaluxARWallSetup: No ARSessionOrigin or XROrigin found in the scene");
             return null;
         }
         
-        if (sessionOrigins.Length == 1)
+        // Если нашли ARSessionOrigin через новый тип
+        if (xrOrigins.Length == 1)
         {
-            return sessionOrigins[0]; // Единственный экземпляр
+            return xrOrigins[0];
         }
         
-        // Если есть несколько, находим тот, у которого есть активная AR камера
-        foreach (ARSessionOrigin origin in sessionOrigins)
+        // Если нашли несколько
+        foreach (var origin in xrOrigins)
         {
-            // Проверяем, есть ли у этого ARSessionOrigin связанная AR камера
             Camera arCamera = origin.camera;
             if (arCamera != null && arCamera.gameObject.activeSelf && arCamera == Camera.main)
             {
-                Debug.Log($"RemaluxARWallSetup: Using ARSessionOrigin with the main camera: {origin.name}");
                 return origin;
             }
         }
         
-        // Если не можем найти по камере, берем первый
-        Debug.LogWarning("RemaluxARWallSetup: Multiple ARSessionOrigin found. Using the first one.");
-        return sessionOrigins[0];
+        return xrOrigins[0];
     }
     
     /// <summary>
@@ -603,40 +674,74 @@ public class RemaluxARWallSetup : MonoBehaviour
         // Отладочная информация о позиции камеры до создания
         Debug.Log($"RemaluxARWallSetup: Camera BEFORE: {Camera.main.transform.position}");
         
-        // Создаем позу в координатной системе плоскости
-        Pose anchorPose = new Pose(plane.center, plane.transform.rotation);
+        // Создаем якорь через ARAnchorManager, используя центр плоскости
+        Pose anchorPose = new Pose(plane.center, Quaternion.LookRotation(plane.normal, Vector3.up));
         
-        // Создаем якорь через ARAnchorManager
-        ARAnchor arAnchor = _arAnchorManager.AttachAnchor(plane, anchorPose);
+        // Use the correct method to create an anchor based on the AR Foundation version
+        ARAnchor arAnchor = null;
+        
+        // Try to attach anchor to the plane first (this is the preferred and most stable method)
+        arAnchor = _arAnchorManager.AttachAnchor(plane, anchorPose);
         
         if (arAnchor == null)
         {
-            Debug.LogWarning($"RemaluxARWallSetup: Failed to attach anchor to plane {plane.trackableId}");
+            Debug.LogWarning($"RemaluxARWallSetup: Failed to create anchor for plane {plane.trackableId} - trying alternate method");
+            
+            // Fallback: Try to create a free-floating anchor if available in this AR Foundation version
+            try
+            {
+                // Some versions have this method, try using reflection to call it if available
+                var methodInfo = typeof(ARAnchorManager).GetMethod("AddAnchor", new[] { typeof(Pose) });
+                if (methodInfo != null)
+                {
+                    arAnchor = methodInfo.Invoke(_arAnchorManager, new object[] { anchorPose }) as ARAnchor;
+                }
+                else
+                {
+                    // Last resort: create a GameObject with ARAnchor manually
+                    GameObject anchorGO = new GameObject($"Manual Anchor ({plane.trackableId})");
+                    anchorGO.transform.position = anchorPose.position;
+                    anchorGO.transform.rotation = anchorPose.rotation;
+                    arAnchor = anchorGO.AddComponent<ARAnchor>();
+                }
+            }
+            catch (System.Exception ex)
+            {
+                Debug.LogError($"RemaluxARWallSetup: Error creating anchor: {ex.Message}");
+            }
+        }
+        
+        if (arAnchor == null)
+        {
+            Debug.LogError($"RemaluxARWallSetup: All attempts to create anchor failed for plane {plane.trackableId}");
             return;
         }
         
         // Отладочная информация о позиции якоря
-        Debug.Log($"RemaluxARWallSetup: Anchor at: {arAnchor.transform.position}, camera at: {Camera.main.transform.position}");
+        Debug.Log($"RemaluxARWallSetup: Anchor created at: {arAnchor.transform.position}");
         
-        // Создаем квадрик отдельно и затем привязываем его к якорю С СОХРАНЕНИЕМ мировых координат
+        // Создаем стену из префаба и активируем ее
         GameObject wallAnchorObject = Instantiate(_wallAnchorPrefab);
-        // Сначала активируем, чтобы transform проинициализировался корректно
         wallAnchorObject.SetActive(true);
         wallAnchorObject.name = $"Wall Anchor ({plane.trackableId})";
         
-        // Позиционируем квадрик в мировых координатах совпадающим с якорем
+        // Устанавливаем положение и ориентацию стены НАПРЯМУЮ, без родительской связи
         wallAnchorObject.transform.position = arAnchor.transform.position;
         wallAnchorObject.transform.rotation = arAnchor.transform.rotation;
         
-        // ЗАТЕМ устанавливаем родителя, СОХРАНЯЯ мировые координаты
-        wallAnchorObject.transform.SetParent(arAnchor.transform, worldPositionStays: true);
+        // Устанавливаем родительскую связь ПОСЛЕ установки позиции и поворота
+        wallAnchorObject.transform.parent = arAnchor.transform;
+        
+        // Устанавливаем локальное смещение в 0 для гарантии точного позиционирования
+        wallAnchorObject.transform.localPosition = Vector3.zero;
+        wallAnchorObject.transform.localRotation = Quaternion.identity;
         
         // Отладочный вывод после привязки
-        Debug.Log($"RemaluxARWallSetup: After parenting - Quad at: {wallAnchorObject.transform.position}, anchor at: {arAnchor.transform.position}");
+        Debug.Log($"RemaluxARWallSetup: After parenting - Wall at: {wallAnchorObject.transform.position}, anchor at: {arAnchor.transform.position}");
         
         // Масштабируем в соответствии с размерами плоскости
-        // Предполагаем, что квад находится в плоскости XY с нормалью Z
-        wallAnchorObject.transform.localScale = new Vector3(plane.size.x, plane.size.y, 1f);
+        float wallWidth = Mathf.Max(plane.size.x, 1.0f);
+        float wallHeight = Mathf.Max(_minWallHeight, plane.size.y);
         
         // Получаем или добавляем компонент ARWallAnchor
         ARWallAnchor wallAnchor = wallAnchorObject.GetComponent<ARWallAnchor>();
@@ -646,17 +751,30 @@ public class RemaluxARWallSetup : MonoBehaviour
         // Устанавливаем свойства стены
         wallAnchor.ARPlane = plane;
         wallAnchor.ARAnchor = arAnchor;
-        wallAnchor.SetWallDimensions(plane.size.x, _minWallHeight);
+        wallAnchor.SetWallDimensions(wallWidth, wallHeight);
+        
+        // Устанавливаем материал и цвет стены если они заданы
+        if (_wallMaterial != null)
+        {
+            wallAnchor.SetWallMaterial(_wallMaterial);
+            wallAnchor.SetWallColor(_wallColor);
+        }
         
         // Добавляем стену в список
         _wallAnchors.Add(wallAnchor);
         
-        // Отладочный вывод иерархии
-        // Это поможет проверить, как выглядит дерево объектов
-        PrintObjectHierarchy(arAnchor.transform, 0);
+        // Отладочная проверка родительской связи
+        if (wallAnchorObject.transform.parent != arAnchor.transform)
+        {
+            Debug.LogWarning("RemaluxARWallSetup: Wall parenting failed! Fixing...");
+            wallAnchorObject.transform.parent = arAnchor.transform;
+        }
         
         if (_debugMode)
-            Debug.Log($"RemaluxARWallSetup: Created wall anchor for plane {plane.trackableId} with size {plane.size}");
+        {
+            Debug.Log($"RemaluxARWallSetup: Created wall anchor for plane {plane.trackableId} with size {wallWidth}x{wallHeight}");
+            PrintObjectHierarchy(arAnchor.transform, 0);
+        }
     }
     
     /// <summary>

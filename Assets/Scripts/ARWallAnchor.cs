@@ -14,6 +14,8 @@ public class ARWallAnchor : MonoBehaviour
     [SerializeField] private float _wallWidth = 1.0f;
     [SerializeField] private float _wallHeight = 2.4f;
     [SerializeField] private bool _isValid = false;
+    [SerializeField] private GameObject _wall;
+    [SerializeField] private bool _debugMode = false;
     
     [Header("AR References")]
     [SerializeField] private ARAnchor _arAnchor;
@@ -66,6 +68,11 @@ public class ARWallAnchor : MonoBehaviour
     public ARPlane ARPlane {
         get { return _arPlane; }
         set { _arPlane = value; }
+    }
+    
+    public GameObject Wall {
+        get { return _wall; }
+        set { _wall = value; }
     }
     
     private void Awake()
@@ -250,7 +257,27 @@ public class ARWallAnchor : MonoBehaviour
         _wallWidth = width;
         _wallHeight = height;
         
-        UpdateWallMesh();
+        if (_wall == null)
+        {
+            if (_debugMode) Debug.LogWarning("Cannot set wall dimensions: wall object is null");
+            return;
+        }
+        
+        // Apply dimensions by scaling the wall
+        _wall.transform.localScale = new Vector3(width, height, 0.1f); // Assuming wall is a simple cube with 0.1f depth
+        
+        // Update mesh collider if present
+        MeshCollider meshCollider = _wall.GetComponent<MeshCollider>();
+        if (meshCollider != null)
+        {
+            meshCollider.enabled = false;
+            meshCollider.enabled = true; // Refresh the collider
+        }
+        
+        if (_debugMode)
+        {
+            Debug.Log($"Wall dimensions set - Width: {width}, Height: {height}");
+        }
     }
     
     /// <summary>
@@ -358,5 +385,56 @@ public class ARWallAnchor : MonoBehaviour
         }
         
         Debug.LogWarning($"ARWallAnchor: Could not find plane with ID {planeId}");
+    }
+
+    /// <summary>
+    /// Updates the wall position and rotation based on the anchor position and plane normal
+    /// </summary>
+    private void UpdateWall()
+    {
+        if (_wall == null)
+        {
+            if (_debugMode) Debug.LogWarning("Cannot update wall: wall object is null");
+            return;
+        }
+
+        // Set wall position to anchor position
+        _wall.transform.position = transform.position;
+        
+        // If we have a valid AR plane, align the wall with its normal
+        if (_arPlane != null)
+        {
+            // Get plane normal in world space
+            Vector3 planeNormal = _arPlane.transform.up;
+            
+            // Set the wall rotation to align with the plane's normal
+            // Wall's forward should match the plane's normal
+            Quaternion targetRotation = Quaternion.LookRotation(planeNormal);
+            _wall.transform.rotation = targetRotation;
+            
+            if (_debugMode)
+            {
+                Debug.Log($"Wall updated - Position: {_wall.transform.position}, Rotation based on normal: {planeNormal}");
+            }
+        }
+        else
+        {
+            // If no AR plane, just use the anchor's rotation
+            _wall.transform.rotation = transform.rotation;
+            
+            if (_debugMode)
+            {
+                Debug.Log($"Wall updated with anchor rotation (no AR plane) - Position: {_wall.transform.position}");
+            }
+        }
+        
+        // Update dimensions if necessary
+        SetWallDimensions(_wallWidth, _wallHeight);
+    }
+
+    private void Update()
+    {
+        // Update wall position and dimensions
+        UpdateWall();
     }
 } 

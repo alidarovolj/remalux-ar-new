@@ -18,30 +18,6 @@ public class ARSceneSetup : EditorWindow
     private const int WALL_CLASS_ID = 7;
     private const int SEGFORMER_INPUT_SIZE = 512;
     
-    // Helper method to avoid SendMessage warnings by deferring component addition
-    private static T SafeAddComponent<T>(GameObject target) where T : Component
-    {
-        // Check if component already exists
-        T existing = target.GetComponent<T>();
-        if (existing != null)
-            return existing;
-            
-        // Queue the component addition for next editor update to avoid SendMessage warnings
-        T component = null;
-        EditorApplication.delayCall += () => 
-        {
-            if (target != null) // Check if target still exists
-            {
-                component = target.AddComponent<T>();
-                EditorUtility.SetDirty(target);
-            }
-        };
-        
-        // Need to create the component now for immediate reference
-        // The duplicated component will be removed on next editor update
-        return target.AddComponent<T>();
-    }
-    
     [MenuItem("AR/Setup AR Scene")]
     public static void SetupARScene()
     {
@@ -195,12 +171,12 @@ public class ARSceneSetup : EditorWindow
             meshManagerObj.transform.SetParent(xrOriginObj.transform);
             
             // Add ARMeshManager directly to XROrigin
-            ARMeshManager meshManager = SafeAddComponent<ARMeshManager>(meshManagerObj);
+            ARMeshManager meshManager = meshManagerObj.AddComponent<ARMeshManager>();
             meshManager.density = 0.5f;
             Debug.Log("Added ARMeshManager as child of XROrigin for mesh processing in world space");
             
             // Add WallAligner to handle applying material to walls
-            WallAligner wallAligner = SafeAddComponent<WallAligner>(meshManagerObj);
+            WallAligner wallAligner = meshManagerObj.AddComponent<WallAligner>();
             
             // Load wall material
             Material simpleWallMaterial = AssetDatabase.LoadAssetAtPath<Material>("Assets/Materials/SimpleWallMaterial.mat");
@@ -433,27 +409,79 @@ public class ARSceneSetup : EditorWindow
             
             Debug.Log("Wall Detection System added to scene with enhanced recognition");
 
+            // Create Wall Anchor Template prefab before configuring RemaluxARWallSetup
+            GameObject wallAnchorTemplate = CreateWallAnchorTemplate();
+            
+            // Важно: создаем экземпляр Wall Anchor в сцене для использования
+            GameObject wallAnchorInstance = GameObject.Instantiate(wallAnchorTemplate);
+            wallAnchorInstance.name = "Wall Anchor";
+            wallAnchorInstance.SetActive(true); // Убедимся, что объект активен
+            
             // Add our new AR-aware wall anchoring system
             GameObject remaluxWallSystemObj = new GameObject("Remalux AR Wall System");
             remaluxWallSystemObj.transform.SetParent(mlSystem.transform);
             
             // Add RemaluxARWallSetup component for automatic configuration
             RemaluxARWallSetup arWallSetup = remaluxWallSystemObj.AddComponent<RemaluxARWallSetup>();
+            
+            // Add Wall Anchor Connector under Remalux AR Wall System
+            GameObject wallAnchorConnectorObj = new GameObject("Wall Anchor Connector");
+            wallAnchorConnectorObj.transform.SetParent(remaluxWallSystemObj.transform);
+            WallAnchorConnector wallAnchorConnector = wallAnchorConnectorObj.AddComponent<WallAnchorConnector>();
+            
+            // Configure Wall Anchor Connector
+            EditorApplication.delayCall += () => {
+                if (wallAnchorConnector != null && enhancedPredictor != null && wallAnchorInstance != null)
+                {
+                    wallAnchorConnector.Predictor = enhancedPredictor;
+                    wallAnchorConnector.WallAnchor = wallAnchorInstance.GetComponent<ARWallAnchor>();
+                    
+                    // Find and connect AR components
+                    Camera arCamera = GameObject.Find("AR Camera")?.GetComponent<Camera>();
+                    if (arCamera != null)
+                    {
+                        wallAnchorConnector.ARCamera = arCamera;
+                    }
+                    
+                    ARPlaneManager planeManager = FindObjectOfType<ARPlaneManager>();
+                    if (planeManager != null)
+                    {
+                        wallAnchorConnector.ARPlaneManager = planeManager;
+                        // Убедимся, что плоскости обнаруживаются правильно
+                        planeManager.requestedDetectionMode = PlaneDetectionMode.Vertical | PlaneDetectionMode.Horizontal;
+                    }
+                    
+                    ARAnchorManager anchorManager = FindObjectOfType<ARAnchorManager>();
+                    if (anchorManager != null)
+                    {
+                        wallAnchorConnector.AnchorManager = anchorManager;
+                    }
+                    
+                    EditorUtility.SetDirty(wallAnchorConnector);
+                    Debug.Log("Wall Anchor Connector configured with Wall Anchor instance");
+                }
+            };
+            
             // Set public properties using SerializedObject to avoid direct access to private fields
             SerializedObject serializedArWallSetup = new SerializedObject(arWallSetup);
             serializedArWallSetup.FindProperty("_autoSetup").boolValue = true;
+            serializedArWallSetup.FindProperty("_autoDetectWalls").boolValue = true; // Важно: включаем автоматическое обнаружение
+            serializedArWallSetup.FindProperty("_debugMode").boolValue = true;
             serializedArWallSetup.FindProperty("_predictor").objectReferenceValue = enhancedPredictor;
+            serializedArWallSetup.FindProperty("_wallAnchorPrefab").objectReferenceValue = wallAnchorTemplate;
             
             // Find needed AR components
             ARSession arSession = GameObject.FindObjectOfType<ARSession>();
             ARCameraManager arCameraManager = GameObject.FindObjectOfType<ARCameraManager>();
             ARPlaneManager arPlaneManager = GameObject.FindObjectOfType<ARPlaneManager>();
             ARRaycastManager arRaycastManager = GameObject.FindObjectOfType<ARRaycastManager>();
+            ARAnchorManager arAnchorManager = GameObject.FindObjectOfType<ARAnchorManager>();
             
             serializedArWallSetup.FindProperty("_arSession").objectReferenceValue = arSession;
             serializedArWallSetup.FindProperty("_arCameraManager").objectReferenceValue = arCameraManager;
             serializedArWallSetup.FindProperty("_arPlaneManager").objectReferenceValue = arPlaneManager;
             serializedArWallSetup.FindProperty("_arRaycastManager").objectReferenceValue = arRaycastManager;
+            serializedArWallSetup.FindProperty("_arAnchorManager").objectReferenceValue = arAnchorManager;
             
             // Set wall color
             serializedArWallSetup.FindProperty("_wallColor").colorValue = new Color(0.2f, 0.8f, 1.0f, 0.7f);
@@ -468,8 +496,27 @@ public class ARSceneSetup : EditorWindow
             // Apply all changes
             serializedArWallSetup.ApplyModifiedProperties();
             
+            // Configure anchor manager with Wall Anchor Template
+            if (arAnchorManager != null && wallAnchorTemplate != null)
+            {
+                SerializedObject anchorManagerSerialized = new SerializedObject(arAnchorManager);
+                var prefabProperty = anchorManagerSerialized.FindProperty("m_AnchorPrefab");
+                if (prefabProperty != null)
+                {
+                    prefabProperty.objectReferenceValue = wallAnchorTemplate;
+                    anchorManagerSerialized.ApplyModifiedProperties();
+                    Debug.Log("Set Wall Anchor Template prefab in ARAnchorManager");
+                }
+                
+                // Убедимся, что анкер-менеджер включен
+                arAnchorManager.enabled = true;
+            }
+            
+            // Вместо добавления новых объектов Wall Colorizer и ARML Controller,
+            // просто убедимся, что они будут настроены позже через SetupComponentReferences
+            
             Debug.Log("Added Remalux AR Wall anchoring system for fixing walls in AR space");
-
+            
             // We won't add WallMeshRenderer here - it needs to be on an XROrigin
             // We'll create a reference for it in SetupComponentReferences instead
             
@@ -561,12 +608,12 @@ public class ARSceneSetup : EditorWindow
             // after all objects are created
             
             // ARML Controller
-            GameObject armlControllerObj = new GameObject("ARML Controller");
-            armlControllerObj.transform.SetParent(mlSystem.transform);
-            ARMLController armlController = armlControllerObj.AddComponent<ARMLController>();
+            GameObject armlControllerObject = new GameObject("ARML Controller");
+            armlControllerObject.transform.SetParent(mlSystem.transform);
+            ARMLController armlControllerComponent = armlControllerObject.AddComponent<ARMLController>();
             
             // Add FixARMLController component
-            FixARMLController fixController = armlControllerObj.AddComponent<FixARMLController>();
+            FixARMLController fixController = armlControllerObject.AddComponent<FixARMLController>();
             
             // We'll set up component references later in SetupComponentReferences
         }
@@ -734,7 +781,7 @@ public class ARSceneSetup : EditorWindow
         try
         {
             GameObject buttonObj = new GameObject(name + " Button");
-            buttonObj.transform.SetParent(parent, false);
+            buttonObj.transform.SetParent(parent.transform, false);
             
             RectTransform buttonRect = buttonObj.AddComponent<RectTransform>();
             buttonRect.anchorMin = anchorMin;
@@ -815,8 +862,171 @@ public class ARSceneSetup : EditorWindow
             // Find our new AR wall anchoring components
             RemaluxARWallSetup arWallSetup = GameObject.Find("Remalux AR Wall System")?.GetComponent<RemaluxARWallSetup>();
             ARAwareWallMeshRenderer arWallRenderer = GameObject.FindObjectOfType<ARAwareWallMeshRenderer>();
+            
+            // Check if WallAnchorConnector exists, if not add it
             WallAnchorConnector wallAnchorConnector = GameObject.FindObjectOfType<WallAnchorConnector>();
-            ARWallAnchor arWallAnchor = GameObject.FindObjectOfType<ARWallAnchor>();
+            if (wallAnchorConnector == null && arWallSetup != null)
+            {
+                // Create WallAnchorConnector on the same GameObject
+                GameObject wallAnchorConnectorObj = new GameObject("Wall Anchor Connector");
+                wallAnchorConnectorObj.transform.SetParent(arWallSetup.transform);
+                wallAnchorConnector = wallAnchorConnectorObj.AddComponent<WallAnchorConnector>();
+                Debug.Log("Created WallAnchorConnector for connecting walls with anchors");
+            }
+            
+            // Try to find Wall Anchor Template prefab
+            GameObject wallAnchorTemplate = AssetDatabase.LoadAssetAtPath<GameObject>("Assets/Prefabs/AR/Wall Anchor Template.prefab");
+            
+            // Make sure ARAnchorManager has the prefab set
+            ARAnchorManager anchorManager = GameObject.FindObjectOfType<ARAnchorManager>();
+            if (anchorManager != null && wallAnchorTemplate != null)
+            {
+                SerializedObject serializedObj = new SerializedObject(anchorManager);
+                var prefabProperty = serializedObj.FindProperty("m_AnchorPrefab");
+                if (prefabProperty != null)
+                {
+                    prefabProperty.objectReferenceValue = wallAnchorTemplate;
+                    serializedObj.ApplyModifiedProperties();
+                    Debug.Log("Set Wall Anchor Template prefab in ARAnchorManager component reference phase");
+                }
+            }
+            
+            // Connect ARWallAnchor with our WallAnchorConnector
+            if (wallAnchorConnector != null && enhancedPredictor != null)
+            {
+                wallAnchorConnector.Predictor = enhancedPredictor;
+                
+                // Get camera reference
+                Camera mainCamera = Camera.main;
+                if (mainCamera == null)
+                {
+                    mainCamera = GameObject.Find("AR Camera")?.GetComponent<Camera>();
+                }
+                
+                // Set camera reference
+                if (mainCamera != null)
+                {
+                    wallAnchorConnector.ARCamera = mainCamera;
+                }
+                
+                // Set ARPlaneManager reference
+                ARPlaneManager planeManager = GameObject.FindObjectOfType<ARPlaneManager>();
+                if (planeManager != null)
+                {
+                    wallAnchorConnector.ARPlaneManager = planeManager;
+                    Debug.Log("Connected WallAnchorConnector with ARPlaneManager");
+                }
+                
+                // Set ARAnchorManager reference
+                if (anchorManager != null)
+                {
+                    wallAnchorConnector.AnchorManager = anchorManager;
+                    Debug.Log("Connected WallAnchorConnector with ARAnchorManager");
+                }
+                
+                Debug.Log("Connected WallAnchorConnector with EnhancedDeepLabPredictor");
+            }
+            
+            // Connect our RemaluxARWallSetup with XROrigin/ARSessionOrigin
+            if (arWallSetup != null)
+            {
+                // Try to find XROrigin first
+                XROrigin xrOriginComponent = FindObjectOfType<XROrigin>();
+                if (xrOriginComponent != null)
+                {
+                    // Безопасно проверяем наличие компонента ARSessionOrigin
+                    if (!xrOriginComponent.TryGetComponent<ARSessionOrigin>(out ARSessionOrigin arSessionOrigin))
+                    {
+                        try {
+                            // Вместо добавления компонента ARSessionOrigin, создаем совместимую обертку
+                            GameObject compatibilityWrapper = new GameObject("ARSessionOrigin Compatibility");
+                            compatibilityWrapper.transform.SetParent(xrOriginComponent.transform);
+                            arSessionOrigin = compatibilityWrapper.AddComponent<ARSessionOrigin>();
+                            arSessionOrigin.camera = xrOriginComponent.Camera;
+                            Debug.Log("Created ARSessionOrigin compatibility wrapper for XROrigin");
+                        }
+                        catch (Exception e) {
+                            Debug.LogWarning($"Could not create ARSessionOrigin compatibility: {e.Message}");
+                        }
+                    }
+                    
+                    // Вызываем метод FindMainARSessionOrigin через рефлексию вместо SendMessage
+                    EditorApplication.delayCall += () => {
+                        if (arWallSetup != null)
+                        {
+                            try {
+                                // Используем reflection для вызова метода
+                                var methodInfo = arWallSetup.GetType().GetMethod("FindMainARSessionOrigin", 
+                                    System.Reflection.BindingFlags.Public | 
+                                    System.Reflection.BindingFlags.NonPublic | 
+                                    System.Reflection.BindingFlags.Instance);
+                                
+                                if (methodInfo != null)
+                                {
+                                    methodInfo.Invoke(arWallSetup, null);
+                                    Debug.Log("Called FindMainARSessionOrigin method on RemaluxARWallSetup");
+                                }
+                                else
+                                {
+                                    // Если метод не найден, используем Serialized Object для установки ссылки напрямую
+                                    SerializedObject serializedObj = new SerializedObject(arWallSetup);
+                                    var arSessionOriginProp = serializedObj.FindProperty("_arSessionOrigin");
+                                    if (arSessionOriginProp != null && arSessionOrigin != null)
+                                    {
+                                        arSessionOriginProp.objectReferenceValue = arSessionOrigin;
+                                        serializedObj.ApplyModifiedProperties();
+                                        Debug.Log("Directly set ARSessionOrigin reference on RemaluxARWallSetup");
+                                    }
+                                }
+                            }
+                            catch (Exception e) {
+                                Debug.LogWarning($"Error calling FindMainARSessionOrigin: {e.Message}");
+                            }
+                        }
+                    };
+                }
+                else
+                {
+                    // Look for ARSessionOrigin instead
+                    ARSessionOrigin arSessionOrigin = FindObjectOfType<ARSessionOrigin>();
+                    if (arSessionOrigin != null)
+                    {
+                        EditorApplication.delayCall += () => {
+                            if (arWallSetup != null)
+                            {
+                                try {
+                                    // Используем reflection для вызова метода
+                                    var methodInfo = arWallSetup.GetType().GetMethod("FindMainARSessionOrigin", 
+                                        System.Reflection.BindingFlags.Public | 
+                                        System.Reflection.BindingFlags.NonPublic | 
+                                        System.Reflection.BindingFlags.Instance);
+                                    
+                                    if (methodInfo != null)
+                                    {
+                                        methodInfo.Invoke(arWallSetup, null);
+                                        Debug.Log("Called FindMainARSessionOrigin method on RemaluxARWallSetup with ARSessionOrigin");
+                                    }
+                                    else
+                                    {
+                                        // Если метод не найден, устанавливаем ссылку напрямую
+                                        SerializedObject serializedObj = new SerializedObject(arWallSetup);
+                                        var arSessionOriginProp = serializedObj.FindProperty("_arSessionOrigin");
+                                        if (arSessionOriginProp != null)
+                                        {
+                                            arSessionOriginProp.objectReferenceValue = arSessionOrigin;
+                                            serializedObj.ApplyModifiedProperties();
+                                            Debug.Log("Directly set ARSessionOrigin reference on RemaluxARWallSetup");
+                                        }
+                                    }
+                                }
+                                catch (Exception e) {
+                                    Debug.LogWarning($"Error calling FindMainARSessionOrigin: {e.Message}");
+                                }
+                            }
+                        };
+                    }
+                }
+            }
             
             // Find UI elements - make this more robust
             RawImage displayImage = null;
@@ -853,44 +1063,6 @@ public class ARSceneSetup : EditorWindow
                 serializedArmlController.ApplyModifiedProperties();
             }
             
-            // Connect ARWallAnchor with our WallAnchorConnector
-            if (arWallAnchor != null && wallAnchorConnector != null && enhancedPredictor != null)
-            {
-                wallAnchorConnector.WallAnchor = arWallAnchor;
-                wallAnchorConnector.Predictor = enhancedPredictor;
-                
-                // Get camera reference
-                Camera mainCamera = Camera.main;
-                if (mainCamera == null)
-                {
-                    mainCamera = GameObject.Find("AR Camera")?.GetComponent<Camera>();
-                }
-                
-                // Set camera reference
-                if (mainCamera != null)
-                {
-                    wallAnchorConnector.ARCamera = mainCamera;
-                }
-                
-                // Set ARPlaneManager reference
-                ARPlaneManager planeManager = GameObject.FindObjectOfType<ARPlaneManager>();
-                if (planeManager != null)
-                {
-                    wallAnchorConnector.ARPlaneManager = planeManager;
-                    Debug.Log("Connected WallAnchorConnector with ARPlaneManager");
-                }
-                
-                // Set ARAnchorManager reference
-                ARAnchorManager anchorManager = GameObject.FindObjectOfType<ARAnchorManager>();
-                if (anchorManager != null)
-                {
-                    wallAnchorConnector.AnchorManager = anchorManager;
-                    Debug.Log("Connected WallAnchorConnector with ARAnchorManager");
-                }
-                
-                Debug.Log("Connected WallAnchorConnector with ARWallAnchor and EnhancedDeepLabPredictor");
-            }
-            
             // Connect ARAwareWallMeshRenderer with our system
             if (arWallRenderer != null && enhancedPredictor != null && existingWallMaterial != null)
             {
@@ -898,9 +1070,9 @@ public class ARSceneSetup : EditorWindow
                 arWallRenderer.WallMaterial = existingWallMaterial;
                 
                 // Connect with AR components
-                if (arWallAnchor != null)
+                if (wallAnchorConnector != null)
                 {
-                    arWallRenderer.WallAnchor = arWallAnchor;
+                    arWallRenderer.WallAnchor = wallAnchorConnector.WallAnchor;
                 }
                 
                 // Get camera manager
@@ -984,9 +1156,9 @@ public class ARSceneSetup : EditorWindow
             
             // Connect ARWallAnchor to our wall detection system so it can properly anchor
             // wall meshes created by ARAwareWallMeshRenderer
-            if (arWallAnchor != null && arWallRenderer != null && arWallRenderer.WallAnchor == null)
+            if (wallAnchorConnector != null && arWallRenderer != null && arWallRenderer.WallAnchor == null)
             {
-                arWallRenderer.WallAnchor = arWallAnchor;
+                arWallRenderer.WallAnchor = wallAnchorConnector.WallAnchor;
                 Debug.Log("Connected ARWallAnchor to ARAwareWallMeshRenderer for proper anchoring");
             }
                         
@@ -1109,19 +1281,19 @@ public class ARSceneSetup : EditorWindow
                     meshManagerObj = meshManagerTransform.gameObject;
                 }
                 
-                // Ensure it has an ARMeshManager component
+                // Ensure it has an ARMeshManager component - только если еще не существует
                 ARMeshManager arMeshManager = meshManagerObj.GetComponent<ARMeshManager>();
                 if (arMeshManager == null)
                 {
-                    arMeshManager = SafeAddComponent<ARMeshManager>(meshManagerObj);
+                    arMeshManager = meshManagerObj.AddComponent<ARMeshManager>();
                     arMeshManager.density = 0.5f;
                 }
                 
-                // Make sure WallAligner is already attached
+                // Make sure WallAligner is already attached - только если еще не существует
                 WallAligner wallAligner = meshManagerObj.GetComponent<WallAligner>();
                 if (wallAligner == null)
                 {
-                    wallAligner = SafeAddComponent<WallAligner>(meshManagerObj);
+                    wallAligner = meshManagerObj.AddComponent<WallAligner>();
                     
                     // Set wall material
                     SerializedObject serializedWallAligner = new SerializedObject(wallAligner);
@@ -1850,5 +2022,51 @@ public class ARSceneSetup : EditorWindow
         GameObject colorButton = CreateButton(toolPanel.transform, "ColorButton", "Color", new Vector2(0.74f, 0.3f), new Vector2(0.92f, 0.9f));
         
         return toolPanel;
+    }
+
+    // Add new method to create Wall Anchor Template prefab
+    private static GameObject CreateWallAnchorTemplate()
+    {
+        try
+        {
+            // Create a new GameObject for the template
+            GameObject wallAnchorObj = new GameObject("Wall Anchor Template");
+            
+            // Add the ARWallAnchor component
+            ARWallAnchor arWallAnchor = wallAnchorObj.AddComponent<ARWallAnchor>();
+            
+            // Предотвращаем вызов UpdateWallMesh() который создает материал
+            // Устанавливаем размеры напрямую через поля, а не через свойства
+            SerializedObject serializedObj = new SerializedObject(arWallAnchor);
+            serializedObj.FindProperty("_wallWidth").floatValue = 1.0f;
+            serializedObj.FindProperty("_wallHeight").floatValue = 2.4f;
+            serializedObj.FindProperty("_isValid").boolValue = false;
+            serializedObj.FindProperty("_visualizeWall").boolValue = false; // Важно: отключаем визуализацию на этапе создания префаба
+            serializedObj.ApplyModifiedProperties();
+            
+            // Make sure the directory exists
+            string directory = "Assets/Prefabs/AR";
+            if (!Directory.Exists(directory))
+            {
+                Directory.CreateDirectory(directory);
+            }
+            
+            // Save as prefab
+            string prefabPath = Path.Combine(directory, "Wall Anchor Template.prefab");
+            GameObject savedPrefab = PrefabUtility.SaveAsPrefabAsset(wallAnchorObj, prefabPath);
+            
+            // Destroy the temporary GameObject
+            UnityEngine.Object.DestroyImmediate(wallAnchorObj);
+            
+            Debug.Log($"Wall Anchor Template prefab created at {prefabPath}");
+            
+            // Return the prefab asset
+            return savedPrefab;
+        }
+        catch (Exception e)
+        {
+            Debug.LogError($"Error creating Wall Anchor Template: {e.Message}");
+            return null;
+        }
     }
 } 
