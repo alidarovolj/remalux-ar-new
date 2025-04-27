@@ -2,202 +2,212 @@ using UnityEngine;
 using UnityEditor;
 using System.IO;
 using UnityEditor.SceneManagement;
+using System.Reflection;
+using UnityEngine.XR.ARFoundation;
+using System.Linq;
 
 public class CreateWallAnchorPrefab : EditorWindow
 {
     [MenuItem("Tools/Wall Detection/Create Wall Anchor Template")]
     public static void CreatePrefab()
     {
-        // Создаем новый объект
+        // Создаем GameObject с ARWallAnchor компонентом
         GameObject wallAnchorObj = new GameObject("Wall Anchor Template");
-        
-        // Добавляем компонент ARWallAnchor
         wallAnchorObj.AddComponent<ARWallAnchor>();
         
-        // Проверяем и создаем директорию если нужно
-        string directory = "Assets/Prefabs/AR";
-        if (!Directory.Exists(directory))
+        // Проверяем и создаем директорию если ее нет
+        string prefabDirectory = "Assets/Prefabs/AR";
+        if (!Directory.Exists(prefabDirectory))
         {
-            Directory.CreateDirectory(directory);
+            Directory.CreateDirectory(prefabDirectory);
+            AssetDatabase.Refresh();
         }
         
-        string prefabPath = Path.Combine(directory, "Wall Anchor Template.prefab");
+        // Путь к префабу
+        string prefabPath = prefabDirectory + "/Wall Anchor Template.prefab";
         
-        // Создаем префаб
-        PrefabUtility.SaveAsPrefabAsset(wallAnchorObj, prefabPath);
+        // Создаем и сохраняем префаб
+        bool success = false;
+        PrefabUtility.SaveAsPrefabAsset(wallAnchorObj, prefabPath, out success);
+        Object.DestroyImmediate(wallAnchorObj);
         
-        // Удаляем временный объект из сцены
-        DestroyImmediate(wallAnchorObj);
-        
-        // Уведомляем о создании
-        Debug.Log($"Wall Anchor Template prefab создан в {prefabPath}");
-        
-        // Выделяем созданный префаб в Project view
-        Selection.activeObject = AssetDatabase.LoadAssetAtPath<GameObject>(prefabPath);
-        EditorGUIUtility.PingObject(Selection.activeObject);
+        if (success)
+        {
+            Debug.Log($"[REMALUX] Префаб Wall Anchor Template успешно создан по пути: {prefabPath}");
+            
+            // Выделим префаб в Project view
+            var prefabAsset = AssetDatabase.LoadAssetAtPath<GameObject>(prefabPath);
+            Selection.activeObject = prefabAsset;
+            EditorGUIUtility.PingObject(prefabAsset);
+        }
+        else
+        {
+            Debug.LogError("[REMALUX] Не удалось создать префаб Wall Anchor Template!");
+        }
     }
     
     [MenuItem("Tools/Wall Detection/Assign Wall Anchor Template")]
     public static void AssignWallAnchorTemplate()
     {
-        // Ищем RemaluxARWallSetup в сцене
-        RemaluxARWallSetup wallSetup = FindObjectOfType<RemaluxARWallSetup>();
+        // Находим RemaluxARWallSetup в сцене
+        var wallSetup = Object.FindObjectOfType<RemaluxARWallSetup>();
         if (wallSetup == null)
         {
-            Debug.LogError("RemaluxARWallSetup не найден в сцене!");
+            Debug.LogError("[REMALUX] RemaluxARWallSetup не найден в сцене!");
             return;
         }
+        
+        // Путь к префабу
+        string prefabPath = "Assets/Prefabs/AR/Wall Anchor Template.prefab";
         
         // Загружаем префаб
-        string prefabPath = "Assets/Prefabs/AR/Wall Anchor Template.prefab";
-        GameObject prefab = AssetDatabase.LoadAssetAtPath<GameObject>(prefabPath);
-        
+        var prefab = AssetDatabase.LoadAssetAtPath<GameObject>(prefabPath);
         if (prefab == null)
         {
-            Debug.LogError($"Префаб не найден по пути {prefabPath}. Создайте его сначала.");
+            Debug.LogError($"[REMALUX] Префаб не найден по пути: {prefabPath}. Сначала создайте префаб с помощью 'Create Wall Anchor Template'.");
             return;
         }
         
-        // Получаем SerializedObject для изменения свойств
-        SerializedObject serializedObj = new SerializedObject(wallSetup);
+        // Получаем SerializedObject для редактирования полей
+        SerializedObject serializedObject = new SerializedObject(wallSetup);
+        SerializedProperty wallAnchorPrefabProperty = serializedObject.FindProperty("_wallAnchorPrefab");
         
-        // Находим свойство _wallAnchorPrefab
-        SerializedProperty property = serializedObj.FindProperty("_wallAnchorPrefab");
+        // Устанавливаем значение
+        wallAnchorPrefabProperty.objectReferenceValue = prefab;
         
-        if (property != null)
-        {
-            // Присваиваем префаб
-            property.objectReferenceValue = prefab;
-            serializedObj.ApplyModifiedProperties();
-            Debug.Log("Префаб Wall Anchor Template успешно присвоен компоненту RemaluxARWallSetup");
-        }
-        else
-        {
-            Debug.LogError("Не удалось найти свойство _wallAnchorPrefab в компоненте RemaluxARWallSetup");
-        }
+        // Применяем изменения
+        serializedObject.ApplyModifiedProperties();
+        
+        Debug.Log($"[REMALUX] Префаб Wall Anchor Template успешно назначен в RemaluxARWallSetup!");
     }
     
     [MenuItem("Tools/Wall Detection/Setup ARAnchorManager")]
     public static void SetupARAnchorManager()
     {
-        // Ищем XROrigin или ARSessionOrigin в сцене
-        var xrOrigin = FindObjectOfType<UnityEngine.XR.ARFoundation.ARSessionOrigin>();
+        // Находим ARSessionOrigin или XROrigin
+        Component xrOrigin = null;
         
-        if (xrOrigin == null)
+        // Вариант 1: Проверяем ARSessionOrigin (для обратной совместимости)
+        var arSessionOrigins = Object.FindObjectsOfType<ARSessionOrigin>();
+        if (arSessionOrigins.Length > 0)
         {
-            // Пытаемся найти новый XROrigin через рефлексию
-            System.Type xrOriginType = System.Type.GetType("Unity.XR.CoreUtils.XROrigin, Unity.XR.CoreUtils");
-            if (xrOriginType != null)
+            xrOrigin = arSessionOrigins[0];
+            Debug.Log($"[REMALUX] Найден ARSessionOrigin: {xrOrigin.name}");
+        }
+        else
+        {
+            // Вариант 2: Ищем XROrigin через рефлексию (для AR Foundation >= 5.0)
+            try
             {
-                var newXROrigins = FindObjectsOfType(xrOriginType);
-                if (newXROrigins.Length > 0)
+                var xrOriginType = System.AppDomain.CurrentDomain.GetAssemblies()
+                    .SelectMany(a => a.GetTypes())
+                    .FirstOrDefault(t => t.FullName == "Unity.XR.CoreUtils.XROrigin" || 
+                                        t.FullName == "UnityEngine.XR.ARFoundation.XROrigin" ||
+                                        t.FullName.EndsWith(".XROrigin"));
+                                        
+                if (xrOriginType != null)
                 {
-                    // Получаем объект XROrigin
-                    var originComponent = newXROrigins[0] as Component;
-                    xrOrigin = originComponent.gameObject.GetComponent<UnityEngine.XR.ARFoundation.ARSessionOrigin>();
+                    var xrOrigins = Object.FindObjectsOfType(xrOriginType);
                     
-                    if (xrOrigin == null)
+                    if (xrOrigins.Length > 0)
                     {
-                        Debug.Log("Найден XROrigin, но без ARSessionOrigin. Рассматриваем его как цель.");
-                        
-                        // Загружаем префаб
-                        string prefabPath = "Assets/Prefabs/AR/Wall Anchor Template.prefab";
-                        GameObject prefab = AssetDatabase.LoadAssetAtPath<GameObject>(prefabPath);
-                        
-                        if (prefab == null)
-                        {
-                            Debug.LogError($"Префаб не найден по пути {prefabPath}. Создайте его сначала.");
-                            return;
-                        }
-                        
-                        // Проверяем наличие ARAnchorManager
-                        var anchorManager = originComponent.gameObject.GetComponent<UnityEngine.XR.ARFoundation.ARAnchorManager>();
-                        if (anchorManager == null)
-                        {
-                            anchorManager = originComponent.gameObject.AddComponent<UnityEngine.XR.ARFoundation.ARAnchorManager>();
-                            Debug.Log("Добавлен ARAnchorManager на XROrigin");
-                        }
-                        
-                        // Назначаем префаб
-                        SerializedObject anchorManagerSerializedObj = new SerializedObject(anchorManager);
-                        var prefabPropertyAnchor = anchorManagerSerializedObj.FindProperty("m_AnchorPrefab");
-                        
-                        if (prefabPropertyAnchor != null)
-                        {
-                            prefabPropertyAnchor.objectReferenceValue = prefab;
-                            anchorManagerSerializedObj.ApplyModifiedProperties();
-                            Debug.Log("Префаб Wall Anchor Template назначен в ARAnchorManager");
-                        }
-                        
-                        // Находим RemaluxARWallSetup
-                        var wallSetup = FindObjectOfType<RemaluxARWallSetup>();
-                        if (wallSetup != null)
-                        {
-                            SerializedObject wallSetupObj = new SerializedObject(wallSetup);
-                            var arAnchorManagerProperty = wallSetupObj.FindProperty("_arAnchorManager");
-                            
-                            if (arAnchorManagerProperty != null)
-                            {
-                                arAnchorManagerProperty.objectReferenceValue = anchorManager;
-                                wallSetupObj.ApplyModifiedProperties();
-                                Debug.Log("ARAnchorManager назначен в RemaluxARWallSetup");
-                            }
-                        }
-                        
-                        return;
+                        xrOrigin = xrOrigins[0] as Component;
+                        Debug.Log($"[REMALUX] Найден XROrigin: {xrOrigin.name}");
                     }
                 }
             }
+            catch (System.Exception ex)
+            {
+                Debug.LogWarning($"[REMALUX] Ошибка при поиске XROrigin: {ex.Message}");
+            }
         }
         
         if (xrOrigin == null)
         {
-            Debug.LogError("Не найден XROrigin или ARSessionOrigin в сцене!");
+            Debug.LogError("[REMALUX] Не удалось найти ARSessionOrigin или XROrigin в сцене!");
             return;
         }
         
-        // Загружаем префаб
-        string waPrefabPath = "Assets/Prefabs/AR/Wall Anchor Template.prefab";
-        GameObject waPrefab = AssetDatabase.LoadAssetAtPath<GameObject>(waPrefabPath);
+        // Проверяем наличие префаба Wall Anchor Template
+        string prefabPath = "Assets/Prefabs/AR/Wall Anchor Template.prefab";
+        var prefab = AssetDatabase.LoadAssetAtPath<GameObject>(prefabPath);
         
-        if (waPrefab == null)
+        if (prefab == null)
         {
-            Debug.LogError($"Префаб не найден по пути {waPrefabPath}. Создайте его сначала.");
+            Debug.LogError($"[REMALUX] Префаб не найден по пути: {prefabPath}. Сначала создайте префаб с помощью 'Create Wall Anchor Template'.");
             return;
         }
         
-        // Проверяем наличие ARAnchorManager
-        var arAnchorManager = xrOrigin.GetComponent<UnityEngine.XR.ARFoundation.ARAnchorManager>();
-        if (arAnchorManager == null)
+        // Проверяем/добавляем ARAnchorManager
+        ARAnchorManager anchorManager = xrOrigin.GetComponent<ARAnchorManager>();
+        bool wasAdded = false;
+        
+        if (anchorManager == null)
         {
-            arAnchorManager = xrOrigin.gameObject.AddComponent<UnityEngine.XR.ARFoundation.ARAnchorManager>();
-            Debug.Log("Добавлен ARAnchorManager на ARSessionOrigin");
+            anchorManager = xrOrigin.gameObject.AddComponent<ARAnchorManager>();
+            wasAdded = true;
+            Debug.Log($"[REMALUX] Добавлен компонент ARAnchorManager к {xrOrigin.name}");
+        }
+        else
+        {
+            Debug.Log($"[REMALUX] Найден существующий ARAnchorManager на {xrOrigin.name}");
         }
         
-        // Назначаем префаб
-        SerializedObject anchorManagerObj = new SerializedObject(arAnchorManager);
-        var anchorPrefabProperty = anchorManagerObj.FindProperty("m_AnchorPrefab");
+        // Настраиваем ARAnchorManager - назначаем префаб
+        SerializedObject serializedAnchorManager = new SerializedObject(anchorManager);
+        SerializedProperty anchorPrefabProperty = serializedAnchorManager.FindProperty("m_AnchorPrefab");
         
         if (anchorPrefabProperty != null)
         {
-            anchorPrefabProperty.objectReferenceValue = waPrefab;
-            anchorManagerObj.ApplyModifiedProperties();
-            Debug.Log("Префаб Wall Anchor Template назначен в ARAnchorManager");
+            anchorPrefabProperty.objectReferenceValue = prefab;
+            serializedAnchorManager.ApplyModifiedProperties();
+            Debug.Log($"[REMALUX] Префаб Wall Anchor Template успешно назначен в ARAnchorManager");
+        }
+        else
+        {
+            Debug.LogWarning("[REMALUX] Не удалось найти свойство m_AnchorPrefab в ARAnchorManager");
         }
         
-        // Находим RemaluxARWallSetup и обновляем ссылку на ARAnchorManager
-        var remaluxSetup = FindObjectOfType<RemaluxARWallSetup>();
-        if (remaluxSetup != null)
+        // Обновляем RemaluxARWallSetup
+        var wallSetup = Object.FindObjectOfType<RemaluxARWallSetup>();
+        if (wallSetup != null)
         {
-            SerializedObject remaluxObj = new SerializedObject(remaluxSetup);
-            var arAnchorManagerProperty = remaluxObj.FindProperty("_arAnchorManager");
+            SerializedObject serializedWallSetup = new SerializedObject(wallSetup);
             
+            // Назначаем ARAnchorManager
+            SerializedProperty arAnchorManagerProperty = serializedWallSetup.FindProperty("_arAnchorManager");
             if (arAnchorManagerProperty != null)
             {
-                arAnchorManagerProperty.objectReferenceValue = arAnchorManager;
-                remaluxObj.ApplyModifiedProperties();
-                Debug.Log("ARAnchorManager назначен в RemaluxARWallSetup");
+                arAnchorManagerProperty.objectReferenceValue = anchorManager;
+                serializedWallSetup.ApplyModifiedProperties();
+                Debug.Log($"[REMALUX] ARAnchorManager успешно назначен в RemaluxARWallSetup");
             }
+            else
+            {
+                Debug.LogWarning("[REMALUX] Не удалось найти свойство _arAnchorManager в RemaluxARWallSetup");
+            }
+            
+            // Также назначим Wall Anchor Prefab
+            SerializedProperty wallAnchorPrefabProperty = serializedWallSetup.FindProperty("_wallAnchorPrefab");
+            if (wallAnchorPrefabProperty != null)
+            {
+                wallAnchorPrefabProperty.objectReferenceValue = prefab;
+                serializedWallSetup.ApplyModifiedProperties();
+                Debug.Log($"[REMALUX] Префаб Wall Anchor Template также назначен в RemaluxARWallSetup");
+            }
+        }
+        else
+        {
+            Debug.LogWarning("[REMALUX] RemaluxARWallSetup не найден в сцене!");
+        }
+        
+        if (wasAdded)
+        {
+            Debug.Log("[REMALUX] ARAnchorManager успешно настроен и добавлен к XROrigin. Необходимо сохранить сцену!");
+        }
+        else
+        {
+            Debug.Log("[REMALUX] ARAnchorManager успешно настроен. Необходимо сохранить сцену!");
         }
     }
 
