@@ -6,7 +6,7 @@ using ML.DeepLab;
 /// Automatically configures and connects all components needed for AR Wall Detection
 /// and proper anchoring of walls in the AR space
 /// </summary>
-public class RemaluxARWallSetup : MonoBehaviour
+public class ARWallDetectionSetup : MonoBehaviour
 {
     [Header("Components")]
     [SerializeField] private bool _autoSetup = true;
@@ -64,7 +64,7 @@ public class RemaluxARWallSetup : MonoBehaviour
         if (_arSession == null || _arCameraManager == null || 
             _arPlaneManager == null || _arRaycastManager == null)
         {
-            Debug.LogError("RemaluxARWallSetup: Missing required AR components!");
+            Debug.LogError("ARWallDetectionSetup: Missing required AR components!");
             return;
         }
         
@@ -73,14 +73,14 @@ public class RemaluxARWallSetup : MonoBehaviour
             UnityEngine.XR.ARSubsystems.PlaneDetectionMode.Vertical | 
             UnityEngine.XR.ARSubsystems.PlaneDetectionMode.Horizontal;
             
-        Debug.Log("RemaluxARWallSetup: Configured AR Plane Manager to detect vertical surfaces");
+        Debug.Log("ARWallDetectionSetup: Configured AR Plane Manager to detect vertical surfaces");
         
         // Create components for wall anchoring if they don't exist or if replacing existing
         SetupWallAnchor();
         SetupWallRenderer();
         SetupAnchorConnector();
         
-        Debug.Log("RemaluxARWallSetup: Setup complete!");
+        Debug.Log("ARWallDetectionSetup: Setup complete!");
     }
     
     /// <summary>
@@ -95,7 +95,7 @@ public class RemaluxARWallSetup : MonoBehaviour
         
         if (_wallAnchor != null && !_replaceExistingSetup)
         {
-            Debug.Log("RemaluxARWallSetup: Using existing ARWallAnchor");
+            Debug.Log("ARWallDetectionSetup: Using existing ARWallAnchor");
             anchorObj = _wallAnchor.gameObject;
         }
         else
@@ -116,7 +116,7 @@ public class RemaluxARWallSetup : MonoBehaviour
             
             _wallAnchor = anchorObj.AddComponent<ARWallAnchor>();
             
-            Debug.Log("RemaluxARWallSetup: Created ARWallAnchor component");
+            Debug.Log("ARWallDetectionSetup: Created ARWallAnchor component");
         }
     }
     
@@ -132,7 +132,7 @@ public class RemaluxARWallSetup : MonoBehaviour
         
         if (_wallRenderer != null && !_replaceExistingSetup)
         {
-            Debug.Log("RemaluxARWallSetup: Using existing ARAwareWallMeshRenderer");
+            Debug.Log("ARWallDetectionSetup: Using existing ARAwareWallMeshRenderer");
             rendererObj = _wallRenderer.gameObject;
         }
         else
@@ -154,7 +154,7 @@ public class RemaluxARWallSetup : MonoBehaviour
                 _wallRenderer.WallMaterial = newMaterial;
             }
             
-            Debug.Log("RemaluxARWallSetup: Created ARAwareWallMeshRenderer component");
+            Debug.Log("ARWallDetectionSetup: Created ARAwareWallMeshRenderer component");
         }
         
         // Set up references
@@ -180,7 +180,7 @@ public class RemaluxARWallSetup : MonoBehaviour
         
         if (_anchorConnector != null && !_replaceExistingSetup)
         {
-            Debug.Log("RemaluxARWallSetup: Using existing WallAnchorConnector");
+            Debug.Log("ARWallDetectionSetup: Using existing WallAnchorConnector");
             connectorObj = _anchorConnector.gameObject;
         }
         else
@@ -207,7 +207,7 @@ public class RemaluxARWallSetup : MonoBehaviour
             
             _anchorConnector = connectorObj.AddComponent<WallAnchorConnector>();
             
-            Debug.Log("RemaluxARWallSetup: Created WallAnchorConnector component");
+            Debug.Log("ARWallDetectionSetup: Created WallAnchorConnector component");
         }
         
         // Set up references
@@ -216,7 +216,7 @@ public class RemaluxARWallSetup : MonoBehaviour
             _anchorConnector.CameraManager = _arCameraManager;
             _anchorConnector.Predictor = _predictor;
             _anchorConnector.WallAnchor = _wallAnchor;
-            _anchorConnector.ARCamera = _arCameraManager.GetComponent<Camera>();
+            _anchorConnector.ARCamera = _arCameraManager?.GetComponent<Camera>();
             _anchorConnector.ARPlaneManager = _arPlaneManager;
             
             // Find and assign ARAnchorManager
@@ -229,7 +229,7 @@ public class RemaluxARWallSetup : MonoBehaviour
             if (anchorManager != null)
             {
                 _anchorConnector.AnchorManager = anchorManager;
-                Debug.Log("RemaluxARWallSetup: Connected WallAnchorConnector with ARAnchorManager");
+                Debug.Log("ARWallDetectionSetup: Connected WallAnchorConnector with ARAnchorManager");
             }
         }
     }

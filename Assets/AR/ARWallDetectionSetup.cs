@@ -8,7 +8,7 @@ using UnityEditor;
 /// <summary>
 /// Скрипт для автоматической настройки полной сцены AR Wall Detection
 /// </summary>
-public class ARWallDetectionSetup : MonoBehaviour
+public class ARAnchorSetup : MonoBehaviour
 {
     [Header("AR Components")]
     [SerializeField] private GameObject arSystemPrefab;
@@ -470,14 +470,14 @@ public class ARWallDetectionSetup : MonoBehaviour
 }
 
 #if UNITY_EDITOR
-[CustomEditor(typeof(ARWallDetectionSetup))]
-public class ARWallDetectionSetupEditor : Editor
+[CustomEditor(typeof(ARAnchorSetup))]
+public class ARAnchorSetupEditor : Editor
 {
     public override void OnInspectorGUI()
     {
         base.OnInspectorGUI();
         
-        ARWallDetectionSetup setup = (ARWallDetectionSetup)target;
+        ARAnchorSetup setup = (ARAnchorSetup)target;
         
         GUILayout.Space(10);
         

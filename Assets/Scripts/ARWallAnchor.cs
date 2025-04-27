@@ -3,708 +3,360 @@ using UnityEngine.XR.ARFoundation;
 using UnityEngine.XR.ARSubsystems;
 using System.Collections.Generic;
 using ML.DeepLab; // Add DeepLab namespace
+using System.Collections;
 
 /// <summary>
-/// Attaches AR anchors to detected walls to keep them fixed in the environment
-/// rather than moving with the camera
+/// Представляет собой привязку стены в AR-пространстве с данными о её размерах и свойствах
 /// </summary>
-[RequireComponent(typeof(ARAnchorManager))]
 public class ARWallAnchor : MonoBehaviour
 {
-    [Header("References")]
-    [SerializeField] private ARPlaneManager _planeManager;
-    [SerializeField] private ARWallPainter _wallPainter;
-    [SerializeField] private ARCameraManager _cameraManager;
-    [SerializeField] private EnhancedDeepLabPredictor _predictor; // Add reference to predictor
+    [Header("Wall Properties")]
+    [SerializeField] private float _wallWidth = 1.0f;
+    [SerializeField] private float _wallHeight = 2.4f;
+    [SerializeField] private bool _isValid = false;
     
-    // The ARAnchorManager component responsible for creating and managing anchors
-    private ARAnchorManager _anchorManager;
+    [Header("AR References")]
+    [SerializeField] private ARAnchor _arAnchor;
+    [SerializeField] private ARPlane _arPlane;
     
-    // Dictionary to track anchors we've created for walls
-    private Dictionary<TrackableId, ARAnchor> _wallAnchors = new Dictionary<TrackableId, ARAnchor>();
-    // Список якорей, не привязанных к конкретным плоскостям
-    private List<ARAnchor> _standaloneAnchors = new List<ARAnchor>();
+    [Header("Visualization")]
+    [SerializeField] private MeshRenderer _wallMeshRenderer;
+    [SerializeField] private MeshFilter _wallMeshFilter;
+    [SerializeField] private Material _wallMaterial;
+    [SerializeField] private bool _visualizeWall = true;
     
-    // Flag to control behavior - whether to create anchors automatically
-    [SerializeField] private bool _autoAnchorWalls = true;
+    // Wall state
+    private float _confidence = 0.0f;
+    private float _lastUpdateTime = 0f;
+    private Vector3 _wallNormal;
     
-    // Дополнительные настройки
-    [Header("Advanced Settings")]
-    [SerializeField] private bool _findExistingWalls = true; // Искать существующие стены
-    [SerializeField] private bool _debugMode = true;
-    [SerializeField] private string[] _wallMeshNames = new string[] { "WallMesh", "Wall", "ARPlane" }; // Шаблоны имен для стен
-    [SerializeField] private float _anchorUpdateInterval = 0.5f; // Interval for anchor updates
-    [SerializeField] private bool _waitForARPlanes = true; // Wait for AR planes before anchoring
-    [SerializeField] private float _minPlaneDetectionTime = 2.0f; // Minimum time to wait for plane detection
+    // Add field for ARPlaneManager
+    private ARPlaneManager _arPlaneManager;
     
-    // Компоненты Wall System в вашей сцене
-    private Transform _wallDetectionSystem;
-    private Transform _wallSystem;
-
-    // Track model initialization and AR system state
-    private bool _modelInitialized = false;
-    private bool _arPlanesDetected = false;
-    private float _startTime;
-    private float _lastAnchorUpdateTime;
+    // Public properties
+    public float WallWidth { 
+        get { return _wallWidth; }
+        set { _wallWidth = value; UpdateWallMesh(); }
+    }
+    
+    public float WallHeight {
+        get { return _wallHeight; }
+        set { _wallHeight = value; UpdateWallMesh(); }
+    }
+    
+    public bool IsValid {
+        get { return _isValid; }
+        set { _isValid = value; }
+    }
+    
+    public float Confidence {
+        get { return _confidence; }
+        set { _confidence = Mathf.Clamp01(value); }
+    }
+    
+    public Vector3 WallNormal {
+        get { return _wallNormal; }
+    }
+    
+    public ARAnchor ARAnchor {
+        get { return _arAnchor; }
+        set { _arAnchor = value; }
+    }
+    
+    public ARPlane ARPlane {
+        get { return _arPlane; }
+        set { _arPlane = value; }
+    }
     
     private void Awake()
     {
-        // Get required components
-        _anchorManager = GetComponent<ARAnchorManager>();
-        
-        // Try to find components if not assigned
-        if (_planeManager == null)
-            _planeManager = FindObjectOfType<ARPlaneManager>();
+        // Find AR references if not already set
+        if (_arAnchor == null)
+            _arAnchor = GetComponent<ARAnchor>();
             
-        if (_wallPainter == null)
-            _wallPainter = FindObjectOfType<ARWallPainter>();
+        if (_arPlane == null && _arAnchor != null)
+            _arPlane = _arAnchor.GetComponent<ARPlane>();
             
-        if (_predictor == null)
-            _predictor = FindObjectOfType<EnhancedDeepLabPredictor>();
-            
-        if (_cameraManager == null)
-            _cameraManager = FindObjectOfType<ARCameraManager>();
-            
-        // Найдем компоненты Wall System
-        _wallDetectionSystem = GameObject.Find("Wall Detection System")?.transform;
-        _wallSystem = GameObject.Find("Wall System")?.transform;
+        // Initialize wall normal to forward direction
+        _wallNormal = transform.forward;
         
-        if (_debugMode)
+        // Create mesh renderer and filter if needed
+        if (_visualizeWall)
         {
-            if (_wallDetectionSystem != null)
-                Debug.Log($"ARWallAnchor: Found Wall Detection System with {_wallDetectionSystem.childCount} children");
-            
-            if (_wallSystem != null)
-                Debug.Log($"ARWallAnchor: Found Wall System with {_wallSystem.childCount} children");
+            EnsureMeshComponents();
         }
-
-        _startTime = Time.time;
-        _lastAnchorUpdateTime = 0f;
-    }
-    
-    private void OnEnable()
-    {
-        if (_planeManager != null)
-        {
-            // Set plane detection mode to include vertical planes (walls)
-            _planeManager.requestedDetectionMode = PlaneDetectionMode.Vertical | PlaneDetectionMode.Horizontal;
-            _planeManager.planesChanged += OnPlanesChanged;
-            Debug.Log("ARWallAnchor: Subscribed to planesChanged event and enabled vertical plane detection");
-        }
-
-        // Subscribe to model initialization events
-        if (_predictor != null)
-        {
-            _predictor.OnSegmentationCompleted += OnSegmentationCompleted;
-            Debug.Log("ARWallAnchor: Subscribed to segmentation events");
-        }
-    }
-    
-    private void OnDisable()
-    {
-        if (_planeManager != null)
-        {
-            _planeManager.planesChanged -= OnPlanesChanged;
-        }
-        
-        if (_predictor != null)
-        {
-            _predictor.OnSegmentationCompleted -= OnSegmentationCompleted;
-        }
-        
-        // При отключении компонента удаляем все созданные якори
-        foreach (var anchor in _wallAnchors.Values)
-        {
-            if (anchor != null)
-                Destroy(anchor.gameObject);
-        }
-        _wallAnchors.Clear();
-        
-        // Удаляем отдельные якори
-        foreach (var anchor in _standaloneAnchors)
-        {
-            if (anchor != null)
-                Destroy(anchor.gameObject);
-        }
-        _standaloneAnchors.Clear();
     }
     
     private void Start()
     {
-        // Если активирован поиск существующих стен, запустим его через небольшую задержку
-        if (_findExistingWalls)
+        // Initialize wall mesh
+        if (_visualizeWall)
         {
-            Invoke("FindAndAnchorExistingWalls", 1.0f);
+            UpdateWallMesh();
+        }
+        
+        // Subscribe to AR Plane updated event if available
+        if (_arPlane != null)
+        {
+            _arPlane.boundaryChanged += OnPlaneBoundaryChanged;
         }
     }
-
-    private void Update()
+    
+    private void OnDestroy()
     {
-        // Check if enough time has passed for plane detection
-        if (!_arPlanesDetected && Time.time - _startTime > _minPlaneDetectionTime)
+        // Unsubscribe from events
+        if (_arPlane != null)
         {
-            int verticalPlaneCount = 0;
+            _arPlane.boundaryChanged -= OnPlaneBoundaryChanged;
+        }
+    }
+    
+    /// <summary>
+    /// Обрабатывает изменение границ AR-плоскости
+    /// </summary>
+    private void OnPlaneBoundaryChanged(ARPlaneBoundaryChangedEventArgs args)
+    {
+        if (args.plane != _arPlane)
+            return;
             
-            // Count vertical planes
-            if (_planeManager != null)
-            {
-                foreach (ARPlane plane in _planeManager.trackables)
-                {
-                    if (IsVerticalPlane(plane))
-                    {
-                        verticalPlaneCount++;
-                    }
-                }
-            }
+        // Update wall dimensions based on AR plane
+        Bounds planeBounds = args.plane.GetComponent<MeshRenderer>().bounds;
+        _wallWidth = Mathf.Max(planeBounds.size.x, planeBounds.size.z);
+        
+        // Update wall normal from plane
+        _wallNormal = args.plane.normal;
+        
+        // Update the mesh
+        UpdateWallMesh();
+    }
+    
+    /// <summary>
+    /// Создает и обновляет настраиваемую сетку для визуализации стены
+    /// </summary>
+    private void UpdateWallMesh()
+    {
+        if (!_visualizeWall)
+            return;
             
-            // If we have vertical planes, set the flag
-            if (verticalPlaneCount > 0 || !_waitForARPlanes)
-            {
-                _arPlanesDetected = true;
-                Debug.Log($"ARWallAnchor: AR planes detected - found {verticalPlaneCount} vertical planes");
-            }
-        }
-
-        // Update anchors periodically
-        if (_arPlanesDetected && _modelInitialized && 
-            Time.time - _lastAnchorUpdateTime > _anchorUpdateInterval)
+        EnsureMeshComponents();
+        
+        // Create a simple quad mesh for the wall
+        Mesh wallMesh = new Mesh();
+        
+        // Vertices for a quad
+        Vector3[] vertices = new Vector3[4]
         {
-            UpdateWallAnchors();
-            _lastAnchorUpdateTime = Time.time;
-        }
-    }
-
-    // Called when the segmentation model completes processing
-    private void OnSegmentationCompleted(Texture2D segmentationTexture)
-    {
-        if (!_modelInitialized)
+            new Vector3(-_wallWidth/2, 0, 0),              // Bottom-left
+            new Vector3(_wallWidth/2, 0, 0),               // Bottom-right
+            new Vector3(-_wallWidth/2, _wallHeight, 0),    // Top-left
+            new Vector3(_wallWidth/2, _wallHeight, 0)      // Top-right
+        };
+        
+        // Triangles (2 triangles for a quad)
+        int[] triangles = new int[6]
         {
-            _modelInitialized = true;
-            Debug.Log("ARWallAnchor: Segmentation model has been initialized");
-        }
-    }
-    
-    // Update wall anchors based on the latest segmentation and AR planes
-    private void UpdateWallAnchors()
-    {
-        if (_wallSystem == null) return;
-
-        // Process all wall objects from the Wall System
-        for (int i = 0; i < _wallSystem.childCount; i++)
+            0, 2, 1,    // First triangle
+            1, 2, 3     // Second triangle
+        };
+        
+        // UVs
+        Vector2[] uvs = new Vector2[4]
         {
-            Transform wallTransform = _wallSystem.GetChild(i);
-            if (IsWallObject(wallTransform.gameObject))
-            {
-                // Find closest vertical plane for this wall
-                ARPlane closestPlane = FindClosestVerticalPlane(wallTransform.position);
-                
-                if (closestPlane != null)
-                {
-                    // Create anchor for this plane if doesn't exist
-                    if (!_wallAnchors.ContainsKey(closestPlane.trackableId))
-                    {
-                        CreateWallAnchor(closestPlane);
-                    }
-                    
-                    // Attach wall to anchor
-                    if (_wallAnchors.TryGetValue(closestPlane.trackableId, out ARAnchor anchor))
-                    {
-                        AttachToAnchor(wallTransform, anchor.transform);
-                        if (_debugMode)
-                            Debug.Log($"ARWallAnchor: Attached wall {wallTransform.name} to anchor for plane {closestPlane.trackableId}");
-                    }
-                }
-                else
-                {
-                    // Create standalone anchor if needed
-                    bool hasAnchor = false;
-                    foreach (var anchor in _standaloneAnchors)
-                    {
-                        if (anchor.transform.childCount > 0 && 
-                            anchor.transform.GetChild(0) == wallTransform)
-                        {
-                            hasAnchor = true;
-                            break;
-                        }
-                    }
-                    
-                    if (!hasAnchor)
-                    {
-                        GameObject anchorObj = new GameObject($"Wall Anchor for {wallTransform.name}");
-                        anchorObj.transform.position = wallTransform.position;
-                        anchorObj.transform.rotation = wallTransform.rotation;
-                        ARAnchor anchor = anchorObj.AddComponent<ARAnchor>();
-                        
-                        if (anchor != null)
-                        {
-                            AttachToAnchor(wallTransform, anchor.transform);
-                            _standaloneAnchors.Add(anchor);
-                            if (_debugMode)
-                                Debug.Log($"ARWallAnchor: Created standalone anchor for wall {wallTransform.name}");
-                        }
-                    }
-                }
-            }
-        }
-    }
-    
-    /// <summary>
-    /// Поиск и закрепление уже существующих стен в сцене
-    /// </summary>
-    private void FindAndAnchorExistingWalls()
-    {
-        if (_debugMode)
-            Debug.Log("ARWallAnchor: Searching for existing walls in scene");
+            new Vector2(0, 0),   // Bottom-left
+            new Vector2(1, 0),   // Bottom-right
+            new Vector2(0, 1),   // Top-left
+            new Vector2(1, 1)    // Top-right
+        };
         
-        // Проверим, есть ли стены в Wall System
-        List<GameObject> existingWalls = new List<GameObject>();
+        // Assign to mesh
+        wallMesh.vertices = vertices;
+        wallMesh.triangles = triangles;
+        wallMesh.uv = uvs;
         
-        // Проверим Wall System если он существует
-        if (_wallSystem != null)
+        // Recalculate bounds and normals
+        wallMesh.RecalculateBounds();
+        wallMesh.RecalculateNormals();
+        
+        // Apply to mesh filter
+        _wallMeshFilter.mesh = wallMesh;
+        
+        // Apply material
+        if (_wallMaterial != null && _wallMeshRenderer != null)
         {
-            for (int i = 0; i < _wallSystem.childCount; i++)
-            {
-                Transform child = _wallSystem.GetChild(i);
-                if (IsWallObject(child.gameObject))
-                {
-                    existingWalls.Add(child.gameObject);
-                    if (_debugMode)
-                        Debug.Log($"ARWallAnchor: Found wall in Wall System: {child.name}");
-                }
-            }
-        }
-        
-        // Проверим Wall Detection System если он существует
-        if (_wallDetectionSystem != null)
-        {
-            // Ищем стены в Wall Detection System
-            for (int i = 0; i < _wallDetectionSystem.childCount; i++)
-            {
-                Transform child = _wallDetectionSystem.GetChild(i);
-                
-                // Если это стена - добавляем в список
-                if (IsWallObject(child.gameObject))
-                {
-                    existingWalls.Add(child.gameObject);
-                    if (_debugMode)
-                        Debug.Log($"ARWallAnchor: Found wall in Wall Detection System: {child.name}");
-                }
-                
-                // Проверяем и дочерние объекты
-                for (int j = 0; j < child.childCount; j++)
-                {
-                    Transform grandchild = child.GetChild(j);
-                    if (IsWallObject(grandchild.gameObject))
-                    {
-                        existingWalls.Add(grandchild.gameObject);
-                        if (_debugMode)
-                            Debug.Log($"ARWallAnchor: Found wall in {child.name}: {grandchild.name}");
-                    }
-                }
-            }
-        }
-        
-        // Найдем все существующие AR плоскости
-        if (_planeManager != null)
-        {
-            foreach (ARPlane plane in _planeManager.trackables)
-            {
-                if (IsVerticalPlane(plane))
-                {
-                    // Создадим якорь для этой плоскости
-                    CreateWallAnchor(plane);
-                    
-                    // Проверим, есть ли у этой плоскости ребенок - стена
-                    for (int i = 0; i < plane.transform.childCount; i++)
-                    {
-                        Transform child = plane.transform.GetChild(i);
-                        if (IsWallObject(child.gameObject))
-                        {
-                            // Эта стена уже является ребенком плоскости, переместим к якорю
-                            if (_wallAnchors.TryGetValue(plane.trackableId, out ARAnchor anchor))
-                            {
-                                AttachToAnchor(child, anchor.transform);
-                                if (_debugMode)
-                                    Debug.Log($"ARWallAnchor: Attached existing wall {child.name} to anchor");
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        
-        // Для всех найденных отдельно стоящих стен
-        foreach (GameObject wallObj in existingWalls)
-        {
-            // Найдем ближайшую вертикальную AR плоскость
-            ARPlane closestPlane = FindClosestVerticalPlane(wallObj.transform.position);
-            if (closestPlane != null)
-            {
-                // Создадим якорь для этой плоскости, если его еще нет
-                if (!_wallAnchors.ContainsKey(closestPlane.trackableId))
-                {
-                    CreateWallAnchor(closestPlane);
-                }
-                
-                // Привяжем стену к якорю
-                if (_wallAnchors.TryGetValue(closestPlane.trackableId, out ARAnchor anchor))
-                {
-                    AttachToAnchor(wallObj.transform, anchor.transform);
-                    if (_debugMode)
-                        Debug.Log($"ARWallAnchor: Attached wall {wallObj.name} to nearest plane anchor");
-                }
-            }
-            else
-            {
-                // Если нет подходящей плоскости, создадим отдельный якорь
-                GameObject anchorObj = new GameObject($"Wall Anchor for {wallObj.name}");
-                anchorObj.transform.position = wallObj.transform.position;
-                anchorObj.transform.rotation = wallObj.transform.rotation;
-                ARAnchor anchor = anchorObj.AddComponent<ARAnchor>();
-                if (anchor != null)
-                {
-                    AttachToAnchor(wallObj.transform, anchor.transform);
-                    // Добавляем в список отдельных якорей
-                    _standaloneAnchors.Add(anchor);
-                    if (_debugMode)
-                        Debug.Log($"ARWallAnchor: Created standalone anchor for wall {wallObj.name}");
-                }
-            }
-        }
-    }
-    
-    /// <summary>
-    /// Проверяет, является ли данный объект стеной
-    /// </summary>
-    private bool IsWallObject(GameObject obj)
-    {
-        // Проверка по наличию меша
-        MeshFilter meshFilter = obj.GetComponent<MeshFilter>();
-        MeshRenderer renderer = obj.GetComponent<MeshRenderer>();
-        
-        if (meshFilter != null && renderer != null && meshFilter.sharedMesh != null)
-        {
-            // Проверяем имя объекта на соответствие шаблонам для стен
-            foreach (string wallName in _wallMeshNames)
-            {
-                if (obj.name.Contains(wallName))
-                    return true;
-            }
-            
-            // Проверим имя материала - часто для стен используют специальные материалы
-            if (renderer.sharedMaterial != null)
-            {
-                string matName = renderer.sharedMaterial.name.ToLower();
-                if (matName.Contains("wall") || matName.Contains("plane") || matName.Contains("surface"))
-                    return true;
-            }
-        }
-        
-        return false;
-    }
-    
-    /// <summary>
-    /// Находит ближайшую вертикальную AR плоскость к указанной позиции
-    /// </summary>
-    private ARPlane FindClosestVerticalPlane(Vector3 position)
-    {
-        if (_planeManager == null)
-            return null;
-            
-        ARPlane closestPlane = null;
-        float closestDistance = float.MaxValue;
-        
-        foreach (ARPlane plane in _planeManager.trackables)
-        {
-            if (IsVerticalPlane(plane))
-            {
-                float distance = Vector3.Distance(position, plane.center);
-                if (distance < closestDistance)
-                {
-                    closestDistance = distance;
-                    closestPlane = plane;
-                }
-            }
-        }
-        
-        // Если ближайшая плоскость слишком далеко, не используем её
-        if (closestDistance > 1.0f) // Максимальное расстояние 1 метр
-        {
-            return null;
-        }
-        
-        return closestPlane;
-    }
-    
-    /// <summary>
-    /// Прикрепляет объект к якорю, сохраняя его мировую позицию и поворот
-    /// </summary>
-    private void AttachToAnchor(Transform objTransform, Transform anchorTransform)
-    {
-        // Запомним мировые координаты
-        Vector3 worldPos = objTransform.position;
-        Quaternion worldRot = objTransform.rotation;
-        Vector3 worldScale = objTransform.lossyScale;
-        
-        // Сделаем объект ребенком якоря
-        objTransform.SetParent(anchorTransform, false);
-        
-        // Восстановим мировые координаты
-        objTransform.position = worldPos;
-        objTransform.rotation = worldRot;
-        
-        // Пытаемся сохранить масштаб (может потребоваться корректировка)
-        Vector3 newLocalScale = objTransform.localScale;
-        if (anchorTransform.lossyScale.x != 0 && anchorTransform.lossyScale.y != 0 && anchorTransform.lossyScale.z != 0)
-        {
-            newLocalScale.x = worldScale.x / anchorTransform.lossyScale.x;
-            newLocalScale.y = worldScale.y / anchorTransform.lossyScale.y;
-            newLocalScale.z = worldScale.z / anchorTransform.lossyScale.z;
-            objTransform.localScale = newLocalScale;
-        }
-    }
-    
-    /// <summary>
-    /// Handle plane detection changes
-    /// </summary>
-    private void OnPlanesChanged(ARPlanesChangedEventArgs args)
-    {
-        // Process added and updated planes
-        ProcessNewPlanes(args.added);
-        ProcessUpdatedPlanes(args.updated);
-        
-        // Clean up removed planes
-        foreach (ARPlane plane in args.removed)
-        {
-            RemoveWallAnchor(plane.trackableId);
-        }
-
-        // Count vertical planes to check if we have detected walls
-        int verticalPlaneCount = 0;
-        foreach (ARPlane plane in _planeManager.trackables)
-        {
-            if (IsVerticalPlane(plane))
-            {
-                verticalPlaneCount++;
-            }
-        }
-
-        if (verticalPlaneCount > 0 && !_arPlanesDetected)
-        {
-            _arPlanesDetected = true;
-            if (_debugMode)
-                Debug.Log($"ARWallAnchor: AR vertical planes detected - found {verticalPlaneCount} vertical planes");
-        }
-    }
-    
-    /// <summary>
-    /// Process newly detected planes
-    /// </summary>
-    private void ProcessNewPlanes(List<ARPlane> planes)
-    {
-        if (!_autoAnchorWalls) return;
-        
-        foreach (ARPlane plane in planes)
-        {
-            // Only create anchors for vertical planes (potential walls)
-            if (IsVerticalPlane(plane))
-            {
-                // If wall detection is active, check if this plane is identified as a wall
-                if (_wallPainter != null && !IsWallPlane(plane))
-                {
-                    continue; // Skip non-wall planes
-                }
-                
-                CreateWallAnchor(plane);
-            }
-        }
-    }
-    
-    /// <summary>
-    /// Process updated planes
-    /// </summary>
-    private void ProcessUpdatedPlanes(List<ARPlane> planes)
-    {
-        if (!_autoAnchorWalls) return;
-        
-        foreach (ARPlane plane in planes)
-        {
-            // If the plane is now vertical but wasn't before, add an anchor
-            if (IsVerticalPlane(plane) && !_wallAnchors.ContainsKey(plane.trackableId))
-            {
-                // Check if it's a wall (if wall painter exists)
-                if (_wallPainter != null && !IsWallPlane(plane))
-                {
-                    continue; // Skip non-wall planes
-                }
-                
-                CreateWallAnchor(plane);
-            }
-            // If the plane was vertical but is no longer, remove the anchor
-            else if (!IsVerticalPlane(plane) && _wallAnchors.ContainsKey(plane.trackableId))
-            {
-                RemoveWallAnchor(plane.trackableId);
-            }
-            // If we have an anchor for this plane, update it
-            else if (_wallAnchors.ContainsKey(plane.trackableId))
-            {
-                UpdateWallAnchor(plane);
-            }
-        }
-    }
-    
-    /// <summary>
-    /// Create an AR anchor for a wall plane
-    /// </summary>
-    private void CreateWallAnchor(ARPlane plane)
-    {
-        if (_anchorManager == null || plane == null) return;
-        
-        // Skip if we already have an anchor for this plane
-        if (_wallAnchors.ContainsKey(plane.trackableId)) return;
-        
-        // Create an anchor at the plane's center
-        ARAnchor anchor = _anchorManager.AttachAnchor(plane, new Pose(plane.center, plane.transform.rotation));
-        
-        if (anchor != null)
-        {
-            // Store the anchor reference
-            _wallAnchors[plane.trackableId] = anchor;
-            
-            // If the wall visualization is a child of the plane, move it to be a child of the anchor
-            Transform wallVisualization = plane.transform.Find("WallVisualization");
-            if (wallVisualization != null)
-            {
-                AttachToAnchor(wallVisualization, anchor.transform);
-            }
-            
-            // Проверим, есть ли у плоскости дети, которые являются стенами
-            for (int i = 0; i < plane.transform.childCount; i++)
-            {
-                Transform child = plane.transform.GetChild(i);
-                if (IsWallObject(child.gameObject))
-                {
-                    AttachToAnchor(child, anchor.transform);
-                    if (_debugMode)
-                        Debug.Log($"ARWallAnchor: Attached child wall {child.name} to anchor");
-                }
-            }
-            
-            if (_debugMode)
-                Debug.Log($"ARWallAnchor: Created anchor for wall plane {plane.trackableId}");
+            _wallMeshRenderer.material = _wallMaterial;
         }
         else
         {
-            Debug.LogWarning($"ARWallAnchor: Failed to create anchor for wall plane {plane.trackableId}");
-        }
-    }
-    
-    /// <summary>
-    /// Update an existing wall anchor
-    /// </summary>
-    private void UpdateWallAnchor(ARPlane plane)
-    {
-        // This is called when a plane updates but already has an anchor
-        // In most cases, we don't need to do anything as the anchor system
-        // will keep the anchored content in place even as the plane updates
-        
-        // However, if you need to make adjustments based on updated plane data,
-        // you would do that here
-    }
-    
-    /// <summary>
-    /// Remove an AR anchor for a wall plane
-    /// </summary>
-    private void RemoveWallAnchor(TrackableId planeId)
-    {
-        if (_wallAnchors.TryGetValue(planeId, out ARAnchor anchor))
-        {
-            if (anchor != null)
+            // Create default material if none provided
+            if (_wallMaterial == null)
             {
-                Destroy(anchor.gameObject);
-                if (_debugMode)
-                    Debug.Log($"ARWallAnchor: Removed anchor for wall plane {planeId}");
+                _wallMaterial = new Material(Shader.Find("Universal Render Pipeline/Lit"));
+                _wallMaterial.color = new Color(0.8f, 0.8f, 0.8f, 0.6f); // Semi-transparent white
+                
+                if (_wallMeshRenderer != null)
+                {
+                    _wallMeshRenderer.material = _wallMaterial;
+                    
+                    // Set to transparent rendering
+                    _wallMeshRenderer.material.SetFloat("_Surface", 1); // Transparent
+                    _wallMeshRenderer.material.SetFloat("_Blend", 0);  // Alpha blend
+                    _wallMeshRenderer.material.renderQueue = 3000;     // Transparent queue
+                }
             }
+        }
+    }
+    
+    /// <summary>
+    /// Убеждается, что компоненты MeshRenderer и MeshFilter существуют
+    /// </summary>
+    private void EnsureMeshComponents()
+    {
+        if (_wallMeshRenderer == null)
+        {
+            _wallMeshRenderer = GetComponent<MeshRenderer>();
+            if (_wallMeshRenderer == null)
+                _wallMeshRenderer = gameObject.AddComponent<MeshRenderer>();
+        }
+        
+        if (_wallMeshFilter == null)
+        {
+            _wallMeshFilter = GetComponent<MeshFilter>();
+            if (_wallMeshFilter == null)
+                _wallMeshFilter = gameObject.AddComponent<MeshFilter>();
+        }
+    }
+    
+    /// <summary>
+    /// Обновляет положение и состояние привязки стены
+    /// </summary>
+    public void UpdateWallAnchor(Pose anchorPose, float confidence)
+    {
+        transform.position = anchorPose.position;
+        transform.rotation = anchorPose.rotation;
+        
+        _confidence = confidence;
+        _isValid = confidence > 0.5f;
+        _lastUpdateTime = Time.time;
+        
+        // Update wall normal from rotation
+        _wallNormal = transform.forward;
+    }
+    
+    /// <summary>
+    /// Обновляет размеры стены
+    /// </summary>
+    public void SetWallDimensions(float width, float height)
+    {
+        _wallWidth = width;
+        _wallHeight = height;
+        
+        UpdateWallMesh();
+    }
+    
+    /// <summary>
+    /// Изменяет цвет материала стены
+    /// </summary>
+    public void SetWallColor(Color color)
+    {
+        if (_wallMaterial != null)
+        {
+            _wallMaterial.color = color;
+        }
+        else if (_wallMeshRenderer != null && _wallMeshRenderer.material != null)
+        {
+            _wallMeshRenderer.material.color = color;
+        }
+    }
+    
+    /// <summary>
+    /// Устанавливает кастомный материал для стены
+    /// </summary>
+    public void SetWallMaterial(Material material)
+    {
+        if (material != null)
+        {
+            _wallMaterial = material;
             
-            _wallAnchors.Remove(planeId);
+            if (_wallMeshRenderer != null)
+            {
+                _wallMeshRenderer.material = _wallMaterial;
+            }
         }
     }
     
     /// <summary>
-    /// Check if a plane is vertical (potential wall)
+    /// Включает или выключает визуализацию стены
     /// </summary>
-    private bool IsVerticalPlane(ARPlane plane)
+    public void SetVisualization(bool enabled)
     {
-        if (plane == null) return false;
+        _visualizeWall = enabled;
         
-        // Check plane alignment
-        if (plane.alignment == PlaneAlignment.Vertical)
+        if (_wallMeshRenderer != null)
         {
-            return true;
+            _wallMeshRenderer.enabled = enabled;
         }
-        
-        // Additional check using normal vector
-        Vector3 normal = plane.normal;
-        float dotWithUp = Vector3.Dot(normal, Vector3.up);
-        
-        // If the dot product with up is close to 0, the plane is vertical
-        return Mathf.Abs(dotWithUp) < 0.3f;
     }
     
     /// <summary>
-    /// Check if a plane is identified as a wall by the wall detection system
+    /// Проверяет, является ли эта стена частью той же плоскости, что и другая стена
     /// </summary>
-    private bool IsWallPlane(ARPlane plane)
+    public bool IsSamePlaneAs(ARWallAnchor otherWall)
     {
-        // Эта функция должна определять, является ли плоскость стеной
-        // В вашей системе это может быть определено другим способом
-        
-        // Базовая проверка - вертикальная плоскость
-        if (!IsVerticalPlane(plane)) return false;
-        
-        // Если у нас есть WallPainter, проверим его логику
-        if (_wallPainter != null)
-        {
-            // Здесь должна быть проверка через вашу систему
-            // Поскольку _wallPainter может не иметь прямого API, используем общую проверку
-            return true; // Считаем все вертикальные плоскости стенами
-        }
-        
-        // По умолчанию считаем все вертикальные плоскости стенами
-        return true;
+        if (otherWall == null || _arPlane == null || otherWall.ARPlane == null)
+            return false;
+            
+        return _arPlane.trackableId == otherWall.ARPlane.trackableId;
     }
     
     /// <summary>
-    /// Manually create an anchor for a specific wall plane
+    /// Anchors a wall to the specified AR plane
     /// </summary>
     public void AnchorWallPlane(TrackableId planeId)
     {
-        if (_planeManager == null) return;
-        
-        foreach (ARPlane plane in _planeManager.trackables)
+        if (_arPlaneManager == null)
         {
-            if (plane.trackableId.Equals(planeId))
+            _arPlaneManager = FindObjectOfType<ARPlaneManager>();
+            if (_arPlaneManager == null)
             {
-                CreateWallAnchor(plane);
-                break;
+                Debug.LogError("ARWallAnchor: Cannot anchor wall - ARPlaneManager not found");
+                return;
             }
         }
-    }
-    
-    /// <summary>
-    /// Manually remove an anchor for a specific wall plane
-    /// </summary>
-    public void UnanchorWallPlane(TrackableId planeId)
-    {
-        RemoveWallAnchor(planeId);
-    }
-    
-    /// <summary>
-    /// Добавляет якори ко всем вертикальным плоскостям и перемещает существующие стены
-    /// Public-метод для вызова из других скриптов или через Unity Events
-    /// </summary>
-    public void AnchorAllWalls()
-    {
-        FindAndAnchorExistingWalls();
+        
+        // Find the AR plane with the given ID
+        foreach (ARPlane plane in _arPlaneManager.trackables)
+        {
+            if (plane.trackableId == planeId)
+            {
+                // Set the AR plane reference
+                _arPlane = plane;
+                
+                // Create or get ARAnchor component
+                if (_arAnchor == null)
+                {
+                    _arAnchor = GetComponent<ARAnchor>();
+                    if (_arAnchor == null)
+                    {
+                        _arAnchor = gameObject.AddComponent<ARAnchor>();
+                    }
+                }
+                
+                // Update wall dimensions based on plane
+                Bounds planeBounds = plane.GetComponent<MeshRenderer>()?.bounds ?? new Bounds(plane.center, plane.size);
+                _wallWidth = Mathf.Max(planeBounds.size.x, planeBounds.size.z);
+                _wallHeight = Mathf.Max(2.4f, planeBounds.size.y * 1.5f); // Use a reasonable minimum height
+                
+                // Update wall normal
+                _wallNormal = plane.normal;
+                
+                // Update the mesh
+                UpdateWallMesh();
+                
+                Debug.Log($"ARWallAnchor: Successfully anchored wall to plane {planeId}");
+                return;
+            }
+        }
+        
+        Debug.LogWarning($"ARWallAnchor: Could not find plane with ID {planeId}");
     }
 } 

@@ -378,6 +378,24 @@ namespace ML.DeepLab
                 // Log model info before loading
                 Debug.Log($"EnhancedDeepLabPredictor: Attempting to load model asset {modelAsset.name}");
                 
+                // Проверяем, есть ли модель в ресурсах, если modelAsset не задан
+                if (modelAsset == null)
+                {
+                    string modelResourcePath = "ML/Models/model"; // Путь к модели в Resources
+                    var resourceModel = Resources.Load<Unity.Barracuda.NNModel>(modelResourcePath);
+                    
+                    if (resourceModel != null)
+                    {
+                        Debug.Log($"EnhancedDeepLabPredictor: Loaded model from Resources: {modelResourcePath}");
+                        modelAsset = resourceModel;
+                    }
+                    else
+                    {
+                        Debug.LogError($"EnhancedDeepLabPredictor: Не найден NNModel по пути {modelResourcePath}");
+                        return;
+                    }
+                }
+                
                 // Similar to base class Initialize but with our own engine reference
                 var runtimeModel = ModelLoader.Load(modelAsset);
                 
@@ -385,13 +403,34 @@ namespace ML.DeepLab
                 {
                     Debug.Log($"EnhancedDeepLabPredictor: Successfully loaded model with {runtimeModel.outputs.Count} outputs");
                     
-                    // Create worker with appropriate backend
-                    localEngine = WorkerFactory.CreateWorker(WorkerFactory.Type.Auto, runtimeModel);
+                    // Create worker with appropriate backend - попробуем разные типы для совместимости
+                    try {
+                        // Попробуем Compute, как наиболее производительный
+                        localEngine = WorkerFactory.CreateWorker(WorkerFactory.Type.ComputePrecompiled, runtimeModel);
+                        Debug.Log("EnhancedDeepLabPredictor: Создан ComputePrecompiled worker");
+                    }
+                    catch (Exception e1) {
+                        Debug.LogWarning($"EnhancedDeepLabPredictor: Не удалось создать ComputePrecompiled: {e1.Message}, пробуем Burst");
+                        try {
+                            // Альтернатива - Burst, который работает на большинстве устройств
+                            localEngine = WorkerFactory.CreateWorker(WorkerFactory.Type.CSharpBurst, runtimeModel);
+                            Debug.Log("EnhancedDeepLabPredictor: Создан CSharpBurst worker");
+                        }
+                        catch (Exception e2) {
+                            Debug.LogWarning($"EnhancedDeepLabPredictor: Не удалось создать CSharpBurst: {e2.Message}, пробуем Auto");
+                            // В крайнем случае - Auto, который выберет любой доступный бэкенд
+                            localEngine = WorkerFactory.CreateWorker(WorkerFactory.Type.Auto, runtimeModel);
+                            Debug.Log("EnhancedDeepLabPredictor: Создан Auto worker");
+                        }
+                    }
+                    
+                    // Устанавливаем флаг готовности сегментации
+                    isModelLoaded = true;
                     
                     // Log available model outputs
                     Debug.Log($"EnhancedDeepLabPredictor: Model outputs: {string.Join(", ", runtimeModel.outputs)}");
                     
-                    Debug.Log("EnhancedDeepLabPredictor: Model initialized successfully");
+                    Debug.Log("EnhancedDeepLabPredictor: NNModel engine создан успешно");
                 }
                 else
                 {
@@ -1083,9 +1122,10 @@ namespace ML.DeepLab
         /// <returns>A RenderTexture containing the enhanced segmentation result</returns>
         public override RenderTexture PredictSegmentation(Texture2D inputTexture)
         {
-            if (localEngine == null)
+            // Проверяем готовность модели к использованию
+            if (!isModelLoaded || localEngine == null)
             {
-                Debug.LogError("EnhancedDeepLabPredictor: Model engine is null");
+                Debug.LogWarning("EnhancedDeepLabPredictor: Сегментация пока не готова, пропускаем кадр");
                 return null;
             }
             
