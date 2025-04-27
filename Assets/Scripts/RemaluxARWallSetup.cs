@@ -107,6 +107,7 @@ public class RemaluxARWallSetup : MonoBehaviour
     /// </summary>
     private void EnsureCorrectARAnchorManager()
     {
+        // Если ARAnchorManager уже задан, проверяем его корректность
         if (_arAnchorManager != null)
         {
             // Проверяем, является ли текущий ARAnchorManager тем, что на основном ARSessionOrigin
@@ -127,7 +128,26 @@ public class RemaluxARWallSetup : MonoBehaviour
             }
         }
         
-        // Ищем основной ARSessionOrigin
+        // Поиск ARAnchorManager в сцене (для случая, когда не задан вручную)
+        if (_arAnchorManager == null)
+        {
+            _arAnchorManager = FindObjectOfType<ARAnchorManager>();
+            if (_arAnchorManager != null)
+            {
+                Debug.Log("[НАСТРОЙКА] Найден ARAnchorManager в сцене через FindObjectOfType");
+                
+                // Проверяем, что в менеджере задан префаб якоря
+                if (_arAnchorManager.anchorPrefab == null && _wallAnchorPrefab != null)
+                {
+                    _arAnchorManager.anchorPrefab = _wallAnchorPrefab;
+                    Debug.Log("[НАСТРОЙКА] Установлен префаб для ARAnchorManager из wallAnchorPrefab");
+                }
+                
+                return;
+            }
+        }
+        
+        // Если ARAnchorManager все еще не найден, пробуем найти его через ARSessionOrigin
         var mainSessionOrigin = FindMainARSessionOrigin();
         if (mainSessionOrigin != null)
         {
@@ -155,6 +175,12 @@ public class RemaluxARWallSetup : MonoBehaviour
         else
         {
             Debug.LogError("[НАСТРОЙКА] Не найден ARSessionOrigin в сцене");
+        }
+        
+        // Финальная проверка
+        if (_arAnchorManager == null)
+        {
+            Debug.LogError("[НАСТРОЙКА] КРИТИЧЕСКАЯ ОШИБКА: ARAnchorManager не найден и не может быть создан!");
         }
     }
     
@@ -628,29 +654,48 @@ public class RemaluxARWallSetup : MonoBehaviour
             }
         }
         
+        // КРИТИЧЕСКИ ВАЖНО: Убедиться, что ARAnchorManager существует
         if (_arAnchorManager == null)
         {
             Debug.LogError("[ЯКОРЬ] Отсутствует ARAnchorManager - не могу создать AR якорь");
             
-            // Пытаемся найти ARAnchorManager автоматически
-            var sessionOrigin = FindMainARSessionOrigin();
-            if (sessionOrigin != null)
+            // Ищем ARAnchorManager любым способом
+            _arAnchorManager = FindObjectOfType<ARAnchorManager>();
+            
+            if (_arAnchorManager == null)
             {
-                _arAnchorManager = sessionOrigin.GetComponent<ARAnchorManager>();
-                if (_arAnchorManager == null)
+                // Пытаемся найти ARAnchorManager на ARSessionOrigin
+                var sessionOrigin = FindMainARSessionOrigin();
+                if (sessionOrigin != null)
                 {
-                    Debug.LogError("[ЯКОРЬ] Не удалось найти ARAnchorManager даже на ARSessionOrigin");
-                    return;
+                    _arAnchorManager = sessionOrigin.GetComponent<ARAnchorManager>();
+                    if (_arAnchorManager == null)
+                    {
+                        Debug.LogError("[ЯКОРЬ] Не удалось найти ARAnchorManager даже на ARSessionOrigin");
+                        return;
+                    }
+                    else
+                    {
+                        Debug.Log("[ЯКОРЬ] Найден ARAnchorManager на ARSessionOrigin");
+                    }
                 }
                 else
                 {
-                    Debug.Log("[ЯКОРЬ] Найден ARAnchorManager на ARSessionOrigin");
+                    Debug.LogError("[ЯКОРЬ] КРИТИЧЕСКАЯ ОШИБКА: Не удалось найти ARAnchorManager в сцене!");
+                    return;
                 }
             }
             else
             {
-                return;
+                Debug.Log("[ЯКОРЬ] Найден ARAnchorManager через FindObjectOfType");
             }
+        }
+        
+        // Устанавливаем префаб для ARAnchorManager (если не задан)
+        if (_arAnchorManager.anchorPrefab == null)
+        {
+            _arAnchorManager.anchorPrefab = _wallAnchorPrefab;
+            Debug.Log("[ЯКОРЬ] Установлен prefab для ARAnchorManager");
         }
         
         // Создаем позу для якоря в центре плоскости с ориентацией по нормали
@@ -659,42 +704,68 @@ public class RemaluxARWallSetup : MonoBehaviour
         // Логируем данные плоскости для отладки
         Debug.Log($"[ЯКОРЬ] Плоскость: позиция={plane.center}, нормаль={plane.normal}, размер={plane.size}");
         
-        // Создаем якорь через ARAnchorManager
+        // Создаем якорь, привязанный к плоскости через ARAnchorManager
         ARAnchor arAnchor = null;
         
-        // Метод 1: привязываем якорь к плоскости (предпочтительный способ)
+        // Метод 1 (РЕКОМЕНДОВАННЫЙ): использовать AttachAnchor для привязки к плоскости
         arAnchor = _arAnchorManager.AttachAnchor(plane, anchorPose);
         
         if (arAnchor == null)
         {
-            Debug.LogWarning("[ЯКОРЬ] Не удалось привязать якорь к плоскости, пробую создать свободный якорь");
+            Debug.LogWarning("[ЯКОРЬ] Не удалось привязать якорь через AttachAnchor - пробую альтернативные методы");
             
-            // Метод 2: пробуем создать свободный якорь (если доступно в этой версии)
+            // Пробуем различные API методы для создания якоря
+            
+            // Метод 2: TryAddAnchor (новый API)
             try
             {
-                // В новых версиях AR Foundation метод может называться AddAnchor
-                var addAnchorMethod = typeof(ARAnchorManager).GetMethod("AddAnchor", 
-                    System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance,
-                    null, new[] { typeof(Pose) }, null);
-                
-                if (addAnchorMethod != null)
+                var methodInfo = typeof(ARAnchorManager).GetMethod("TryAddAnchor", 
+                    System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+                    
+                if (methodInfo != null)
                 {
-                    arAnchor = addAnchorMethod.Invoke(_arAnchorManager, new object[] { anchorPose }) as ARAnchor;
-                    Debug.Log("[ЯКОРЬ] Создан свободный якорь через AddAnchor");
+                    // Параметры зависят от сигнатуры метода
+                    var parameters = methodInfo.GetParameters();
+                    if (parameters.Length == 2 && parameters[0].ParameterType == typeof(Pose) && 
+                        parameters[1].ParameterType.Name.Contains("ARAnchor"))
+                    {
+                        // TryAddAnchor(Pose, out ARAnchor)
+                        var outParam = System.Activator.CreateInstance(parameters[1].ParameterType);
+                        var result = methodInfo.Invoke(_arAnchorManager, 
+                            new object[] { anchorPose, outParam });
+                            
+                        if (result is bool success && success)
+                        {
+                            arAnchor = outParam as ARAnchor;
+                            Debug.Log("[ЯКОРЬ] Успешно создан якорь через TryAddAnchor");
+                        }
+                    }
+                    else
+                    {
+                        Debug.Log("[ЯКОРЬ] Метод TryAddAnchor имеет неожиданную сигнатуру");
+                    }
                 }
                 else
                 {
-                    // Метод 3: создаем якорь вручную как последний вариант
-                    GameObject anchorGO = new GameObject($"Manual Anchor ({plane.trackableId})");
-                    anchorGO.transform.position = anchorPose.position;
-                    anchorGO.transform.rotation = anchorPose.rotation;
-                    arAnchor = anchorGO.AddComponent<ARAnchor>();
-                    Debug.Log("[ЯКОРЬ] Создан ручной якорь без привязки к AR системе");
+                    Debug.Log("[ЯКОРЬ] Метод TryAddAnchor не найден");
                 }
             }
             catch (System.Exception ex)
             {
-                Debug.LogError($"[ЯКОРЬ] Ошибка при создании якоря: {ex.Message}");
+                Debug.LogWarning($"[ЯКОРЬ] Ошибка при вызове TryAddAnchor: {ex.Message}");
+            }
+            
+            // Метод 3: Создаем якорь вручную (последний вариант)
+            if (arAnchor == null)
+            {
+                Debug.LogWarning("[ЯКОРЬ] Создаю якорь вручную - это может не работать правильно!");
+                
+                GameObject anchorGO = new GameObject($"Manual Anchor ({plane.trackableId})");
+                anchorGO.transform.position = anchorPose.position;
+                anchorGO.transform.rotation = anchorPose.rotation;
+                arAnchor = anchorGO.AddComponent<ARAnchor>();
+                
+                Debug.Log("[ЯКОРЬ] Создан ручной якорь");
             }
         }
         
@@ -705,45 +776,32 @@ public class RemaluxARWallSetup : MonoBehaviour
             return;
         }
         
-        Debug.Log($"[ЯКОРЬ] Успешно создан якорь: {arAnchor.name} в позиции {arAnchor.transform.position}");
+        Debug.Log($"[ЯКОРЬ] Успешно создан якорь '{arAnchor.name}' в позиции {arAnchor.transform.position}");
         
         // Создаем визуализацию стены, привязанную к якорю
-        GameObject wallAnchorObject;
+        GameObject wallObject = Instantiate(_wallAnchorPrefab, arAnchor.transform);
+        wallObject.name = $"Wall Anchor ({plane.trackableId})";
+        wallObject.transform.localPosition = Vector3.zero;
+        wallObject.transform.localRotation = Quaternion.identity;
+        wallObject.SetActive(true);
         
-        // Если у якоря уже есть компонент ARWallAnchor, используем его
-        ARWallAnchor wallAnchor = arAnchor.GetComponent<ARWallAnchor>();
-        if (wallAnchor != null)
+        // Получаем компонент ARWallAnchor
+        ARWallAnchor wallAnchor = wallObject.GetComponent<ARWallAnchor>();
+        if (wallAnchor == null)
         {
-            wallAnchorObject = arAnchor.gameObject;
-            Debug.Log("[ЯКОРЬ] Использую существующий компонент ARWallAnchor на якоре");
+            wallAnchor = wallObject.AddComponent<ARWallAnchor>();
         }
-        else
-        {
-            // Создаем объект стены из префаба
-            wallAnchorObject = Instantiate(_wallAnchorPrefab, arAnchor.transform);
-            wallAnchorObject.name = $"Wall Anchor ({plane.trackableId})";
-            wallAnchorObject.transform.localPosition = Vector3.zero;
-            wallAnchorObject.transform.localRotation = Quaternion.identity;
-            wallAnchorObject.SetActive(true);
-            
-            // Получаем компонент ARWallAnchor
-            wallAnchor = wallAnchorObject.GetComponent<ARWallAnchor>();
-            if (wallAnchor == null)
-            {
-                wallAnchor = wallAnchorObject.AddComponent<ARWallAnchor>();
-            }
-        }
-        
-        // Устанавливаем размеры стены в соответствии с размерами плоскости
-        float wallWidth = Mathf.Max(plane.size.x, 1.0f);
-        float wallHeight = Mathf.Max(_minWallHeight, plane.size.y * 1.5f); // Увеличиваем высоту для лучшей видимости
         
         // Включаем отладку
         wallAnchor.DebugMode = true;
         
-        // Устанавливаем явные ссылки на AR компоненты
+        // ВАЖНО: Устанавливаем явные ссылки на AR компоненты
         wallAnchor.ARPlane = plane;
         wallAnchor.ARAnchor = arAnchor;
+        
+        // Устанавливаем размеры стены в соответствии с размерами плоскости
+        float wallWidth = Mathf.Max(plane.size.x, 1.0f);
+        float wallHeight = Mathf.Max(_minWallHeight, plane.size.y * 1.5f); // Увеличиваем высоту
         
         // Устанавливаем размеры и материал
         wallAnchor.SetWallDimensions(wallWidth, wallHeight);
@@ -754,12 +812,21 @@ public class RemaluxARWallSetup : MonoBehaviour
             wallAnchor.SetWallColor(_wallColor);
         }
         
+        // Проверяем, что объект стены правильно привязан к якорю
+        if (wallObject.transform.parent != arAnchor.transform)
+        {
+            Debug.LogWarning("[ЯКОРЬ] Ошибка родительской привязки! Исправляю...");
+            wallObject.transform.parent = arAnchor.transform;
+            wallObject.transform.localPosition = Vector3.zero;
+            wallObject.transform.localRotation = Quaternion.identity;
+        }
+        
         // Добавляем созданную стену в список
         _wallAnchors.Add(wallAnchor);
         
         Debug.Log($"[ЯКОРЬ] Создана привязка стены размером {wallWidth}x{wallHeight}");
         
-        // Логируем иерархию объектов для отладки
+        // Логируем иерархию для отладки
         if (_debugMode)
         {
             PrintObjectHierarchy(arAnchor.transform, 0);
